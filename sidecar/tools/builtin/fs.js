@@ -10,6 +10,7 @@
      root    : absolute path to .../workspaces
      limits  : { writeBytes=1<<20, readReturn=200_000 } */
 'use strict';
+const { note: failNote } = require('../../failopen');
 (function (root, factory) {
   const api = factory();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -690,7 +691,7 @@
         child.on('error', () => done(false));
         child.on('close', (code) => done(code === 0));
         if (child.stdout) child.stdout.on('data', () => {});
-        const t = setTimeout(() => { try { child.kill(); } catch (_) {} done(false); }, 3000);
+        const t = setTimeout(() => { try { child.kill(); } catch (e) { failNote('fs.search.rg.probe.kill', e); } done(false); }, 3000);
         if (t && typeof t.unref === 'function') t.unref();
       });
       return rgProbe;
@@ -704,10 +705,10 @@
         catch (_) { return resolve({ ok: false }); }
         let settled = false, timedOut = false, stopped = false, buf = '', stderr = '';
         const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
-        const stop = () => { stopped = true; try { child.kill(); } catch (_) {} };
-        const timer = setTimeout(() => { timedOut = true; try { child.kill(); } catch (_) {} }, budgetMs);
+        const stop = () => { stopped = true; try { child.kill(); } catch (e) { failNote('fs.search.rg.stop.kill', e); } };
+        const timer = setTimeout(() => { timedOut = true; try { child.kill(); } catch (e) { failNote('fs.search.rg.budget.kill', e); } }, budgetMs);
         if (timer && typeof timer.unref === 'function') timer.unref();
-        if (signal) { try { signal.addEventListener('abort', stop, { once: true }); } catch (_) {} }
+        if (signal) { try { signal.addEventListener('abort', stop, { once: true }); } catch (e) { failNote('fs.search.rg.abort.listen', e); } }
         const feed = (chunk) => {
           if (stopped || timedOut) return;
           buf += chunk;
