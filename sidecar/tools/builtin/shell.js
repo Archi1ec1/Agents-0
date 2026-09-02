@@ -738,7 +738,12 @@
     const L = deps.limits || {};
     const MAX_BYTES = L.maxBytes || 64000;
     const DEFAULT_MS = L.defaultTimeoutMs || 30000;
-    const MAX_MS = L.maxTimeoutMs || 120000;
+    /* MAX 120s -> 600s (2026-09-02, coding-tools lane). A test suite, a build, or an install routinely runs
+       longer than two minutes; at 120s the agent's only options were a KILLED result or background:true plus a
+       polling loop through shell.bg.read. Ten minutes matches environment.execute's own ceiling (600000) and
+       the reference harness. Still bounded by config (limits.maxTimeoutMs), still killed at the deadline, and
+       the registry backstop below stays ABOVE it so the child-kill always runs first. */
+    const MAX_MS = L.maxTimeoutMs || 600000;
     const sessions = new Map();   // H2.1: unscoped aid or run-scoped project key -> { cwd }
 
     const execTool = {
@@ -754,10 +759,10 @@
         + 'Your working directory PERSISTS across calls (a `cd` carries over). Absolute and `..` paths are '
         + 'refused in cmd — pass cwd to run from a specific existing folder. Commands that would change the '
         + 'user\'s machine or screen are refused in restricted modes; Full Power may run any host command the '
-        + 'current OS user can run. Optional timeoutMs (default 30s, max 120s). background:true returns a handle '
+        + 'current OS user can run. Optional timeoutMs (default 30s, max 10 min; timeout_ms is accepted too). background:true returns a handle '
         + 'immediately for long-running processes (dev servers) — check shell.bg.status, read its log with '
         + 'shell.bg.read, answer its prompts with shell.bg.write, stop it with shell.bg.kill.',
-      schema: { type: 'object', required: ['cmd'], properties: { cmd: { type: 'string' }, cwd: { type: 'string' }, timeoutMs: { type: 'number' }, background: { type: 'boolean' } } },
+      schema: { type: 'object', required: ['cmd'], properties: { cmd: { type: 'string' }, cwd: { type: 'string' }, timeoutMs: { type: 'number' }, timeout_ms: { type: 'number' }, background: { type: 'boolean' } } },
       run: function (args, ctx) {
         ctx = ctx || {};
         // Host-minted at Telegram ingress: this is the paired Commander at the physical desktop, not a prompt
@@ -818,7 +823,7 @@
           return { content: content, summary: r.ok ? ('bg started ' + r.bgId) : 'bg refused' };
           });
         });
-        const timeoutMs = clamp((args && args.timeoutMs) || DEFAULT_MS, 1000, MAX_MS);
+        const timeoutMs = clamp((args && (args.timeoutMs || args.timeout_ms)) || DEFAULT_MS, 1000, MAX_MS);
         const markerIsWin = environment && environmentBackendId !== 'local' ? false : isWin;
         const run = checkpoint.then(function () {
           return environment && typeof environment.execute === 'function'
