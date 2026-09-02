@@ -70,8 +70,8 @@
 
     async function post(url, headers, body, signal) {
       const ac = new AbortController();
-      const timer = setTimeout(() => { try { ac.abort(); } catch (_) {} }, timeoutMs);
-      const onOuter = () => { try { ac.abort(); } catch (_) {} };
+      const timer = setTimeout(() => ac.abort(), timeoutMs);   // abort() never throws
+      const onOuter = () => ac.abort();
       if (signal) { if (signal.aborted) onOuter(); else signal.addEventListener('abort', onOuter, { once: true }); }
       try {
         const res = await doFetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body), signal: ac.signal });

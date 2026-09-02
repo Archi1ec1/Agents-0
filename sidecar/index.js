@@ -2385,7 +2385,7 @@ async function hybridVectors(o) {
   const query = String(o.query == null ? '' : o.query).replace(/\s+/g, ' ').trim();
   if (!recs.length || !query) return null;
   let usd = 0, tokens = 0, calls = 0;
-  const book = (usage) => { try { const c = o.cost.reconcile(usage, embedder.model); usd += c.usd || 0; tokens += (c.tokensIn || 0) + (c.tokensOut || 0); calls++; } catch (_) {} };
+  const book = (usage) => { try { const c = o.cost.reconcile(usage, embedder.model); usd += c.usd || 0; tokens += (c.tokensIn || 0) + (c.tokensOut || 0); calls++; } catch (e) { failNote('embed.cost.reconcile', e); } };
   try {
     const stored = notebookStore.get('embed:' + o.agentId);
     const plan = Embed.planVectors(recs, stored, embedder.model, EMBED_BACKFILL_CAP);
@@ -2412,7 +2412,7 @@ async function hybridVectors(o) {
     console.warn('[cortex] embedding lane fell back to BM25:', (e && e.message) || e);
     return null;
   } finally {
-    if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (_) {} }
+    if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (e) { failNote('embed.ledger.record', e); } }
   }
 }
 
