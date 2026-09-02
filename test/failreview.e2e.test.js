@@ -78,7 +78,9 @@ function startMock() {
             main: raw.indexOf('[RUNTIME]') >= 0,   // only the MAIN task run carries the full runtime system prompt
             failReview: sys.indexOf('reviewing a task run of yours that FAILED') >= 0,
             reflection: sys.indexOf('reflecting right after finishing a task') >= 0,
-            reasoning: body.reasoning || null
+            reasoning: body.reasoning || null,
+            // the recalled-memory fence (if any) the MAIN run received — the proof that a stored lesson SURFACED
+            recall: messages.filter(m => m && m.role === 'system' && typeof m.content === 'string' && m.content.indexOf('<recalled-memory>') >= 0).map(m => m.content).join('\n')
           };
           state.calls.push(rec);
           if (rec.failReview) { sse(res, [{ content: LESSON_REPLY }], { prompt_tokens: 6, completion_tokens: 4, total_tokens: 10 }, 'stop'); return; }
@@ -200,12 +202,18 @@ async function settle(state, stableMs, maxMs) {
     }
 
     // ---- ARM 2 — a second failed run for the SAME agent inside the cooldown fires NOTHING -------------------
+    //      …and — the compounding proof (memory-compound lane) — the lesson arm 1 wrote SURFACES in this next
+    //      run's prompt: the MAIN call carries a <recalled-memory> fence holding the lesson text. Until this
+    //      assertion existed the emitter→store→prompt seam was never proven end to end.
     {
-      const before = frCalls().length;
+      const before = frCalls().length, mainBefore = mock.state.calls.filter(c => c.main).length;
       const ev = await driveRun(fixture, 'fr-hot', FAIL_MARK + ' inspect the station then push the registry update again');
       A.eq(endReason(ev), 'error', 'the second run also ended error');
       await sleep(2500);
       A.eq(frCalls().length, before, 'the per-agent cooldown suppressed a second failure-review pass');
+      const mains = mock.state.calls.filter(c => c.main).slice(mainBefore);
+      A.ok(mains.length >= 1, 'the second run made at least one MAIN model call');
+      A.ok(mains.every(c => c.recall.indexOf('Registry pushes rate-limit') >= 0), 'the lesson learned by run 1 was injected into the NEXT run prompt as a recalled-memory fence (' + JSON.stringify(mains[0].recall.slice(0, 200)) + ')');
     }
 
     // ---- ARM 3 — failureReviewEnabled=false suppresses the pass LIVE (the reflectEnabled pattern) -----------
