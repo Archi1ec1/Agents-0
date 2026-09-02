@@ -690,3 +690,4 @@ test/failopen.test.js
 test/failopen-ratchet.test.js
 test/frontend-fetch-truth-ratchet.test.js
 test/loop-verdict.test.js
+test/cli.test.js
