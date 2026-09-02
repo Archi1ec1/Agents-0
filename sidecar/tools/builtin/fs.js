@@ -304,8 +304,8 @@
 
     const readTool = {
       name: 'fs.read', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 10000,
-      description: 'Read a file from the current project folder when this session is project-scoped, otherwise from your private workspace. Text files come back as text; for large text use offset and limit to page character ranges without rerunning the command that produced the file. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text automatically; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels so you can look at them directly.',
-      schema: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } } },
+      description: 'Read a file from the current project folder when this session is project-scoped, otherwise from your private workspace. Text files come back as text; for large text use offset and limit to page character ranges without rerunning the command that produced the file. For source code pass { "numbered": true }: every line is prefixed "<line number><TAB>" (cat -n style) so you can cite exact lines, and offset/limit then mean the 1-based START LINE and the NUMBER OF LINES (e.g. offset:120, limit:40). Without "numbered" (or with "raw": true) the text is returned exactly as stored. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text automatically; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels so you can look at them directly.',
+      schema: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, numbered: { type: 'boolean' }, raw: { type: 'boolean' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs } = await resolveInside(aid, args.path, { scope: 'read', ctx });
@@ -346,6 +346,36 @@
         }
 
         const txt = raw.toString('utf8');
+        /* NUMBERED (2026-09-02, coding-tools lane). Line-cited reads are how a coding agent anchors an fs.edit or
+           a diagnostic ("main.js:214"). Opt-in, because ~25 test files and the output-parking read-back path
+           consume the plain default and a numbered default would change what they parse; `raw: true` is the
+           explicit spelling of the plain path. Line semantics for offset/limit here match the reference
+           harness's Read tool (1-based start line + line count). Line numbers are never clipped: a cap hit
+           mid-page ends the page on a whole line and the trailer says which line to continue from. */
+        if (args.numbered === true && args.raw !== true) {
+          const lines = txt.split('\n');
+          if (lines.length && lines[lines.length - 1] === '' && txt.length) lines.pop();   // a trailing newline is not an extra empty line
+          const totalLines = lines.length;
+          const startLine = Math.max(1, Math.floor(Number(args.offset) || 1));
+          const requestedLines = args.limit == null ? totalLines : Math.floor(Number(args.limit) || 0);
+          if (requestedLines <= 0) throw new Error('limit must be a positive number');
+          if (startLine > totalLines) {
+            return { content: '[offset ' + startLine + ' is past the end: ' + args.path + ' has ' + totalLines + ' line' + (totalLines === 1 ? '' : 's') + ']', summary: totalLines + ' lines; nothing at line ' + startLine };
+          }
+          const rows = [];
+          let chars = 0, endLine = startLine - 1, capped = false;
+          for (let i = startLine - 1; i < totalLines && rows.length < requestedLines; i++) {
+            const row = (i + 1) + '\t' + lines[i].replace(/\r$/, '');
+            if (rows.length && chars + row.length + 1 > READ_RETURN) { capped = true; break; }
+            rows.push(row); chars += row.length + 1; endLine = i + 1;
+          }
+          let out = rows.join('\n');
+          const more = endLine < totalLines;
+          if (more) out += '\n[showing lines ' + startLine + '-' + endLine + ' of ' + totalLines + (capped ? ' (output cap)' : '')
+            + '; next: fs.read {"path":' + JSON.stringify(String(args.path)) + ',"numbered":true,"offset":' + (endLine + 1) + ',"limit":' + Math.min(requestedLines, Math.max(1, endLine - startLine + 1)) + '}]';
+          else if (startLine > 1) out += '\n[showing lines ' + startLine + '-' + endLine + ' of ' + totalLines + '; end of file]';
+          return { content: out, summary: kb(Buffer.byteLength(txt)) + ' read; lines ' + startLine + '-' + endLine + ' of ' + totalLines };
+        }
         const offset = Math.min(txt.length, Math.max(0, Math.floor(Number(args.offset) || 0)));
         const requested = args.limit == null ? READ_RETURN : Math.floor(Number(args.limit) || 0);
         if (requested <= 0) throw new Error('limit must be a positive number');

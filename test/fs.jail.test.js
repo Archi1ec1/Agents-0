@@ -85,6 +85,35 @@ async function rejects(promise, msg) { try { await promise; A.ok(false, msg + ' 
     A.ok(new RegExp('characters ' + large.length + '-' + large.length + ' of ' + large.length).test(beyond.content), 'a continuation beyond EOF clamps to an honest empty terminal range');
   }
 
+  // ---- numbered reads: cat -n style "<n>\t<line>", offset/limit are LINES; the plain default is untouched ----
+  {
+    const src = 'alpha\nbeta\r\ngamma\ndelta\n';
+    const dir = path.join(ROOT, 'numbered');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(path.join(dir, 'src.js'), src, 'utf8');
+    const ctx = { agentId: 'numbered' };
+    A.eq((await readTool.run({ path: 'src.js' }, ctx)).content, src, 'the plain default returns the bytes exactly as stored (no numbering)');
+    A.eq((await readTool.run({ path: 'src.js', raw: true }, ctx)).content, src, 'raw:true is the explicit spelling of the plain path');
+    const n = await readTool.run({ path: 'src.js', numbered: true }, ctx);
+    A.eq(n.content, '1\talpha\n2\tbeta\n3\tgamma\n4\tdelta', 'numbered: every line is "<n><TAB><text>", CR stripped, no phantom trailing line');
+    A.ok(/lines 1-4 of 4/.test(n.summary), 'numbered summary reports the line range');
+    const page = await readTool.run({ path: 'src.js', numbered: true, offset: 2, limit: 2 }, ctx);
+    A.eq(page.content.split('\n[showing lines ')[0], '2\tbeta\n3\tgamma', 'offset/limit page by 1-based line and line count');
+    A.ok(/\[showing lines 2-3 of 4; next: fs\.read \{"path":"src\.js","numbered":true,"offset":4,"limit":2\}\]/.test(page.content), 'the numbered trailer gives the exact next line-paged call');
+    const tail = await readTool.run({ path: 'src.js', numbered: true, offset: 4 }, ctx);
+    A.eq(tail.content, '4\tdelta\n[showing lines 4-4 of 4; end of file]', 'the last page says end of file');
+    const past = await readTool.run({ path: 'src.js', numbered: true, offset: 9 }, ctx);
+    A.ok(/past the end/.test(past.content) && /has 4 lines/.test(past.content), 'an offset past EOF is an honest note, not an error or empty string');
+    await rejects(readTool.run({ path: 'src.js', numbered: true, limit: 0 }, ctx), 'numbered limit must be positive');
+    // the read-return cap ends a numbered page on a WHOLE line and says where to continue
+    const long = Array.from({ length: 40 }, (_, i) => 'L' + i + ' ' + 'x'.repeat(60)).join('\n');
+    await fsp.writeFile(path.join(dir, 'long.txt'), long, 'utf8');
+    const capped = await readTool.run({ path: 'long.txt', numbered: true }, ctx);   // readReturn is 1000 chars here
+    const rows = capped.content.split('\n[showing lines ')[0].split('\n');
+    A.ok(rows.length > 5 && rows.length < 40 && rows.every(r => /^\d+\tL\d+ x+$/.test(r)), 'a capped numbered page holds only whole numbered lines');
+    A.ok(capped.content.indexOf('(output cap); next: fs.read {"path":"long.txt","numbered":true,"offset":' + (rows.length + 1) + ',') >= 0, 'the cap trailer names the next line to continue from');
+  }
+
   // ---- one agent cannot read another agent's workspace via the path ----
   await rejects(readTool.run({ path: '../other/note.md' }, { agentId: 'ag' }), 'cannot escape to a sibling agent workspace');
 
