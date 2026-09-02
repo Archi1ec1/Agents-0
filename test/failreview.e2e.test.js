@@ -241,6 +241,15 @@ async function settle(state, stableMs, maxMs) {
       A.eq(endReason(ev), 'error', 'the paused-arm run ended error');
       await sleep(2500);
       A.eq(frCalls().length, before, 'the personalization pause fired NO failure-review pass');
+      // …and REFLECTION honours the same pause (memory-compound lane): a paused station learns nothing from a
+      // 'done' run either — no aux call, no memory written.
+      const beforeRefl = reflCalls().length;
+      const evDone = await driveRun(fixture, 'fr-paused-done', GOOD_MARK + ' rebuild the staging deploy rollback path and write up what changed and why');
+      A.eq(endReason(evDone), 'done', 'the paused-arm done run ended done');
+      await sleep(2500);
+      A.eq(reflCalls().length, beforeRefl, 'the personalization pause fired NO reflection pass on a done run');
+      const recPaused = await fixture.json('GET', '/api/memory/records?agent=fr-paused-done');
+      A.eq((recPaused.body.records || []).length, 0, 'a paused station wrote NO memory for the done run');
       await fixture.json('POST', '/api/personalization', { enabled: true });   // resume
     }
 
