@@ -19,6 +19,12 @@
      ARM 5 — REGRESSION: a run ending 'done' fires reflection exactly as before and NEVER fires
              failure-review (the done-gated and fail-gated families are mutually exclusive per run).
      ARM 6 — a CANCELLED run (client abort via POST /api/cancel) fires NO failure-review pass.
+     ARM 7 — PROJECT TIER (memory-compound lane): a lesson learned inside blessed project A is scoped to A —
+             it is injected back inside A and NEVER into project B or an unscoped run.
+     ARM 8 — HYBRID RECALL (memory-compound lane): with no embedding model the lane makes NO provider call and
+             a lexically-unrelated task does NOT recall the lesson (BM25 only); once `embedModel` is configured
+             the SAME task recalls it through the mock /embeddings wire, the vectors persist (a repeat costs no
+             new call), and the personalization PAUSE silences the lane (no embedding call while paused).
 
    ZERO network, zero real key (the fake key routes to the mock). */
 'use strict';
@@ -68,6 +74,20 @@ function startMock() {
           { id: RUN_MODEL, context_length: 8000, pricing: { prompt: '0', completion: '0' }, supported_parameters: ['tools'] },
           { id: AUX_MODEL, context_length: 8000, pricing: { prompt: '0', completion: '0' }, supported_parameters: ['reasoning'] }
         ] }));
+        return;
+      }
+      if (req.url.indexOf('/embeddings') >= 0) {
+        // the embedding wire (ARM 8): a deterministic 3-d "semantic" space — anything about registry pushes /
+        // throttled uploads lands on axis 0, everything else on axis 1 — so a zero-lexical-overlap paraphrase
+        // still scores cosine 1.0 against the lesson.
+        let raw = ''; req.on('data', d => { raw += d; }); req.on('end', () => {
+          const body = JSON.parse(raw);
+          const inputs = Array.isArray(body.input) ? body.input : [body.input];
+          state.calls.push({ model: body.model, embed: true, inputs: inputs.slice(), main: false, failReview: false, reflection: false, recall: '' });
+          const vec = t => (/registry|rate-limit|throttl|package index|uploads/i.test(String(t)) ? [1, 0, 0] : [0, 1, 0]);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ data: inputs.map((t, i) => ({ index: i, embedding: vec(t) })), usage: { prompt_tokens: 5 * inputs.length, total_tokens: 5 * inputs.length } }));
+        });
         return;
       }
       if (req.url.indexOf('/chat/completions') >= 0) {
@@ -317,6 +337,63 @@ async function settle(state, stableMs, maxMs) {
       A.eq(endReason(evA2), 'error', 'the second project-A run ended error');
       A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') >= 0), 'back in project A the lesson IS injected into the prompt');
       A.eq(frCalls().length - before, 1, 'still exactly one failure-review pass for fr-proj (cooldown held across the probes)');
+    }
+
+    // ---- ARM 8 — HYBRID RECALL: the embedding lane surfaces a lesson BM25 alone cannot -------------------------
+    {
+      const embedCalls = () => mock.state.calls.filter(c => c.embed);
+      const mainsSince = (n) => mock.state.calls.filter(c => c.main).slice(n);
+      // a task with ZERO lexical overlap with the lesson ("Registry pushes rate-limit after repeated attempts; batch
+      // retries with exponential backoff before the next push") — no shared significant token.
+      const PARAPHRASE = FAIL_MARK + ' inspect the station; our uploads to the package index keep getting throttled';
+      const before = frCalls().length;
+      const ev0 = await driveRun(fixture, 'fr-sem', FAIL_MARK + ' inspect the station then push the registry update');
+      A.eq(endReason(ev0), 'error', 'the semantic-arm seed run ended error');
+      await settle(mock.state);
+      A.eq(frCalls().length - before, 1, 'the seed failure fired one failure-review pass (the lesson exists)');
+      A.eq(embedCalls().length, 0, 'no embedding model configured -> NO embedding call was ever made (BM25 only, zero spend)');
+      // probe 1 — lane OFF: BM25 finds nothing for the paraphrase
+      let n = mock.state.calls.filter(c => c.main).length;
+      const ev1 = await driveRun(fixture, 'fr-sem', PARAPHRASE);
+      A.eq(endReason(ev1), 'error', 'probe 1 ended error (cooldown: no new lesson)');
+      A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') < 0), 'BM25 alone: the paraphrased task does NOT recall the lesson (the gap)');
+      A.eq(embedCalls().length, 0, 'still no embedding call with the lane off');
+      // turn the lane on through the persisted memory config (the same live-config seam as reflectEnabled)
+      const cfg = await fixture.json('POST', '/api/memory/config', { embedModel: 'openai/text-embedding-3-small' });
+      A.eq(cfg.status, 200, 'embedModel accepted');
+      A.eq(cfg.body.embedModel, 'openai/text-embedding-3-small', 'embedModel round-trips');
+      A.eq(cfg.body.embedEnabled, true, 'the config reports the lane as live (model named + personalization on)');
+      const bad = await fixture.json('POST', '/api/memory/config', { embedProvider: 'not-a-provider' });
+      A.eq(bad.status, 400, 'an unknown embedProvider is refused');
+      // probe 2 — lane ON: the same paraphrase now recalls the lesson via the mock /embeddings wire
+      n = mock.state.calls.filter(c => c.main).length;
+      const ev2 = await driveRun(fixture, 'fr-sem', PARAPHRASE);
+      A.eq(endReason(ev2), 'error', 'probe 2 ended error');
+      A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') >= 0), 'HYBRID: the paraphrased task DOES recall the lesson through the embedding lane (' + JSON.stringify((mainsSince(n)[0] || {}).recall || '').slice(0, 160) + ')');
+      const ec = embedCalls();
+      A.ok(ec.length >= 1 && ec.length <= 2, 'the lane made 1–2 bounded embedding calls (record backfill + query), got ' + ec.length);
+      A.ok(ec.some(c => c.inputs.some(t => /Registry pushes rate-limit/.test(t))), 'the lesson text was embedded (record backfill)');
+      A.ok(ec.some(c => c.inputs.some(t => /throttled/.test(t))), 'the query text was embedded');
+      A.ok(ec.every(c => c.model === 'openai/text-embedding-3-small'), 'every embedding call rode the configured embed model');
+      A.ok(fs.existsSync(path.join(fixture.workspace, 'fr-sem.embed.json')), 'the vectors persisted to the durable embed:<agent> sibling store');
+      // probe 3 — vectors persisted + query cached: the SAME task recalls again with NO new embedding call
+      const ecBefore = embedCalls().length;
+      n = mock.state.calls.filter(c => c.main).length;
+      const ev3 = await driveRun(fixture, 'fr-sem', PARAPHRASE);
+      A.eq(endReason(ev3), 'error', 'probe 3 ended error');
+      A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') >= 0), 'the lesson still surfaces on a repeat');
+      A.eq(embedCalls().length, ecBefore, 'a repeat made NO new embedding call (vectors on disk, query cached) — zero repeat spend');
+      // the personalization PAUSE silences the lane: no embedding call at all while paused
+      await fixture.json('POST', '/api/personalization', { enabled: false });
+      const cfgPaused = await fixture.json('GET', '/api/memory/config');
+      A.eq(cfgPaused.body.embedEnabled, false, 'while paused the config honestly reports the lane OFF');
+      n = mock.state.calls.filter(c => c.main).length;
+      const ev4 = await driveRun(fixture, 'fr-sem', FAIL_MARK + ' inspect the station; a brand new wording about the package index being slow');
+      A.eq(endReason(ev4), 'error', 'the paused probe ended error');
+      A.eq(embedCalls().length, ecBefore, 'PAUSED: no embedding call was made (the pause is server authority for the lane too)');
+      await fixture.json('POST', '/api/personalization', { enabled: true });
+      await fixture.json('POST', '/api/memory/config', { embedModel: '' });   // lane off again
+      A.eq((await fixture.json('GET', '/api/memory/config')).body.embedEnabled, false, 'clearing embedModel turns the lane off');
     }
   } finally { await fixture.dispose(); try { mock.server.close(); } catch (_) {} try { fs.rmSync(projA, { recursive: true, force: true }); fs.rmSync(projB, { recursive: true, force: true }); } catch (_) {} }
 

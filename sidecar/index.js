@@ -136,6 +136,7 @@ const { readBody, readBodyBuffer } = require('./http-body.js');
 const { MIME, CHANNEL_UPLOAD_MAX_BYTES, mimeForPath, safeDownloadName, isActiveDeliverable, parseRange } = require('./file-response.js');
 const { reflect, reflectSalient, recordFromProposal, feedbackFor, highStakes } = require('./reflect.js');
 const Failreview = require('./failreview.js');   // failure-review aux pass: PURE lesson producer for FAILED runs (reflect.js mold)
+const Embed = require('./embed.js');              // memory-compound: the embedding lane of hybrid recall (BM25 + vectors over a configured provider)
 const { swallow, note: failNote, summary: failopenSummary, setClock: failopenSetClock } = require('./failopen.js');    // tagged fail-open: a swallowed error stays visible (throttled warn + counter + diagnostics summary)
 failopenSetClock(() => Date.now());   // composition root injects ambient time (lint-determinism keeps failopen.js pure)
 // GROWTH Tier 1 — the pure STUDY ENGINE (the dossier's Phase B). A UMD frontend module that also exports under
@@ -2215,7 +2216,11 @@ function normalizeMemoryConfig(value) {
       // failure-review: the station learns from FAILED runs too (reflect's mirror on the failure side). Same
       // end-to-end pattern as reflectEnabled: default ON, persisted, honored LIVE at the gate, own cooldown.
       failureReviewEnabled: c.failureReviewEnabled !== false,   // default ON
-      failureReviewCooldownMs: (isFinite(fd) && fd >= 0) ? Math.floor(fd) : FAILREVIEW_COOLDOWN_MS
+      failureReviewCooldownMs: (isFinite(fd) && fd >= 0) ? Math.floor(fd) : FAILREVIEW_COOLDOWN_MS,
+      // memory-compound: the HYBRID RECALL embedding lane. OFF unless a model is named (an embedding call is
+      // real spend on the Commander's provider — never silently on). `embedProvider` '' = the run's own provider.
+      embedModel: String(c.embedModel == null ? '' : c.embedModel).trim().slice(0, 120),
+      embedProvider: normalizeProviderId(String(c.embedProvider == null ? '' : c.embedProvider), '')
     };
 }
 const memoryConfigStore = makeDomainStore({
@@ -2335,6 +2340,80 @@ function auxReasoningEffort(provider, model) {
   const want = normalizeReasoningEffort(effortEnv || 'low');
   let allowed; try { allowed = provider.reasoningEfforts(model); } catch (_) { return null; }
   return (Array.isArray(allowed) && allowed.indexOf(want) >= 0) ? want : null;
+}
+
+/* ---- HYBRID RECALL — the embedding lane (memory-compound lane) ----------------------------------------------
+   BM25 alone can never surface "registry pushes rate-limit" for a task phrased "uploads keep getting throttled":
+   zero term overlap = zero relevance = the lesson stays buried. The embedding lane closes that gap WITHOUT any
+   new deployment weight (the shipped bundle carries no node_modules, so no local model can ship): it borrows
+   the embedding endpoint of a provider the Commander already configured (STARNET_EMBED_MODEL or the persisted
+   memory config `embedModel`; `embedProvider` names another configured provider, else the run's own).
+   Vectors are stored per record in the durable embed:<agent> sibling store (atomic durable-store writes) and
+   rebuilt lazily — at most EMBED_BACKFILL_CAP records per run — so a big notebook never explodes one run's
+   spend. The query vector is cached per text hash in RAM. Every call's usage is reconciled through the run's
+   cost engine and booked to the append-only ledger exactly like the aux passes; the personalization PAUSE
+   silences the lane entirely (pure BM25, no provider call). Any failure => BM25 only, never a failed run. */
+const EMBED_BACKFILL_CAP = 32;
+const EMBED_TIMEOUT_MS = 15000;
+const EMBED_QUERY_CACHE_MAX = 64;
+const embedQueryCache = new Map();   // model + '\n' + textHash(query) -> vector (bounded FIFO)
+function resolveEmbedModel() {
+  return String((memoryConfig && memoryConfig.embedModel) || ENV('EMBED_MODEL') || '').trim() || null;
+}
+// the embedder for THIS run: the configured embed provider (or the run's own) with the credentials the station
+// already holds for it. null = lane off (no model / no wire / no credential) -> BM25 only.
+function embedderFor(run) {
+  const model = resolveEmbedModel();
+  if (!model) return null;
+  const wantId = memoryConfig.embedProvider ? normalizeProvider(memoryConfig.embedProvider) : normalizeProvider(run.providerId || '');
+  const profile = getProviderProfile(wantId);
+  if (!profile || !Embed.wireFor(profile.adapter)) return null;
+  const own = wantId === normalizeProvider(run.providerId || '');
+  const key = own ? String(run.key || '') : providerRuntimeKey(wantId, '');
+  const baseUrl = own ? String(run.baseUrl || '') : providerRuntimeBaseUrl(wantId, '');
+  if (!baseUrl) return null;
+  return Embed.makeEmbedder({ fetch: globalThis.fetch, adapter: profile.adapter, baseUrl, key, model, timeoutMs: EMBED_TIMEOUT_MS });
+}
+/* hybridVectors({ agentId, recs, query, run:{providerId,key,baseUrl}, runId, cost, unmetered })
+   -> { vectors: {id->vec}, queryVec } | null. Backfills missing record vectors (capped) + embeds the query in
+   ONE or two bounded calls, books the spend, persists the store. Fail-open: null on any failure. */
+async function hybridVectors(o) {
+  if (!personalizationStore.read().enabled) return null;   // the PAUSE is server authority: no provider call at all
+  const embedder = embedderFor(o.run || {});
+  if (!embedder) return null;
+  const recs = Array.isArray(o.recs) ? o.recs : [];
+  const query = String(o.query == null ? '' : o.query).replace(/\s+/g, ' ').trim();
+  if (!recs.length || !query) return null;
+  let usd = 0, tokens = 0, calls = 0;
+  const book = (usage) => { try { const c = o.cost.reconcile(usage, embedder.model); usd += c.usd || 0; tokens += (c.tokensIn || 0) + (c.tokensOut || 0); calls++; } catch (_) {} };
+  try {
+    const stored = notebookStore.get('embed:' + o.agentId);
+    const plan = Embed.planVectors(recs, stored, embedder.model, EMBED_BACKFILL_CAP);
+    if (plan.length) {
+      const r = await embedder.embed(plan.map(p => p.text));
+      book(r.usage);
+      const rows = plan.map((p, i) => ({ id: p.id, h: p.h, v: r.vectors[i] }));
+      await notebookStore.update('embed:' + o.agentId, (cur) => Embed.mergeVectors(cur, embedder.model, rows, recs.map(x => x.id)));
+    }
+    const vectors = Embed.vectorsFor(recs, notebookStore.get('embed:' + o.agentId), embedder.model);
+    if (!Object.keys(vectors).length) return null;
+    const qKey = embedder.model + '\n' + Embed.textHash(query.slice(0, Embed.MAX_CHARS));
+    let queryVec = embedQueryCache.get(qKey) || null;
+    if (!queryVec) {
+      const r = await embedder.embed([query]);
+      book(r.usage);
+      queryVec = r.vectors[0];
+      embedQueryCache.set(qKey, queryVec);
+      while (embedQueryCache.size > EMBED_QUERY_CACHE_MAX) embedQueryCache.delete(embedQueryCache.keys().next().value);
+    }
+    if (calls) console.log('[cortex] hybrid recall: ' + plan.length + ' memory vector(s) + query embedded via ' + embedder.model + ' (' + calls + ' call' + (calls === 1 ? '' : 's') + ', ' + tokens + ' tok)');
+    return { vectors, queryVec };
+  } catch (e) {
+    console.warn('[cortex] embedding lane fell back to BM25:', (e && e.message) || e);
+    return null;
+  } finally {
+    if (usd || tokens) { try { ledger.record({ runId: o.runId, agentId: o.agentId, turns: 0, usd, tokens, model: embedder.model, unmetered: !!o.unmetered }); } catch (_) {} }
+  }
 }
 
 /* PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
@@ -16069,7 +16148,9 @@ async function runOnce(o) {
     const stored = notebookStore.get('notebook:' + agentId);
     const recs = o.recovery ? [] : (Array.isArray(stored) ? stored : []);
     const q = recentUserText(messages);   // last up-to-3 user turns (attachment turns flattened to THEIR text) — a bare "yes, do that" still ranks against the ask it answers
-    const ranked = rank(recs, q, { now: Date.now(), streamId, projectRoot: o.projectRoot || '' });   // M-mem.2b: boost the active workstream's working memory · project tier: only THIS project's scoped lessons
+    // memory-compound: the embedding lane (BM25 + vectors) — null => pure BM25, byte-identical to before
+    const hv = recs.length ? await hybridVectors({ agentId, recs, query: q, run: { providerId, key: runKey, baseUrl }, runId, cost, unmetered: providerUnmetered }) : null;
+    const ranked = rank(recs, q, { now: Date.now(), streamId, projectRoot: o.projectRoot || '', vectors: hv && hv.vectors, queryVec: hv && hv.queryVec });   // M-mem.2b: boost the active workstream's working memory · project tier: only THIS project's scoped lessons
     const recall = renderRecall(ranked, { limit: 1500 });
     if (recall.text) {
       msgs = injectRecall(msgs, redact(recall.text));   // §5.6 belt-and-suspenders: a legacy plaintext note can't reach the provider verbatim
@@ -19762,6 +19843,11 @@ function handleMemoryConfigGet(req, res) {
     failureReviewEnabled: memoryConfig.failureReviewEnabled,
     failureReviewCooldownMs: memoryConfig.failureReviewCooldownMs,
     defaultFailureReviewCooldownMs: FAILREVIEW_COOLDOWN_MS,
+    // hybrid recall (memory-compound): the embedding lane's knobs + the TRUTH of whether it can fire right now
+    // (a named model on a provider with no embedding wire, or a paused station, is honestly "off").
+    embedModel: resolveEmbedModel(),
+    embedProvider: memoryConfig.embedProvider || '',
+    embedEnabled: !!(resolveEmbedModel() && personalizationStore.read().enabled),
     scopeNote: memoryScopeNote()
   }));
 }
@@ -19775,6 +19861,16 @@ async function handleMemoryConfigSet(req, res) {
     memoryConfig.reflectCooldownMs = Math.floor(n);
   }
   if (Object.prototype.hasOwnProperty.call(body, 'failureReviewEnabled')) memoryConfig.failureReviewEnabled = !!body.failureReviewEnabled;
+  if (Object.prototype.hasOwnProperty.call(body, 'embedModel')) {
+    const m = String(body.embedModel == null ? '' : body.embedModel).trim();
+    if (m.length > 120 || /[\s"'<>]/.test(m)) return json(400, { error: 'embedModel must be a bare model id (≤120 chars, no spaces/quotes)' });
+    memoryConfig.embedModel = m;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'embedProvider')) {
+    const p = String(body.embedProvider == null ? '' : body.embedProvider).trim();
+    if (p && !getProviderProfile(p)) return json(400, { error: 'embedProvider must be a known provider id (or empty for the run\'s own provider)' });
+    memoryConfig.embedProvider = p ? normalizeProviderId(p, '') : '';
+  }
   if (Object.prototype.hasOwnProperty.call(body, 'failureReviewCooldownMs')) {
     const n = Number(body.failureReviewCooldownMs);
     if (!isFinite(n) || n < 0 || n > 3600000) return json(400, { error: 'failureReviewCooldownMs must be 0–3600000 (up to 1 hour)' });
