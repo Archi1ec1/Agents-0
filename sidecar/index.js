@@ -2337,6 +2337,16 @@ function auxReasoningEffort(provider, model) {
   return (Array.isArray(allowed) && allowed.indexOf(want) >= 0) ? want : null;
 }
 
+/* PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
+   (scope 'project' + projectRoot) so context.rank never injects it into an unrelated project — a lesson about
+   repo A's flaky registry must not steer work in repo B. PREFERENCES (kind 'profile') are about the Commander,
+   not a repo, so they stay global. An unscoped run (no blessed root) writes global records exactly as before. */
+function scopeToProject(p, projectRoot) {
+  const root = String(projectRoot || '').trim();
+  if (!root || !p || p.kind === 'profile') return p;
+  return Object.assign({}, p, { scope: 'project', projectRoot: root });
+}
+
 // fire-and-forget; never throws. Uses its OWN abort signal (+ timeout) so the closing run stream can't kill it.
 async function runReflection(o) {
   // personalization PAUSE (memory-compound lane): reflection is the station learning about the Commander —
@@ -2384,6 +2394,7 @@ async function runReflection(o) {
     // CROSS-WIRE: reflect() already deduped THIS agent's own notebook declines; drop anything the Commander declined
     // in ANOTHER surface (a mined thread / a quest title / a study belief / a north star) so it isn't re-remembered.
     if (proposals.length) { const dIdx = buildDeclinedIndex(agentId); proposals = proposals.filter(p => p && !dIdx.has(p.content)); }
+    proposals = proposals.map(p => scopeToProject(p, o.projectRoot));   // project tier: facts key to the run's blessed root
     if (proposals.length) {
       // arm the cooldown ONLY when a beat actually fires — so a trivial/floored/all-deduped run (zero proposals)
       // never spends the window and blocks a following substantive run's turn-in (honours "always confirm").
@@ -2401,14 +2412,14 @@ async function runReflection(o) {
       for (const p of normalProps) {
         try {
           const w = await writeMemoryRecord(agentId, p, { runId, trustDelta: 0, source: 'reflection', origin: origin });
-          if (w.ok) saved.push({ id: w.id, kind: w.kind, content: p.content, scope: p.scope || 'global', origin: origin, saved: true });
+          if (w.ok) saved.push({ id: w.id, kind: w.kind, content: p.content, scope: p.scope || 'global', projectRoot: p.projectRoot || null, origin: origin, saved: true });
         } catch (_) {}   // one failed write never sinks the batch
       }
       // stash ONE batch (mixed: saved receipts carry saved:true + a real record id; high-stakes carry the pending
       // prop_N id). The frontend fetches it via /api/memory/proposals — renders a passive receipt for saved:true
       // items and the Keep/Edit/Discard confirm deck for the rest. A single stash per runId (a second stashProposals
       // for the same runId would OVERWRITE the first — so merge here).
-      const pending = highStakesProps.map(p => ({ id: p.id, kind: p.kind, content: p.content, scope: p.scope || 'global', origin: origin }));
+      const pending = highStakesProps.map(p => ({ id: p.id, kind: p.kind, content: p.content, scope: p.scope || 'global', projectRoot: p.projectRoot || null, origin: origin }));
       const combined = saved.concat(pending);
       if (combined.length) stashProposals(agentId, runId, combined);
       // ...and queue the high-stakes half DURABLY. The in-memory stash serves the live receipt/deck render; this
@@ -2474,6 +2485,7 @@ async function runFailureReview(o) {
     let proposals = (out && out.proposals) || [];
     // CROSS-WIRE: any NEW proposal source routes through the shared declined-suppression index (NS-8 lite law).
     if (proposals.length) { const dIdx = buildDeclinedIndex(agentId); proposals = proposals.filter(p => p && !dIdx.has(p.content)); }
+    proposals = proposals.map(p => scopeToProject(p, o.projectRoot));   // project tier: a failure lesson keys to the repo it was learned in
     if (proposals.length) {
       // arm the cooldown ONLY when a beat actually fires (zero surviving lessons never spend the window) —
       // the same arming rule as reflection.
@@ -2486,12 +2498,12 @@ async function runFailureReview(o) {
       for (const p of normalProps) {
         try {
           const w = await writeMemoryRecord(agentId, p, { runId, trustDelta: 0, source: 'failure-review', origin: Failreview.ORIGIN });
-          if (w.ok) saved.push({ id: w.id, kind: w.kind, content: p.content, scope: p.scope || 'global', origin: Failreview.ORIGIN, saved: true });
+          if (w.ok) saved.push({ id: w.id, kind: w.kind, content: p.content, scope: p.scope || 'global', projectRoot: p.projectRoot || null, origin: Failreview.ORIGIN, saved: true });
         } catch (_) {}   // one failed write never sinks the batch
       }
       // ONE stash per runId (a failed run never reflected, so this slot is free) + the durable pending queue for
       // the high-stakes half; only those emit memory.proposed (existing event — no new event minted).
-      const pending = highStakesProps.map(p => ({ id: p.id, kind: p.kind, content: p.content, scope: p.scope || 'global', origin: Failreview.ORIGIN }));
+      const pending = highStakesProps.map(p => ({ id: p.id, kind: p.kind, content: p.content, scope: p.scope || 'global', projectRoot: p.projectRoot || null, origin: Failreview.ORIGIN }));
       const combined = saved.concat(pending);
       if (combined.length) stashProposals(agentId, runId, combined);
       if (pending.length) await queuePending(agentId, runId, pending);
@@ -15300,7 +15312,7 @@ async function runOnce(o) {
       // '' when nothing to preserve. Fail-open: a memory hiccup must never block the summary.
       try {
         const recs = notebookStore.get('notebook:' + agentId);
-        if (Array.isArray(recs) && recs.length) return compactionMemoryBlock(recs, transcript, { now: Date.now(), k: 5, limit: 800, streamId: o.streamId || null });
+        if (Array.isArray(recs) && recs.length) return compactionMemoryBlock(recs, transcript, { now: Date.now(), k: 5, limit: 800, streamId: o.streamId || null, projectRoot: o.projectRoot || '' });
       } catch (_) {}
       return '';
     }
@@ -16057,7 +16069,7 @@ async function runOnce(o) {
     const stored = notebookStore.get('notebook:' + agentId);
     const recs = o.recovery ? [] : (Array.isArray(stored) ? stored : []);
     const q = recentUserText(messages);   // last up-to-3 user turns (attachment turns flattened to THEIR text) — a bare "yes, do that" still ranks against the ask it answers
-    const ranked = rank(recs, q, { now: Date.now(), streamId });   // M-mem.2b: boost the active workstream's working memory
+    const ranked = rank(recs, q, { now: Date.now(), streamId, projectRoot: o.projectRoot || '' });   // M-mem.2b: boost the active workstream's working memory · project tier: only THIS project's scoped lessons
     const recall = renderRecall(ranked, { limit: 1500 });
     if (recall.text) {
       msgs = injectRecall(msgs, redact(recall.text));   // §5.6 belt-and-suspenders: a legacy plaintext note can't reach the provider verbatim
@@ -16519,7 +16531,7 @@ async function runOnce(o) {
   // so it re-qualifies next run.
   if (_auxSpend.has('reflection')) {
     reflectingNow.add(agentId);
-    runReflection({ agentId, runId, messages: result.messages.slice(), provider, model: _auxModel, reasoningEffort: _auxEffort, cost, unmetered: providerUnmetered, origin: memcore.originOf({ trigger: o.trigger, taskSource: o.taskSource }) }).catch(swallow('aux.reflection.envelope')).finally(() => { reflectingNow.delete(agentId); });
+    runReflection({ agentId, runId, messages: result.messages.slice(), provider, model: _auxModel, reasoningEffort: _auxEffort, cost, unmetered: providerUnmetered, origin: memcore.originOf({ trigger: o.trigger, taskSource: o.taskSource }), projectRoot: o.projectRoot || '' }).catch(swallow('aux.reflection.envelope')).finally(() => { reflectingNow.delete(agentId); });
   }
   if (_auxSpend.has('failure-review')) {
     failReviewingNow.add(agentId);
@@ -16528,7 +16540,7 @@ async function runOnce(o) {
       failureStage: execution.failureStage(), failureCode: execution.failureCode(),
       toolTrace: execution.toolTraceList(), recoveryAttempts: execution.recoveryAttempts(),
       uncertainMutations: execution.uncertainMutations(),
-      provider, model: _auxFailModel, reasoningEffort: _auxFailEffort, cost, unmetered: providerUnmetered
+      provider, model: _auxFailModel, reasoningEffort: _auxFailEffort, cost, unmetered: providerUnmetered, projectRoot: o.projectRoot || ''
     }).catch(swallow('aux.failreview.envelope')).finally(() => { failReviewingNow.delete(agentId); });
   }
   if (_auxSpend.has('study')) {
@@ -19634,7 +19646,7 @@ function servePending(req, res) {
     if (!isAgentId(agent)) return json(403, { error: 'forbidden' });
     const rows = listPending(agent).map(p => redact({
       runId: p.runId || '', id: p.id || '', kind: p.kind || 'note',
-      content: String(p.content || ''), scope: p.scope || 'global',
+      content: String(p.content || ''), scope: p.scope || 'global', projectRoot: p.projectRoot || null,
       origin: p.origin || 'commander', createdAt: p.createdAt || 0
     }));
     json(200, { agentId: agent, pending: rows });

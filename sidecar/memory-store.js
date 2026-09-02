@@ -120,7 +120,7 @@ async function appendPending(store, agentId, runId, items, now) {
       cur.push({
         key: key, runId: String(runId == null ? '' : runId), id: String(p.id == null ? '' : p.id),
         kind: p.kind || 'note', content: String(p.content == null ? '' : p.content),
-        scope: p.scope || 'global', origin: p.origin || 'commander', createdAt: stamp
+        scope: p.scope || 'global', projectRoot: p.projectRoot || null, origin: p.origin || 'commander', createdAt: stamp
       });
       added++;
     }

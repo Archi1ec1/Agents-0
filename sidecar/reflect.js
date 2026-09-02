@@ -238,6 +238,9 @@
       id: opts.id || 'note_1', kind: kind,
       title: KIND_LABEL[kind] || 'Note', body: content, content: content,
       scope: prop.scope || 'global', streamId: prop.streamId || null,
+      // PROJECT TIER (memory-compound lane): a belief formed inside a blessed project root is keyed to that root
+      // (scope 'project') so recall never injects it into an unrelated project; absent => global, as before.
+      projectRoot: prop.projectRoot ? String(prop.projectRoot) : null,
       sourceRunId: opts.runId || prop.sourceRunId || null,
       // WHICH SURFACE formed this belief (memcore.originOf). Unattended runs reflect now, so a record can come
       // from a routine, a night shift, or a messaging channel — the Commander must be able to tell those apart

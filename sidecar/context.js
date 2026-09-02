@@ -222,14 +222,27 @@
     }
     return { scores, queried: true };
   }
+  // PROJECT SCOPE (memory-compound lane): the comparable key for a run's project root. Paths are compared
+  // slash-agnostic, trailing-slash-agnostic and case-folded (a Windows root differs only by case between the
+  // picker and realpath — isBlessedRoot folds case the same way). '' = no project (an unscoped run / a global record).
+  function projectKey(root) {
+    return String(root == null ? '' : root).replace(/\\/g, '/').replace(/\/+$/, '').trim().toLowerCase();
+  }
+
   function rank(records, query, rankOpts) {
     rankOpts = rankOpts || {};
     const now = typeof rankOpts.now === 'number' ? rankOpts.now : 0;
     const streamId = rankOpts.streamId || null;   // M-mem.2b: the active workstream — same-stream working memory gets a recall boost
+    const project = projectKey(rankOpts.projectRoot);   // the run's project (blessed root) — '' when unscoped
     const k = rankOpts.k || 8;
     const halfLife = rankOpts.halfLifeMs || 6048e5;   // 7 days (usage recency)
     const trustHalfLife = rankOpts.trustHalfLifeMs || 2592e6;   // 30 days (endorsement fade — mirrors memcore.TRUST_HALFLIFE_MS)
-    const recs = Array.isArray(records) ? records.filter(Boolean) : [];
+    // PROJECT TIER: a record scoped 'project' belongs to ONE root — it is NEVER injected into a different project
+    // (or an unscoped run): a lesson about repo A's flaky registry must not steer work in repo B. Global records
+    // (no projectRoot, or scope global/stream) always compete, exactly as before. Same-project records get the
+    // same-stream boost below so a project's own lessons float up inside it.
+    const recs = (Array.isArray(records) ? records.filter(Boolean) : [])
+      .filter(r => !(r.scope === 'project' && projectKey(r.projectRoot) && projectKey(r.projectRoot) !== project));
     if (!recs.length) return [];
     const rel = bm25(recs, query);   // shared lexical core — scores align with recs
     let scored = recs.map((r, i) => {
@@ -245,7 +258,8 @@
       // M-mem.2b: same-stream working memory floats up; global records always compete; OTHER streams stay
       // searchable (no boost, not filtered) — "global always-on, workstream-scoped, cross-stream searchable".
       const sameStream = (streamId && r.scope === 'stream' && r.streamId === streamId) ? 0.5 : 0;
-      const score = relevance + 0.5 * recency + 0.3 * trust + sameStream + (r.pinned ? 1000 : 0);   // pinned = hard top
+      const sameProject = (project && projectKey(r.projectRoot) === project) ? 0.5 : 0;   // this project's own lessons float up
+      const score = relevance + 0.5 * recency + 0.3 * trust + sameStream + sameProject + (r.pinned ? 1000 : 0);   // pinned = hard top
       return { r: r, i: i, score: score, relevance: relevance };
     });
     // RELEVANCE FLOOR: under a query with at least one significant token, a record with ZERO term overlap is
@@ -267,7 +281,7 @@
   function compactionMemoryBlock(records, recentText, opts) {
     opts = opts || {};
     const now = typeof opts.now === 'number' ? opts.now : 0;
-    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, streamId: opts.streamId || null });
+    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, streamId: opts.streamId || null, projectRoot: opts.projectRoot || '' });
     if (!ranked.length) return '';
     const rr = renderRecall(ranked, {
       limit: opts.limit || 800,
@@ -428,5 +442,5 @@
     return api;
   }
 
-  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS };
+  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, projectKey, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS };
 });

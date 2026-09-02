@@ -25,6 +25,9 @@
 
 const A = require('./_assert.js');
 const http = require('http');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 
 const HOST = '127.0.0.1';
@@ -116,10 +119,10 @@ function startMock() {
   });
 }
 
-async function driveRun(fixture, agentId, text) {
+async function driveRun(fixture, agentId, text, extra) {
   const r = await fixture.request('/api/run', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: 'sk-or-v1-failreview-fake', model: RUN_MODEL, agentId, isTask: true, messages: [{ role: 'user', content: text }] })
+    body: JSON.stringify(Object.assign({ key: 'sk-or-v1-failreview-fake', model: RUN_MODEL, agentId, isTask: true, messages: [{ role: 'user', content: text }] }, extra || {}))
   });
   A.eq(r.status, 200, 'the real /api/run stream opened for ' + agentId);
   const raw = await r.text();
@@ -177,6 +180,18 @@ async function settle(state, stableMs, maxMs) {
     prefix: 'sk-failreview-',
     env: { SKYNET_OPENROUTER_BASE: mock.base, STARNET_AUX_MODEL: AUX_MODEL, SKYNET_AUX_BUDGET: '0', SKYNET_QUEST_REFRESH: '0', SKYNET_FULL_ACCESS: '1' }
   });
+  // PROJECT TIER (arm 7): two blessed project roots, granted the way the projects rail grants them (the same
+  // files project-root.e2e writes) so /api/run's projectRoot passes isBlessedRoot and rides into the run.
+  const projA = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-frproj-a-'));
+  const projB = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-frproj-b-'));
+  {
+    const gA = 'path:' + path.resolve(projA), gB = 'path:' + path.resolve(projB);
+    fs.writeFileSync(path.join(fixture.workspace, 'permissions.allow.json'), JSON.stringify({ version: 1, allow: [gA, gB], meta: { [gA]: { grantedAt: 1 }, [gB]: { grantedAt: 1 } } }), 'utf8');
+    fs.writeFileSync(path.join(fixture.workspace, 'projects.json'), JSON.stringify({ version: 1, projects: [
+      { root: path.resolve(projA), displayPath: projA, grantedAt: 1, lastTouchedAt: 1, isGitRepo: false },
+      { root: path.resolve(projB), displayPath: projB, grantedAt: 1, lastTouchedAt: 1, isGitRepo: false }
+    ] }), 'utf8');
+  }
   await fixture.start();
   try {
     const frCalls = () => mock.state.calls.filter(c => c.failReview);
@@ -272,7 +287,38 @@ async function settle(state, stableMs, maxMs) {
       await sleep(2500);
       A.eq(frCalls().length, before, 'a cancelled run fired NO failure-review pass');
     }
-  } finally { await fixture.dispose(); try { mock.server.close(); } catch (_) {} }
+
+    // ---- ARM 7 — PROJECT TIER: a lesson learned inside project A never reaches project B (or an unscoped run) --
+    {
+      const mainsSince = (n) => mock.state.calls.filter(c => c.main).slice(n);
+      const before = frCalls().length;
+      const evA = await driveRun(fixture, 'fr-proj', FAIL_MARK + ' inspect the station then push the registry update', { projectRoot: projA });
+      A.eq(endReason(evA), 'error', 'the project-A run ended error');
+      await settle(mock.state);
+      A.eq(frCalls().length - before, 1, 'the project-A failure fired one failure-review pass');
+      const rec = await fixture.json('GET', '/api/memory/records?agent=fr-proj');
+      const lesson = (rec.body.records || []).find(r => r && r.origin === 'failure-review');
+      A.ok(lesson, 'the lesson record landed');
+      A.eq(lesson && lesson.scope, 'project', 'a lesson learned inside a blessed root is PROJECT-scoped');
+      A.eq(lesson && path.resolve(String(lesson.projectRoot || '')).toLowerCase(), path.resolve(projA).toLowerCase(), 'the record is keyed to the project-A root');
+      // project B: same agent, same lexical overlap — the lesson must NOT be injected
+      let n = mock.state.calls.filter(c => c.main).length;
+      const evB = await driveRun(fixture, 'fr-proj', FAIL_MARK + ' inspect the station then push the registry update again', { projectRoot: projB });
+      A.eq(endReason(evB), 'error', 'the project-B probe run ended error (cooldown: no new lesson)');
+      A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') < 0), 'the project-B prompt carries NO project-A lesson');
+      // unscoped run: the project tier stays inside its project
+      n = mock.state.calls.filter(c => c.main).length;
+      const evU = await driveRun(fixture, 'fr-proj', FAIL_MARK + ' inspect the station then push the registry update once more');
+      A.eq(endReason(evU), 'error', 'the unscoped probe run ended error');
+      A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') < 0), 'an UNSCOPED run prompt carries NO project-A lesson');
+      // back inside project A: the lesson surfaces
+      n = mock.state.calls.filter(c => c.main).length;
+      const evA2 = await driveRun(fixture, 'fr-proj', FAIL_MARK + ' inspect the station then push the registry update yet again', { projectRoot: projA });
+      A.eq(endReason(evA2), 'error', 'the second project-A run ended error');
+      A.ok(mainsSince(n).length >= 1 && mainsSince(n).every(c => c.recall.indexOf('Registry pushes rate-limit') >= 0), 'back in project A the lesson IS injected into the prompt');
+      A.eq(frCalls().length - before, 1, 'still exactly one failure-review pass for fr-proj (cooldown held across the probes)');
+    }
+  } finally { await fixture.dispose(); try { mock.server.close(); } catch (_) {} try { fs.rmSync(projA, { recursive: true, force: true }); fs.rmSync(projB, { recursive: true, force: true }); } catch (_) {} }
 
   A.report('failreview.e2e.test');
 })().catch(e => { console.log('FAIL: failreview.e2e.test threw - ' + (e && e.stack || e)); process.exit(1); });
