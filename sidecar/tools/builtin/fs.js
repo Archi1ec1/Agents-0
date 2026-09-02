@@ -415,21 +415,44 @@
       }
     };
 
+    /* READ-BEFORE-EDIT (2026-09-02, coding-tools lane). fs.edit used to accept a "find" the agent had never seen:
+       a guessed snippet against a file it never opened this session, or a file it read before someone else's
+       change. The stamp ledger already records every file this agent observed (fs.read / its own writes), so
+       an edit against a file with NO stamp is refused with the same machine-readable precondition the
+       stale-write guard uses — the loop tells the model exactly which tool satisfies it. Cheap: one Map lookup.
+       A file this agent WROTE (fs.write / fs.append / fs.patch / a prior fs.edit) is stamped too, so
+       create-then-edit never trips. */
+    function assertObserved(aid, abs, rel) {
+      if (readStamps.has(stampKey(aid, abs))) return;
+      const error = new Error('edit refused: you have not read ' + rel + ' in this session — fs.read it first so your "find" matches the current content exactly.');
+      error.precondition = { code: 'read_before_edit', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
+      throw error;
+    }
+
     const editTool = {
       name: 'fs.edit', capability: 'cabinet', scope: 'write', requiresConsent: true, timeoutMs: 10000,
-      description: 'Edit a workspace file by exact text replacement: every occurrence of "find" becomes "replace". Use for small, exact changes; prefer fs.patch for multi-line source edits. Errors if "find" is absent — read the file first so your "find" matches exactly.',
-      schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' } } },
+      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (this session). Prefer fs.patch for multi-line source edits.',
+      schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' }, replace_all: { type: 'boolean' }, expected_count: { type: 'number' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs, base } = await resolveInside(aid, args.path, { scope: 'write', ctx });
         let initialBytes;
         try { initialBytes = await fsp.readFile(abs); }
         catch (e) { if (e && e.code === 'ENOENT') throw new Error('no such file: ' + args.path); throw e; }
+        assertObserved(aid, abs, args.path);
         const txt = initialBytes.toString('utf8');
         const find = String(args.find);
         if (!find) throw new Error('"find" must be a non-empty string');
         if (txt.indexOf(find) < 0) throw new Error('"find" text not found in ' + args.path + ' — read the file and match it exactly');
         const count = txt.split(find).length - 1;
+        /* UNIQUENESS. Replacing EVERY occurrence silently was the audit's top finding: a "find" like `return x;`
+           rewrote five functions when the model meant one, and the result line said "5 replacements" only after
+           the damage. Exactly-one-match keeps the historic path; more than one must be asked for explicitly. */
+        const replaceAll = args.replace_all === true;
+        const expectedCount = args.expected_count == null ? null : Math.floor(Number(args.expected_count));
+        if (expectedCount != null && (!(expectedCount >= 1) || !isFinite(expectedCount))) throw new Error('"expected_count" must be a positive integer');
+        if (expectedCount != null && count !== expectedCount) throw new Error('"find" matches ' + count + ' place' + (count === 1 ? '' : 's') + ' in ' + args.path + ' but expected_count is ' + expectedCount + ' — nothing was changed. Re-read the file and adjust "find" or expected_count.');
+        if (count > 1 && !replaceAll && expectedCount == null) throw new Error('"find" matches ' + count + ' places in ' + args.path + ' — nothing was changed. Include more surrounding text so "find" is unique to the ONE place you mean, or pass { "replace_all": true } to change all ' + count + ', or { "expected_count": ' + count + ' } to confirm that count.');
         const next = txt.split(find).join(String(args.replace));
         const bytes = Buffer.byteLength(next, 'utf8');
         if (bytes > WRITE_BYTES) throw new Error('file too large after edit (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');

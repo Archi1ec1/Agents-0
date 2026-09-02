@@ -131,6 +131,44 @@ async function rejects(promise, msg) { try { await promise; A.ok(false, msg + ' 
     A.eq((await readTool.run({ path: 'e.txt' }, ctx)).content, 'baz bar', 'edit applied to disk');
     await rejects(editTool.run({ path: 'e.txt', find: 'nope', replace: 'x' }, ctx), 'edit errors when "find" is absent');
   }
+  // ---- fs.edit UNIQUENESS: a multi-match "find" is refused unless replace_all / expected_count says so ----
+  {
+    const ctx = { agentId: 'ag3u' };
+    await writeTool.run({ path: 'm.txt', content: 'x=1; x=2; x=3;' }, ctx);
+    let err = null;
+    try { await editTool.run({ path: 'm.txt', find: 'x=', replace: 'y=' }, ctx); } catch (e) { err = e; }
+    A.ok(err && /matches 3 places/.test(err.message) && /replace_all/.test(err.message) && /expected_count/.test(err.message), 'multi-match find is refused with the count + both escape hatches named');
+    A.eq((await readTool.run({ path: 'm.txt' }, ctx)).content, 'x=1; x=2; x=3;', 'a refused multi-match edit changed NOTHING');
+    err = null;
+    try { await editTool.run({ path: 'm.txt', find: 'x=', replace: 'y=', expected_count: 2 }, ctx); } catch (e) { err = e; }
+    A.ok(err && /matches 3 places/.test(err.message) && /expected_count is 2/.test(err.message), 'a wrong expected_count is refused with both numbers');
+    await rejects(editTool.run({ path: 'm.txt', find: 'x=', replace: 'y=', expected_count: 0 }, ctx), 'expected_count must be a positive integer');
+    const e3 = await editTool.run({ path: 'm.txt', find: 'x=', replace: 'y=', expected_count: 3 }, ctx);
+    A.ok(/3 replacements/.test(e3.content), 'an exact expected_count applies all matches');
+    A.eq((await readTool.run({ path: 'm.txt' }, ctx)).content, 'y=1; y=2; y=3;', 'expected_count edit landed');
+    const e4 = await editTool.run({ path: 'm.txt', find: 'y=', replace: 'z=', replace_all: true }, ctx);
+    A.ok(/3 replacements/.test(e4.content), 'replace_all applies every match');
+    A.eq((await readTool.run({ path: 'm.txt' }, ctx)).content, 'z=1; z=2; z=3;', 'replace_all edit landed');
+    const e5 = await editTool.run({ path: 'm.txt', find: 'z=1', replace: 'w=1' }, ctx);
+    A.ok(/1 replacement\b/.test(e5.content), 'exactly-one-match keeps the historic path with no flag');
+  }
+  // ---- fs.edit READ-BEFORE-EDIT: a file this agent never observed is refused with a machine-readable precondition ----
+  {
+    const ctx = { agentId: 'ag3r' };
+    await fsp.mkdir(path.join(ROOT, 'ag3r'), { recursive: true });
+    await fsp.writeFile(path.join(ROOT, 'ag3r', 'unseen.txt'), 'alpha beta');   // created OUTSIDE the tools
+    let err = null;
+    try { await editTool.run({ path: 'unseen.txt', find: 'alpha', replace: 'omega' }, ctx); } catch (e) { err = e; }
+    A.ok(err && /have not read unseen\.txt/.test(err.message), 'editing a never-read file is refused');
+    A.eq(err && err.precondition, { code: 'read_before_edit', requiredTool: 'fs.read', requiredState: 'current_file_observed' }, 'the refusal names fs.read as the precondition');
+    A.eq(await fsp.readFile(path.join(ROOT, 'ag3r', 'unseen.txt'), 'utf8'), 'alpha beta', 'nothing was written');
+    await readTool.run({ path: 'unseen.txt' }, ctx);
+    const ok = await editTool.run({ path: 'unseen.txt', find: 'alpha', replace: 'omega' }, ctx);
+    A.ok(/Edited unseen\.txt/.test(ok.content), 'after fs.read the same edit lands');
+    // a file this agent itself created via the tools is already observed — create-then-edit never trips
+    await writeTool.run({ path: 'mine.txt', content: 'one two' }, ctx);
+    A.ok(/Edited mine\.txt/.test((await editTool.run({ path: 'mine.txt', find: 'one', replace: '1' }, ctx)).content), 'a file written via fs.write is editable without a separate read');
+  }
   // ---- fs.list recursive: nested tree with dir markers ----
   {
     const ctx = { agentId: 'ag4' };
