@@ -86,9 +86,10 @@ debugging or claiming anything done. Companions: [BRAIN.md](BRAIN.md) · [DECISI
   keep-going mechanism (loops, routines, night shift, goal loop, delegated workers) needs a
   breaker that reads what the LEDGER can prove (files, commits, findings, repeated output), plus a
   spend rail that does not depend on the user having opted in. Built: `loopjob.stallSignal` +
-  the shipped $25/day rail. Still open: routines have no per-routine idle breaker (the day rail
-  covers them); the in-run loop guard counts only identical FAILING tool calls, never identical
-  successful read-only ones.
+  the shipped $25/day rail. Inside ONE run this was already covered (`tool-progress-guard.js`
+  blocks a successful call that returns evidence already seen); the hole was CROSS-run — each
+  loop pass is a fresh run with a fresh guard. Still open: routines have no per-routine idle
+  breaker (the day rail covers them).
 - **`npm start` (:8787) is the app.** `npm run serve` is a dead UI-only path — using it
   "works" and then nothing real functions.
 - **Bare `require()` at module top for optional deps** crashes the single-process sidecar at
