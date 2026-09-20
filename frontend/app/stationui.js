@@ -2552,7 +2552,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       ModelPicker.populate(pickWrap, { current: { model: (a && a.model) || '', provider: (a && a.provider) || '', effort: (a && a.reasoningEffort) || '' } }).catch(() => {});
       // re-fit the effort <select> to the newly-chosen model on every model change (clamps/clears an effort the
       // new model can't do) — without this the effort could stay 'high' on a non-reasoning model and be persisted.
-      ModelPicker.onChange(pickWrap, () => {});
+      ModelPicker.onChange(pickWrap, pick => {
+        // Keep the advanced fallback aligned with a deliberate picker change. In particular,
+        // an empty selection must clear the old pin, not resurrect its model/provider on SAVE.
+        const modelInput = body.querySelector('#ag-model-in');
+        const providerInput = body.querySelector('#ag-prov-in');
+        if (modelInput) modelInput.value = pick.model || '';
+        if (providerInput) providerInput.value = pick.provider || '';
+      });
     }
     const applyModel = (model, provider, effort) => {
       if (!(access.config && access.config.setModel)) { setMMsg('per-agent model unavailable'); return; }

@@ -4,11 +4,11 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**10** open (open+claimed) of 204 total — 0 P0 · 0 P1 · 10 P2
+**10** open (open+claimed) of 205 total — 0 P0 · 0 P1 · 10 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
-User/owner reports: **96** · source fixed: **85** · installer verified: **6** · customer confirmed: **1** · still reported failing: **2** · recovery unconfirmed: **93**.
+User/owner reports: **97** · source fixed: **86** · installer verified: **6** · customer confirmed: **1** · still reported failing: **2** · recovery unconfirmed: **94**.
 
 | Report | Family | Source | Installer | Customer |
 | --- | --- | --- | --- | --- |
@@ -30,6 +30,7 @@ User/owner reports: **96** · source fixed: **85** · installer verified: **6** 
 | [Valid BYOK wake is blocked by an empty managed wallet](bugs/2b6d70fb-byok-blocked-by-empty-managed-wallet.md) | execution-configuration | fixed | unverified | unconfirmed |
 | [Casual replies continue after the local output ceiling](bugs/2e6344fc-casual-replies-continue-after-the-local-output-c.md) | response-latency | fixed | unverified | unconfirmed |
 | [Live Doctor overrides selected model reasoning with none](bugs/2a9cb952-doctor-forces-unsupported-reasoning.md) | execution-configuration | fixed | unverified | unconfirmed |
+| [Follow station default retains managed model pin and blocks BYOK delegation](bugs/0e3d3914-follow-station-default-retains-managed-model-pin.md) | execution-configuration | fixed | unverified | unconfirmed |
 | [Funded working station still displays a zero-credit warning](bugs/72af29f4-funded-station-false-zero-warning.md) | recovery-truth | fixed | unverified | unconfirmed |
 | [Gemini rejects the turn after a tool call loses its signature](bugs/0d63e5d1-gemini-loses-tool-signature.md) | tool-history | fixed | unverified | unconfirmed |
 | [Linked StarNet credits cannot authorize image generation](bugs/a9374d2c-linked-starnet-credits-cannot-authorize-image-ge.md) | managed-media | fixed | unverified | unconfirmed |
@@ -152,6 +153,7 @@ User/owner reports: **96** · source fixed: **85** · installer verified: **6** 
 | P1 | fixed | providers | [Compatible API hides partial run failures and limits](bugs/ecd235e6-compatible-api-hides-partial-run-failures-and-li.md) | hermes-stress-0910 | f952835ab7e078d0f9dae490cbb52e7b9c8cc29f |
 | P1 | fixed | providers | [Compatible API retries dispatch duplicate agent runs](bugs/8d0e29aa-compatible-api-retries-dispatch-duplicate-agent.md) | hermes-stress-0910 | 4d5ee74c170330c977c766f6be200ffb4313f95c |
 | P1 | fixed | providers | [Live Doctor overrides selected model reasoning with none](bugs/2a9cb952-doctor-forces-unsupported-reasoning.md) | report-0110-0908 | 72a8a3043c263cd53ed353daed2042e256c8e236 |
+| P1 | fixed | providers | [Follow station default retains managed model pin and blocks BYOK delegation](bugs/0e3d3914-follow-station-default-retains-managed-model-pin.md) | openrouter-delegation-0920 | 13a83534b |
 | P1 | fixed | providers | [Funded working station still displays a zero-credit warning](bugs/72af29f4-funded-station-false-zero-warning.md) | reliability-followup | c364e991d8d9c0c4d446c9978b8d31c33fcbe09d |
 | P1 | fixed | providers | [Gemini rejects the turn after a tool call loses its signature](bugs/0d63e5d1-gemini-loses-tool-signature.md) | reliability-followup | fe30cc1b4 |
 | P1 | fixed | providers | [Image generation can write an output after run cancellation](bugs/a0dffdd7-image-generation-writes-after-run-cancellation.md) | audit-0112-0910 | d503f00c5 |
