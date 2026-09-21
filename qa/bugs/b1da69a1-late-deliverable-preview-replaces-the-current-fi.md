@@ -27,4 +27,4 @@ Live before: .dogfood/system-polish/preview-before.json shows fast.md/Newest fil
 
 ## Verdict
 
-Fix under verification: cancel obsolete fetches, guard every async completion by selection identity, and keep image URL/timer cleanup scoped to its owning preview. Covers another selection and panel cleanup; installed renderer acceptance remains separate.
+Verified in the running seeded app and covered by the complete 844-step fast gate (HTTP 130/130 also green): cancel obsolete fetches, guard every async completion by selection identity, and keep image URL/timer cleanup scoped to its owning preview. Covers another selection and panel cleanup; installed renderer acceptance remains separate.

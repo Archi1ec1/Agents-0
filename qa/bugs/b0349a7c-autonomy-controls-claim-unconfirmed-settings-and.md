@@ -27,4 +27,4 @@ Before: .dogfood/system-polish/autonomy-before.json records local initiative lea
 
 ## Verdict
 
-Fix under verification: server-owned posture, durable publication before acknowledgement, serialized confirmed browser writes, and acknowledgement-aware settings/onboarding/backup/permissions/trust callers. Installed builds and customer recovery are not claimed.
+Verified in the running seeded app and covered by the complete 844-step fast gate (HTTP 130/130 also green): server-owned posture, durable publication before acknowledgement, serialized confirmed browser writes, and acknowledgement-aware settings/onboarding/backup/permissions/trust callers. Installed builds and customer recovery are not claimed.

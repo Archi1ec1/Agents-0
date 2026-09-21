@@ -27,4 +27,4 @@ Live before: .dogfood/system-polish/workshop-before.json records ok:true for an 
 
 ## Verdict
 
-Fix under verification: require `j.ok === true`. Keep and Discard already retain their controls and show a failure when the store refuses success. Later remains a local deferral, not a file-save claim.
+Verified in the running seeded app and covered by the complete 844-step fast gate (HTTP 130/130 also green): require `j.ok === true`. Keep and Discard already retain their controls and show a failure when the store refuses success. Later remains a local deferral, not a file-save claim.

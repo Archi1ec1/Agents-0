@@ -27,4 +27,4 @@ Live before: .dogfood/system-polish/routine-before.json records the displayed 20
 
 ## Verdict
 
-Fix under verification: selection/revision guards, cancellation, bounded requests and explicit failure recovery in the shared create/reschedule preview path. The standalone workflow runner also had obsolete expectations for the removed checkmark and former recipe launch button; its behavior assertions now follow the current controls.
+Verified in the running seeded app and covered by the complete 844-step fast gate (HTTP 130/130 also green): selection/revision guards, cancellation, bounded requests and explicit failure recovery in the shared create/reschedule preview path. The standalone workflow runner also had obsolete expectations for the removed checkmark and former recipe launch button; its behavior assertions now follow the current controls.
