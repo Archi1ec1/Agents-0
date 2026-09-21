@@ -4794,39 +4794,11 @@ const _sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); if (t && 
 const CRON_WRITE_RETRIES = 20;
 const CRON_WRITE_RETRY_MS = 3;
 
-// mergeCronById — reconcile a locally-computed jobs array against the freshest on-disk snapshot when we could
-// NOT take the lock (a wedged/foreign peer). We keep the DISK version of every job (it may carry an advance a
-// concurrent tick just persisted — never clobber that with our pre-advance state) and OVERLAY only the jobs our
-// mutation actually touched (added/edited/removed), keyed by id. This turns the old "blind unlocked persist"
-// (last-write-wins, drops a concurrent advance) into an id-level merge that preserves the newest per-job state.
-function mergeCronById(computed, base) {
-  const byId = new Map();
-  for (const j of (base || [])) if (j && j.id) byId.set(j.id, j);            // disk = source of truth for advances
-  const computedIds = new Set((computed || []).filter(j => j && j.id).map(j => j.id));
-  for (const j of (computed || [])) {
-    if (!j || !j.id) continue;
-    const disk = byId.get(j.id);
-    // a NEW job (not on disk) or one WE edited: take ours. An untouched job identical on disk: disk wins (keeps its
-    // advance). We can't perfectly diff "edited by us" vs "advanced by them", so favor the disk copy's scheduling
-    // fields when it exists and only our copy is structurally different — but to stay simple + safe for the common
-    // add/edit/remove CRUD, we take our computed job for ids we produced and keep disk-only ids as-is below.
-    byId.set(j.id, j);
-  }
-  // a REMOVE drops the id from `computed`; honor it by deleting disk ids the mutation intentionally removed. We
-  // detect removals as: present on disk (base) but absent from computed AND absent from the pre-mutation set is
-  // impossible to know here, so we approximate a remove as "id fell out of computed relative to what mutate saw".
-  // Since mutate() ran over the freshest disk read just before this, `computed` already reflects the intended
-  // removals against that read; ids on disk now but not in computed were removed by us -> drop them.
-  for (const id of Array.from(byId.keys())) { if (!computedIds.has(id)) byId.delete(id); }
-  return Array.from(byId.values());
-}
-
 // withCronWrite — run a cron mutation as a re-read-modify-write UNDER the lock: re-load the freshest store
 // from disk (so a concurrent process's advance is visible), apply `mutate(jobs)` to it, mirror + persist
 // durably. This is the fix for the last-write-wins clobber: a CRUD save no longer operates on a STALE
 // in-memory snapshot taken before an advance — it re-reads first, so the advance survives. If the lock is held
-// by a LIVE other process we ASYNC-retry (yielding, not pinning the CPU); if still contended past the budget we
-// re-read once more and MERGE our change by job id (never a blind clobber that drops a concurrent advance).
+// by a LIVE other process we ASYNC-retry (yielding, not pinning the CPU); exhaustion fails visibly.
 // ASYNC now: callers await it (or fire it in a promise chain) — the fast path resolves on the first tick.
 async function withCronWrite(mutate) {
   const run = () => {
@@ -4843,14 +4815,7 @@ async function withCronWrite(mutate) {
     if (r.ran) return;
     await _sleep(CRON_WRITE_RETRY_MS);                 // yield to the event loop (not a busy-wait) between attempts
   }
-  // contended beyond the budget (a wedged peer the stale break hasn't reclaimed yet): re-read the freshest disk
-  // snapshot, apply our mutation to IT, then MERGE by id against the same snapshot so we can't drop a concurrent
-  // advance. A human-paced CRUD edit must never be silently lost, but neither must a tick's advance be clobbered.
-  const base = loadCronJobs();
-  const computed = mutate(base.slice());
-  cronJobs = mergeCronById(computed, loadCronJobs());  // re-read once more to catch any advance during mutate()
-  saveCronJobs();
-  console.warn('[cron] write contended past ' + (CRON_WRITE_RETRIES * CRON_WRITE_RETRY_MS) + 'ms — merged by job id (a live cross-process lock holder)');
+  throw new Error('routine store is busy — retry after the current writer finishes');
 }
 // validated + redacted cron telemetry -> the sidecar console AND the live station HUD (the SAME SSE bridge the
 // channel/work-item events ride). No secret is ever on a cron.* payload; redact() runs as a second backstop.
@@ -5047,8 +5012,10 @@ async function deliverCronResult(job, result) {
   if (!job || !result || result.outcome === 'silent') return { ok: true, skipped: true };
   if (job.noAgent) {
     try {
-      transcriptStore.append({ streamId: 'cron-' + result.runId, agentId: job.agentId, role: 'user', content: String(job.prompt || '') });
-      transcriptStore.append({ streamId: 'cron-' + result.runId, agentId: job.agentId, role: 'assistant', content: result.outcome === 'failed' ? String(result.error || 'script failed') : String(result.text || '') });
+      const streamId = 'cron-' + result.runId;
+      const recorded = transcriptStore.reconstruct(streamId, { limit: 2 });
+      if (!recorded.some(t => t.role === 'user')) transcriptStore.append({ streamId, agentId: job.agentId, role: 'user', content: String(job.prompt || '') });
+      if (!recorded.some(t => t.role === 'assistant')) transcriptStore.append({ streamId, agentId: job.agentId, role: 'assistant', content: result.outcome === 'failed' ? String(result.error || 'script failed') : String(result.text || '') });
     } catch (_) {}
   }
   const text = result.outcome === 'failed'
@@ -5058,18 +5025,18 @@ async function deliverCronResult(job, result) {
   if (mode === 'origin' && job.origin && job.origin.target) targets.push(String(job.origin.target));
   else if (mode === 'origin' && job.origin && job.origin.channel && job.origin.chatId) targets.push('@origin');
   else if (mode === 'all') { // legacy/hand-edited dynamic fanout is not authority; new writes snapshot targets
-    await withCronWrite(jobs => cronStore.markDelivery(jobs, job.id, { ok: false, error: 'all-target delivery must be re-saved to snapshot approved chats', runId: result.runId }, { now: Date.now() }));
     return { ok: false, error: 'all-target delivery needs an approved target snapshot' };
   }
   else if (mode.indexOf('targets:') === 0) targets.push(...mode.slice(8).split(',').map(s => s.trim()).filter(Boolean));
   else if (cronReturnsToSession(job)) {
     const out = await stationBridge.request('station.deliver', { sessionId: job.origin.sessionId || job.origin.streamId, sessionTitle: job.origin.sessionTitle || '', text: redact(text), prompt: job.prompt, runId: result.runId, agentId: job.agentId, ts: Date.now() });
-    await withCronWrite(jobs => cronStore.markDelivery(jobs, job.id, { ok: !!out.ok, error: out.error, runId: result.runId }, { now: Date.now() }));
     return out;
   }
   if (!targets.length) return { ok: true, skipped: true };
   let failed = 0, firstError = '';
+  const deliveredTargets = new Set(Array.isArray(result.deliveredTargets) ? result.deliveredTargets : []);
   for (const target of Array.from(new Set(targets)).slice(0, 16)) {
+    if (deliveredTargets.has(target)) continue;
     const rec = target === '@origin' ? job.origin : channelStore.getChatRecord(target);
     if (!rec) { failed++; firstError = firstError || 'unknown chat target ' + target; continue; }
     const channel = String(rec.channel || 'telegram'), live = liveChannelFor(channel);
@@ -5077,14 +5044,14 @@ async function deliverCronResult(job, result) {
     try {
       const sent = await live.adapter.send(String(rec.chatId || target), redact(text), rec.threadId ? { threadId: rec.threadId } : undefined);
       if (sent && sent.ok === false) throw new Error(sent.error || 'send failed');
+      deliveredTargets.add(target);
       if (job.attachToSession) {
         channelStore.appendTurn(job.agentId, 'user', '[Scheduled routine: ' + job.name + '] ' + String(job.prompt || ''));
         channelStore.appendTurn(job.agentId, 'assistant', String(result.text || ''));
       }
     } catch (e) { failed++; firstError = firstError || ((e && e.message) || String(e)); }
   }
-  await withCronWrite(jobs => cronStore.markDelivery(jobs, job.id, { ok: failed === 0, error: firstError, runId: result.runId }, { now: Date.now() }));
-  return { ok: failed === 0, error: firstError || null };
+  return { ok: failed === 0, error: firstError || null, deliveredTargets: Array.from(deliveredTargets) };
 }
 
 const cronDriver = makeCronDriver({
@@ -5092,21 +5059,18 @@ const cronDriver = makeCronDriver({
   // setJobs persists the driver's computed store UNDER the lock (G4.3). Inside a lock-wrapped applyTick this
   // is a re-entrant nested acquire (no double-take, no premature release), so the ADVANCE-before-run write is
   // always serialized with the fire. A direct call (finishFire settling after the tick released the lock)
-  // takes the lock fresh; if a live peer holds it we briefly spin, then fall back to a local persist so a
-  // settled run's outcome record is never silently lost. The driver hands a fully-computed array (mirror +
+  // takes the lock fresh; contention returns false so the driver retains the settlement for retry.
+  // The driver hands a fully-computed array (mirror +
   // persist only) — the re-read-modify-write that prevents the CRUD clobber lives in withCronWrite.
   setJobs: (jobs) => {
     // MUST stay synchronous: the driver calls this inside applyTick and relies on the advance being persisted
     // before the fire launches (crash-restart double-fire guard). The in-tick call is a re-entrant nested acquire
     // that succeeds on the first attempt (no spin). A DIRECT call (finishFire settling after the tick released the
-    // lock) may find a live peer; rather than a CPU-pinning busy-wait we take ONE lock attempt and, on miss, merge
-    // by job id against the freshest disk snapshot so a settled run's outcome is neither lost nor clobbers an advance.
+    // lock) may find a live peer; take ONE attempt and retain the receipt on miss.
     try {
       const r = cronLock.withLock(() => { cronJobs = jobs; saveCronJobs(); });
       if (r.ran) return true;
-      cronJobs = mergeCronById(jobs, loadCronJobs());   // contended: id-level merge, not a blind last-write-wins persist
-      saveCronJobs();
-      return true;
+      return false; // retain the driver's settlement receipt; never write outside the lock
     } catch (e) {
       console.warn('[cron] persist failed:', (e && e.message) || e);
       // TRANSACTIONAL DISPATCH (2026-07-15 audit): the durable write FAILED, so return an honest false
@@ -5270,6 +5234,10 @@ function cronTickHealthy() {
     // the tray, forever. Leave lastSuccessAt untouched so health AGES honestly; it is not an error either
     // (the lock holder may be ticking fine — its own health says so).
     if (r && r.ran === false) return r;
+    if (r && r.result && r.result.unpersisted) {
+      cronHealth.lastTickError = 'routine dispatch deferred — schedule could not be saved';
+      return r;
+    }
     cronHealth.lastSuccessAt = Date.now();
     cronHealth.lastTickError = null;
     return r;
@@ -11817,7 +11785,7 @@ function cronStateSnapshot(now) {
     lastTickAt: cronHealth.lastTickAt,
     lastSuccessAt: cronHealth.lastSuccessAt,
     lastTickError: cronHealth.lastTickError,
-    healthy: !!(cronArmed && cronTimer && cronHealth.lastSuccessAt != null && (now - cronHealth.lastSuccessAt) < 3 * CRON_TICK_MS)
+    healthy: !!(cronArmed && cronTimer && !cronHealth.lastTickError && cronHealth.lastSuccessAt != null && (now - cronHealth.lastSuccessAt) < 3 * CRON_TICK_MS)
   };
   // `halted` (additive, Lane 4D): the durable E-STOP stand-down — enabled records the user's arm INTENT while
   // halted says the timer is frozen anyway, so the panel can say "paused by E-STOP" instead of a false "armed".
@@ -11852,13 +11820,12 @@ function lifecycleArmedSnapshot(now) {
   // scheduler (or an armed one with zero jobs) is honestly not armed: nothing would tick after window close.
   let routines = { armed: false, count: 0, healthy: false, halted: false };
   try {
-    // Paused/completed routines remain saved, but the driver cannot fire them.
-    // Count only enabled jobs so they do not falsely keep an idle desktop in the tray.
-    const jobs = Array.isArray(cronJobs) ? cronJobs.filter(job => job && job.enabled !== false) : [];
+    // Completed/paused routines need a live ticker only while a result still awaits delivery.
+    const jobs = Array.isArray(cronJobs) ? cronJobs.filter(job => job && (job.enabled !== false || cronStore.pendingDeliveries(job).length > 0)) : [];
     // A durable E-STOP halt (cron.halt.json) freezes the timer — a halted scheduler is NOT doing background
     // work, so it must not hold the process alive after window close (same truthfulness rule as night shift).
     const armed = !!cronArmed && !cronHalted && jobs.length > 0;
-    const healthy = !!(cronArmed && cronTimer && cronHealth.lastSuccessAt != null && (now - cronHealth.lastSuccessAt) < 3 * CRON_TICK_MS);
+    const healthy = !!(cronArmed && cronTimer && !cronHealth.lastTickError && cronHealth.lastSuccessAt != null && (now - cronHealth.lastSuccessAt) < 3 * CRON_TICK_MS);
     routines = { armed: armed, count: armed ? jobs.length : 0, healthy: healthy, halted: !!cronHalted };
   } catch (_) {}
   // CHANNELS — the ids of every messaging channel reporting connected:true (real socket/poll state).
@@ -12333,15 +12300,19 @@ async function handleCronRun(req, res) {
   let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { res.writeHead(400); return res.end('bad json'); }
   const job = cronStore.getJob(cronJobs, String(body.id || ''));
   if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'no such routine' })); }
+  if (cronStore.pendingDeliveries(job).length >= cronStore.MAX_PENDING_DELIVERIES) {
+    res.writeHead(409, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ error: 'delivery backlog is full — reconnect the destination before running again' }));
+  }
   // ONE RUN PER ROUTINE — MANUAL INCLUDED (bug-sweep 2026-08-28): the scheduled path holds a one-in-flight
   // lease, but Run Now never consulted it, so a click while the tick's run was live double-executed the
   // routine (double provider spend, double connector writes, and whichever settlement landed last clobbered
   // the other's markRun). Refuse honestly instead; the panel's row shows inFlight from GET /api/cron.
   {
     const live = cronDriver.leases.get(job.id);
-    if (live && !live.settlement) {
+    if (live) {
       res.writeHead(409, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'this routine is already running — wait for it to finish' }));
+      return res.end(JSON.stringify({ error: live.settlement ? 'this routine is waiting for its result to be saved — retry when storage recovers' : 'this routine is already running — wait for it to finish' }));
     }
   }
   // INJECTION TRIPWIRE at FIRE time (defense in depth): re-scan the assembled prompt before spending anything.
@@ -12379,16 +12350,14 @@ async function handleCronRun(req, res) {
   if (assembledPrompt.charAt(0) === '/') {
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
     const runIdC = crypto.randomUUID();
+    cronDriver.leases.set(job.id, { runId: runIdC, startedAt: Date.now(), heartbeatAt: Date.now(), ac: new AbortController(), isOnce: false });
     const busC = { emit: (name, payload) => { try { res.write(JSON.stringify({ name, payload: redact(payload) }) + '\n'); } catch (_) {} } };
     const emitC = wrapEmitDiag(makeEmitter(busC, e => { if (e) console.warn('[event]', e.kind, e.event, (e.errors || []).join(';')); }));
     try { cronEmit('cron.fire', { jobId: job.id, runId: runIdC, scheduledFor: Date.now() }); } catch (_) {}
     let out;
     try { out = await runSlashRoutine(assembledPrompt, { agentId: job.agentId, runId: runIdC, emit: emitC }); }
     catch (e) { out = { ok: false, text: 'that command failed: ' + ((e && e.message) || e) }; }
-    try {
-      await withCronWrite(jobs => cronStore.markRun(jobs, job.id, { runId: runIdC, status: out.ok ? 'ok' : 'error', reason: out.ok ? 'done' : 'error', error: out.ok ? undefined : out.text }, { now: Date.now(), defaultTz: CRON_HOST_TZ, maxConsecutiveFailures: CRON_MAX_CONSECUTIVE_FAILURES }));
-    } catch (_) {}
-    try { cronEmit('cron.result', { jobId: job.id, runId: runIdC, outcome: out.ok ? 'ok' : 'failed', reason: out.ok ? 'done' : 'error' }); } catch (_) {}
+    cronDriver.settleRun(job.id, runIdC, { reason: out.ok ? 'done' : 'error', errMsg: out.ok ? null : out.text, buf: out.text || '' }, null);
     try { res.end(); } catch (_) {}
     return;
   }
@@ -12544,17 +12513,11 @@ async function handleCronRun(req, res) {
     // release OUR manual lease (never a successor's — the stale sweep may have reclaimed it) and settle the
     // conveyor work-item this route placed. Before this, Run Now's crate NEVER settled (its terminal events
     // bypass cronEmitNotify), so every press permanently inflated the agent's queueDepth by one.
-    { const lz = cronDriver.leases.get(job.id); if (lz && lz.runId === runId) cronDriver.leases.delete(job.id); }
     try { settleCronWorkitem(runId, state.reason); } catch (e) { failNote('cron.runNow.settle', e); }
     dropSteer(runId, 'manual-run');      // drop any un-drained steering notes so they can't leak to a later run (mirror handleRun); logs a count if non-empty
-    const ok = !state.errMsg;
-    try {
-      // G4.3: record the manual run's outcome as a re-read-modify-write under the lock (don't clobber a
-      // concurrent advance/CRUD save with a stale in-memory snapshot).
-      await withCronWrite(jobs => cronStore.markRun(jobs, job.id, { runId: runId, status: ok ? 'ok' : 'error', reason: state.reason || (ok ? 'done' : 'error'), error: state.errMsg || undefined, transient: state.transient, output: ok ? String(state.buf || '').trim() : undefined, usd: state.usd || 0 }, { now: Date.now(), defaultTz: CRON_HOST_TZ, maxConsecutiveFailures: CRON_MAX_CONSECUTIVE_FAILURES }));
-    } catch (_) {}
-    try { cronEmit('cron.result', { jobId: job.id, runId: runId, outcome: !ok ? 'failed' : ((state.buf || '').trim() === '[SILENT]' ? 'silent' : 'ok'), reason: state.reason || (ok ? 'done' : 'error') }); } catch (_) {}
-    try { await deliverCronResult(cronStore.getJob(cronJobs, job.id) || job, { runId, outcome: !ok ? 'failed' : ((state.buf || '').trim() === '[SILENT]' ? 'silent' : 'ok'), text: String(state.buf || '').trim(), error: state.errMsg || null }); } catch (_) {}
+    // Manual and timed runs share the durable settlement/fencing path. A failed
+    // write retains the receipt; a late zombie cannot overwrite its replacement.
+    cronDriver.settleRun(job.id, runId, state, null);
     kaOff();
     try { res.end(); } catch (_) {}
   }

@@ -377,6 +377,15 @@
      for this job, separate from the run outcome (a routine can succeed while its ping fails — that failure
      must be durable and visible, never swallowed). result = { ok:bool, error?:string, channel?:string }.
      Pure: `now` is injected. No-op-safe on an absent job (mapJob leaves the array unchanged). */
+  // A later occurrence must never overwrite an undelivered result. Bound retained
+  // work through backpressure, not by discarding the oldest notification.
+  const MAX_PENDING_DELIVERIES = 100;
+  function pendingDeliveries(job) {
+    return (Array.isArray(job && job.deliveryBacklog) ? job.deliveryBacklog : [])
+      .concat(job && job.finalization ? [job.finalization] : [])
+      .filter(f => f && f.state === 'pending');
+  }
+
   function markDelivery(jobs, id, result, ctx) {
     result = result || {}; ctx = ctx || {};
     const now = ctx.now || 0;
@@ -385,12 +394,21 @@
       const error = ok ? null : String(result.error != null ? result.error : 'delivery failed') +
         (result.channel ? ' [' + String(result.channel) + ']' : '');
       const next = Object.assign({}, job, { lastDeliveryAt: iso(now), lastDeliveryOk: ok, lastDeliveryError: error });
-      if (job.finalization && (!result.runId || String(result.runId) === String(job.finalization.runId))) {
-        next.finalization = Object.assign({}, job.finalization, {
-          state: ok ? 'delivered' : 'pending', attempts: (job.finalization.attempts || 0) + 1,
-          deliveredAt: ok ? iso(now) : null, lastError: error
+      // Legacy notifier outcomes lack a run id; they may update the status line,
+      // but cannot acknowledge unrelated durable result receipts.
+      const matches = f => f && result.runId && String(result.runId) === String(f.runId);
+      const update = f => {
+        const attempts = (f.attempts || 0) + 1;
+        return Object.assign({}, f, {
+          state: ok ? 'delivered' : 'pending', attempts: attempts,
+          deliveredAt: ok ? iso(now) : null, lastError: error,
+          deliveredTargets: Array.isArray(result.deliveredTargets) ? result.deliveredTargets.slice(0, 16) : (f.deliveredTargets || []),
+          nextAttemptAt: ok ? null : iso(now + Math.min(900000, 60000 * Math.pow(2, Math.min(attempts - 1, 4))))
         });
-      }
+      };
+      if (matches(job.finalization)) next.finalization = update(job.finalization);
+      if (Array.isArray(job.deliveryBacklog)) next.deliveryBacklog = job.deliveryBacklog
+        .map(f => matches(f) ? update(f) : f).filter(f => f.state === 'pending');
       return next;
     });
   }
@@ -515,12 +533,16 @@
       }
 
       // terminal: finalize this occurrence.
+      const pending = pendingDeliveries(job).filter(f => f.runId !== String(next.lastRunId || ''));
+      if (pending.length >= MAX_PENDING_DELIVERIES) throw new Error('routine delivery backlog is full; reconnect the destination');
+      next.deliveryBacklog = pending;
       next.lastUsd = Number.isFinite(Number(result.usd)) ? Number(result.usd) : 0;
       next.finalization = {
         id: String(next.lastRunId || job.id) + ':final', runId: String(next.lastRunId || ''), state: 'pending',
         outcome: ok ? (String(result.output || '').trim() === '[SILENT]' ? 'silent' : 'ok') : 'failed',
         result: ok ? String(result.output || '').slice(0, 32000) : '', error: ok ? null : next.lastError,
         usd: next.lastUsd, deliver: String(job.deliver || 'local'), origin: job.origin || null,
+        deliveryContext: { name: job.name, prompt: job.prompt, agentId: job.agentId, noAgent: job.noAgent, attachToSession: job.attachToSession },
         destination: String(job.deliver || 'local'), committedAt: iso(now), attempts: 0
       };
       next.retryCount = 0;
@@ -583,6 +605,8 @@
     renewOnceHeartbeat: renewOnceHeartbeat,
     markRun: markRun,
     markDelivery: markDelivery,
+    pendingDeliveries: pendingDeliveries,
+    MAX_PENDING_DELIVERIES: MAX_PENDING_DELIVERIES,
     markBlockedConfig: markBlockedConfig,
     clearBlockedConfig: clearBlockedConfig,
     markMonitorCheck: markMonitorCheck,

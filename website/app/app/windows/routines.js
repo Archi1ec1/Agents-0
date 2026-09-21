@@ -209,9 +209,17 @@
     // error string already carries the channel in [brackets]); a success or a never-delivered job shows nothing
     // (honest no-signal — we never invent a "delivered" state the job never attempted).
     function deliveryLine(j) {
-      if (!j.lastDeliveryAt || j.lastDeliveryOk !== false) return '';
-      return '<div class="mc-detail" style="color:var(--bad)">✕ delivery failed — ' + esc(j.lastDeliveryError || 'notification could not be sent') +
+      const pending = (Array.isArray(j.deliveryBacklog) ? j.deliveryBacklog : []).concat(j.finalization ? [j.finalization] : []).filter(f => f && f.state === 'pending');
+      let line = '';
+      if (pending.length) {
+        const retry = pending.map(f => Date.parse(f.nextAttemptAt)).filter(Number.isFinite).sort((a, b) => a - b)[0];
+        line = '<div class="mc-detail">' + pending.length + ' result' + (pending.length === 1 ? '' : 's') + ' awaiting delivery' +
+          (retry ? ' · next retry ' + esc(wallClock(new Date(retry).toISOString())) : '') +
+          (pending.length >= 100 ? ' · new runs deferred until the destination recovers' : '') + '</div>';
+      }
+      if (j.lastDeliveryAt && j.lastDeliveryOk === false) line += '<div class="mc-detail" style="color:var(--bad)">✕ delivery failed — ' + esc(j.lastDeliveryError || 'notification could not be sent') +
         ' <span class="dim">' + esc(fmtRel(j.lastDeliveryAt)) + '</span></div>';
+      return line;
     }
     // CONSECUTIVE-FAILURE AUTO-PAUSE (routine hardening, 2026-08-21): the store counts terminal failures in a row
     // and disables the job at the ceiling with disabledReason:'consecutive-failures'. Both fields come straight

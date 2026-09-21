@@ -289,6 +289,16 @@ function boot(port, workspaces, attemptsLeft) {
     A.eq(durableResolution.resolution.note, 'verified in destination audit log', 'the audit note survives restart');
     A.eq(durableResolution.canResolve, false, 'a resolved journal cannot be decided again after restart');
 
+    // A live foreign lock remains authoritative after the CRUD wait budget.
+    const lockPath = path.join(ws, 'cron.lock');
+    const beforeContention = fs.readFileSync(path.join(ws, 'cron.jobs.json'), 'utf8');
+    fs.writeFileSync(lockPath, process.pid + ':audit-holder');
+    try {
+      const busy = await j('POST', '/api/cron/update', { id, patch: { name: 'must not commit outside lock' } });
+      A.eq(busy.status, 500, 'contended CRUD reports failure instead of bypassing the lock');
+      A.eq(fs.readFileSync(path.join(ws, 'cron.jobs.json'), 'utf8'), beforeContention, 'contended write cannot modify the durable store');
+    } finally { fs.unlinkSync(lockPath); }
+
     // ---- remove: delete then confirm gone ----
     const rm = await j('POST', '/api/cron/remove', { id });
     A.eq(rm.status, 200, 'remove -> 200');
