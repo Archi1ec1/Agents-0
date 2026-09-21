@@ -75,6 +75,6 @@ A.ok(/entryUsd:\s*state\.usd/.test(runNowBlock), "Run Now seeds the chain ceilin
    `lastUsd 0` — the hop-only chain spend was dropped and markRun never received usd at all. Both fire paths must
    add line.usd to the entry spend and hand it to markRun. */
 A.ok(/state\.usd \+= line\.usd/.test(runNowBlock), "Run Now adds the line's hop spend to the entry run's spend");
-A.ok(/cronStore\.markRun\([^;]*usd:\s*state\.usd/.test(runNowBlock), "Run Now records the line total on the routine (markRun usd)");
+A.ok(/cronDriver\.settleRun\(job\.id, runId, state, null\)/.test(runNowBlock), "Run Now passes the line's full state into the shared durable settlement path");
 
 if (require.main === module) A.report('cron.run-now.test');

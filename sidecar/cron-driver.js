@@ -167,31 +167,48 @@
     // goes away, the key changes / is pruned and a fresh disabled window can report again. Keyed jobId->dueKey.
     const disabledNotified = new Map();
 
-    async function deliverFinalization(job) {
-      const f = job && job.finalization;
-      if (!f || f.state !== 'pending') return false;
-      if (!deliverResult) {
-        setJobs(cronStore.markDelivery(getJobs(), job.id, { ok: true, runId: f.runId }, { now: now() }));
-        return true;
-      }
-      // Use the destination snapshot committed with the result, not an edited job's newer routing fields.
-      const deliveryJob = Object.assign({}, job, { deliver: f.deliver, origin: f.origin });
-      let out;
-      try { out = await deliverResult(deliveryJob, { runId: f.runId, outcome: f.outcome, text: f.result || '', error: f.error || null }); }
-      catch (e) { out = { ok: false, error: (e && e.message) || String(e) }; }
-      const live = cronStore.getJob(getJobs(), job.id);
-      const deliveryOk = !out || out.ok !== false;
-      if (live && live.finalization && live.finalization.state === 'pending' && live.finalization.runId === f.runId) {
-        setJobs(cronStore.markDelivery(getJobs(), job.id, { ok: deliveryOk, error: out && out.error, runId: f.runId }, { now: now() }));
-      }
-      return deliveryOk;
+    const deliveries = new Map(); // job/run -> one in-flight send across boot, ticks and completion
+    const deliveryReceipts = new Map(); // send finished but its acknowledgement has not reached disk
+    async function deliverFinalization(job, receipt) {
+      const f = receipt || (job && job.finalization);
+      if (!job || !f || f.state !== 'pending') return false;
+      const key = job.id + '/' + f.runId;
+      if (deliveries.has(key)) return false;
+      if (!deliveryReceipts.has(key) && Date.parse(f.nextAttemptAt) > now()) return false;
+      deliveries.set(key, true);
+      try {
+        const current = cronStore.getJob(getJobs(), job.id);
+        if (!cronStore.pendingDeliveries(current).some(p => p.runId === f.runId)) {
+          deliveryReceipts.delete(key); return false;
+        }
+        let out = deliveryReceipts.get(key);
+        if (!out) {
+          // The committed routing/context snapshot wins over subsequent edits to the routine.
+          const deliveryJob = Object.assign({}, job, f.deliveryContext || {}, { deliver: f.deliver, origin: f.origin });
+          try { out = deliverResult ? await deliverResult(deliveryJob, { runId: f.runId, outcome: f.outcome, text: f.result || '', error: f.error || null, deliveredTargets: f.deliveredTargets || [] }) : { ok: true }; }
+          catch (e) { out = { ok: false, error: (e && e.message) || String(e) }; }
+          out = { ok: !out || out.ok !== false, error: out && out.error, deliveredTargets: out && out.deliveredTargets };
+          deliveryReceipts.set(key, out);
+        }
+        if (setJobs(cronStore.markDelivery(getJobs(), job.id, Object.assign({ runId: f.runId }, out), { now: now() })) === false) return false;
+        deliveryReceipts.delete(key);
+        return out.ok;
+      } finally { deliveries.delete(key); }
     }
 
     async function recoverFinalizations() {
       let count = 0;
-      for (const job of getJobs().slice()) if (job && job.finalization && job.finalization.state === 'pending') {
-        if (await deliverFinalization(job)) count++;
+      // Bound each pass; an unreachable destination must not flood transports on every tick.
+      const work = [];
+      for (const job of getJobs().slice()) {
+        for (const f of cronStore.pendingDeliveries(job)) {
+          if (work.length + deliveries.size >= 4) break;
+          const key = job.id + '/' + f.runId;
+          if (deliveries.has(key) || (!deliveryReceipts.has(key) && Date.parse(f.nextAttemptAt) > now())) continue;
+          work.push([job, f]);
+        }
       }
+      await Promise.all(work.map(async ([job, f]) => { if (await deliverFinalization(job, f)) count++; }));
       return count;
     }
 
@@ -220,6 +237,9 @@
     function finishFire(jobId, runId, state, threw) {
       const currentLease = leases.get(jobId);
       const pending = currentLease && currentLease.runId === runId ? currentLease.settlement : null;
+      // A reclaimed/finished run awaiting disk recovery has already chosen its outcome.
+      // A late resolution from the aborted host must not replace that receipt.
+      if (pending) { state = pending.state; threw = pending.threw; }
       const at = pending ? pending.at : now();
       const reply = (state.buf || '').trim();
       const terminalReason = String(state.reason || '');
@@ -244,7 +264,7 @@
             reason: state.reason || (ok ? 'done' : 'error'),
             error: errMsg || undefined, transient: transient, output: ok ? reply : undefined, usd: state.usd || 0,
             monitorHash: ok ? state.monitorHash : undefined
-          }, { now: at, maxConsecutiveFailures: maxConsecutiveFailures });
+          }, { now: at, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures });
           committed = setJobs(next) !== false;
         } catch (_) { committed = false; }
         if (!committed) {
@@ -308,7 +328,7 @@
       } catch (e) {
         const blockedRunId = newId();
         const msg = 'context pipeline unavailable: ' + ((e && e.message) || e);
-        try { setJobs(cronStore.markRun(getJobs(), job.id, { runId: blockedRunId, status: 'error', reason: 'context-error', error: msg, transient: false }, { now: nowMs })); } catch (e) { failNote('cron.markRun', e); }
+        try { setJobs(cronStore.markRun(getJobs(), job.id, { runId: blockedRunId, status: 'error', reason: 'context-error', error: msg, transient: false }, { now: nowMs, defaultTz: defaultTz })); } catch (e) { failNote('cron.markRun', e); }
         try { emit('cron.result', { jobId: job.id, runId: blockedRunId, outcome: 'failed', reason: 'context-error' }); } catch (_) {}
         return false;
       }
@@ -322,7 +342,7 @@
           try {
             setJobs(cronStore.markRun(getJobs(), job.id, {
               runId: blockedRunId, status: 'error', reason: 'blocked', error: scan.error, transient: false
-            }, { now: nowMs }));
+            }, { now: nowMs, defaultTz: defaultTz }));
           } catch (e) { failNote('cron.markRun', e); }
           try { emit('cron.result', { jobId: job.id, runId: blockedRunId, outcome: 'failed', reason: 'blocked: ' + scan.patternId }); } catch (_) {}
           return false;
@@ -553,6 +573,7 @@
 
     function applyTickInner(nowMs) {
       let skips = 0, fires = 0;
+      Promise.resolve(recoverFinalizations()).catch(e => warn('[cron] delivery recovery failed: ' + ((e && e.message) || e)));
 
       // Retry completed-but-not-yet-durable outcomes before planning new work. These leases are settlement
       // receipts, not live processes: they must never enter the stale-run reclaim path and re-execute the job.
@@ -575,7 +596,6 @@
         const beatAge = nowMs - (lease.heartbeatAt != null ? lease.heartbeatAt : lease.startedAt);
         if (beatAge > heartbeatStaleMs) {
           try { lease.ac.abort(); } catch (_) {}
-          leases.delete(jobId);
           /* A RECLAIM IS A REAL OUTCOME (bug-sweep 2026-08-28): the aborted run's late finishFire is UNOWNED
              (generation fence) and never writes markRun — so before this, a reclaimed ONE-SHOT kept its
              persisted fireClaim + null lastRunAt and re-executed the work every ~maxRunMs FOREVER (real spend
@@ -584,12 +604,10 @@
              markRun clears the claim/heartbeat, re-arms via the bounded backoff, and the retry ceiling turns
              a permanent hang into a terminal, visible failure. The unowned settle still emits its honest
              cron.result{(stale-lease)} when the aborted run winds down — no double event here. */
-          try {
-            setJobs(cronStore.markRun(getJobs(), jobId, {
-              runId: lease.runId, status: 'error', reason: 'stale-lock-reclaimed',
-              error: 'run reclaimed: no progress for ' + Math.round(heartbeatStaleMs / 1000) + 's', transient: true
-            }, { now: nowMs, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures }));
-          } catch (e) { failNote('cron.markRun', e); }
+          finishFire(jobId, lease.runId, {
+            reason: 'stale-lock-reclaimed',
+            errMsg: 'run reclaimed: no progress for ' + Math.round(heartbeatStaleMs / 1000) + 's', transient: true
+          }, null);
           try { emit('cron.skipped', { jobId: jobId, reason: 'stale-lock-reclaimed' }); } catch (_) {}
           skips++;
         }
@@ -669,6 +687,11 @@
         const job = cronStore.getJob(getJobs(), f.jobId);
         if (!job) continue;
         if (leases.has(job.id)) continue;                  // already-running: not attempted, not deferred (advances)
+        if (cronStore.pendingDeliveries(job).length >= cronStore.MAX_PENDING_DELIVERIES) {
+          deferred.push(job.id); deferredSet.add(job.id);
+          try { emit('cron.skipped', { jobId: job.id, reason: 'at-capacity' }); } catch (e) { failNote('cron.delivery.defer', e); }
+          skips++; continue;
+        }
         if (slotsLeft > 0) { slotsLeft--; }                // reserve a concurrency slot for this attempt
         else {                                             // over the cap -> defer (stays due, not advanced)
           deferred.push(job.id); deferredSet.add(job.id);
@@ -746,14 +769,11 @@
           failNote('cron.fireJob', e);
           const orphan = leases.get(job.id);
           const failRunId = orphan ? orphan.runId : newId();
-          if (orphan) { try { orphan.ac.abort(); } catch (_) {} leases.delete(job.id); }
-          try {
-            setJobs(cronStore.markRun(getJobs(), job.id, {
-              runId: failRunId, status: 'error', reason: 'fire-error',
-              error: 'fire failed: ' + ((e && e.message) || e), transient: true
-            }, { now: nowMs, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures }));
-          } catch (e2) { failNote('cron.markRun', e2); }
-          try { emit('cron.result', { jobId: job.id, runId: failRunId, outcome: 'failed', reason: 'fire-error' }); } catch (_) {}
+          if (orphan) { try { orphan.ac.abort(); } catch (_) {} }
+          else leases.set(job.id, { runId: failRunId, startedAt: nowMs, heartbeatAt: nowMs, ac: newAbort() });
+          finishFire(job.id, failRunId, {
+            reason: 'fire-error', errMsg: 'fire failed: ' + ((e && e.message) || e), transient: true
+          }, null);
           skips++;
         }
       }
@@ -780,7 +800,7 @@
       return n;
     }
 
-    return { applyTick: applyTick, leases: leases, abortAllLeases: abortAllLeases, recoverFinalizations: recoverFinalizations,
+    return { applyTick: applyTick, leases: leases, abortAllLeases: abortAllLeases, recoverFinalizations: recoverFinalizations, deliverFinalization: deliverFinalization, settleRun: finishFire,
       _internals: { fireJob: fireJob, finishFire: finishFire, deliverFinalization: deliverFinalization } };
   }
 
