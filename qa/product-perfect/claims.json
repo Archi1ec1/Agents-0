@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "af1f9dcba587d522d07646198738e5984b294fbb",
+    "sourceCommit": "74b4d07afb99a6e039ca6cce1ddb35ffc913afef",
     "pathSetSha256": "624df0d0e5b2511e74e175d045f26a8fd916195933e6750693b47d486e2e7b31",
     "files": [
       {
@@ -168,8 +168,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 385707,
-        "sha256": "8a4928c3ee88a0da70944c1b2a584ca00283c1619f75511fba17739843ff6d24"
+        "bytes": 385942,
+        "sha256": "de486d12b97600d7a4b4edb0947da1c8a532a69273c68f05cc3e61ad3a4363ce"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -253,8 +253,8 @@
       },
       {
         "path": "frontend/app/autonomystore.js",
-        "bytes": 4863,
-        "sha256": "026385b6c9d9418632d31a293b8b8a429bf9c5b0eb3040f91cd696118cf5ec5a"
+        "bytes": 5098,
+        "sha256": "f8bc24b54b88ad8e5d24a721c711923ee4757da409848d0520934bb87ea87dfa"
       },
       {
         "path": "frontend/app/autopilot.js",
@@ -293,8 +293,8 @@
       },
       {
         "path": "frontend/app/backup.js",
-        "bytes": 9908,
-        "sha256": "4fd0a8555c9cb2fa814db0e41def198332b1c3e4a7a2d83f49b7048a217aeddb"
+        "bytes": 10690,
+        "sha256": "1306accff135281d4f69a6d3527ee4396956358f0cd687fb9a5c6d96cdd08ee4"
       },
       {
         "path": "frontend/app/beatcard.js",
@@ -398,8 +398,8 @@
       },
       {
         "path": "frontend/app/deliverables.js",
-        "bytes": 32411,
-        "sha256": "ee7b267ba055ee0e3868cc876c05b5087656b9acf82431d10fbe80c51c1f5ca7"
+        "bytes": 33357,
+        "sha256": "1a402c9d3c0aaf5bc3a9b2b5e04c9e1117c7ffb26bf35933b6dc12751d8c7f45"
       },
       {
         "path": "frontend/app/diagnostics.js",
@@ -658,8 +658,8 @@
       },
       {
         "path": "frontend/app/onboarding.js",
-        "bytes": 59094,
-        "sha256": "41d758aaa3bfe177027f58bb48d3c7254bb275e9ec5f443ff4a5c0fdcc1b7bdf"
+        "bytes": 58847,
+        "sha256": "2f48251b49e44c347a9d840138fcbbcbeba9511b4efd06f7c355a29d648887c2"
       },
       {
         "path": "frontend/app/overseer-setup.js",
@@ -678,8 +678,8 @@
       },
       {
         "path": "frontend/app/permissionsstore.js",
-        "bytes": 9935,
-        "sha256": "fd14692a5aa1b95328ddd031b40f2feecd286287b9b8c99555a2cb8158dfd867"
+        "bytes": 10220,
+        "sha256": "f175dcf29a0ec5cf98602ab3b8c6590e5c6a08956c536012ad32f73dfe2d3dd2"
       },
       {
         "path": "frontend/app/personas.js",
@@ -1058,8 +1058,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 737260,
-        "sha256": "afc6f98feb613ec58f78b0c22e2717b43a8936087f56740ff340e50386a5fcf9"
+        "bytes": 737530,
+        "sha256": "2d7ccd3f818d22cd0651d49ff463d9067117dab68a91337f256f76eb5413db12"
       },
       {
         "path": "frontend/app/study.js",
@@ -1133,8 +1133,8 @@
       },
       {
         "path": "frontend/app/truststore.js",
-        "bytes": 18534,
-        "sha256": "7e0aa2e2e2e69f5c1493fa001746721302d5a95ffda0c52869aedda7f9097378"
+        "bytes": 19046,
+        "sha256": "0c1a51cc2fdb6d304d36e3aa2f6ab118c6665ba485274714f58793a24c430e52"
       },
       {
         "path": "frontend/app/tutorial.js",
@@ -1238,8 +1238,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 55228,
-        "sha256": "5b40b30e95a50cda7481e513c2913fcacb8ba56cc8cb298469c66b54185c1efa"
+        "bytes": 56094,
+        "sha256": "1443b6f31b79a8b4169311c83548106f5d76908de001525ae2ae2fa091e40bb1"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1268,8 +1268,8 @@
       },
       {
         "path": "frontend/app/workshopstore.js",
-        "bytes": 39834,
-        "sha256": "87703d81ddd2a0eb8ec0dff8f6a2adc0c6e5da211c96b67e64695d44db49fb9b"
+        "bytes": 39833,
+        "sha256": "e22090de5ccc8aee1eeb69cec5a1c0f5cbf98aeba80428523fc3bc91ca710f16"
       },
       {
         "path": "frontend/app/worksignal.js",
