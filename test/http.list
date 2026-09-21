@@ -130,3 +130,4 @@ test/spend-authority.http.test.js
 test/workspace-probe-errors.http.test.js
 test/connector-vault-invalid.http.test.js
 test/project-workspace.http.test.js
+test/autonomy-confirmation.http.test.js

@@ -194,7 +194,7 @@ const WorkshopStore = (() => {
     try {
       const r = await fetch('/api/workshop/decide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json().catch(() => null);
-      if (r.ok && j && j.ok !== false) {
+      if (r.ok && j && j.ok === true) {
         const keptPath = (j && j.destPath) || body.destPath;
         // Keep is a filesystem copy only. Renderer IPC cannot prove a fresh user
         // gesture, so a run may not launch an OS file manager on the user's desktop.

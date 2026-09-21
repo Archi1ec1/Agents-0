@@ -96,6 +96,30 @@ function clickFor(row, preview) {
       'browser preview paints inside the clicked card');
     A.ok(fetched.indexOf('http://127.0.0.1:61661/api/file?') === 0 && fetched.indexOf('token=launch-token') >= 0,
       'browser preview uses the real desktop API base and launch token');
+    const state = {};
+    let releaseOld;
+    global.fetch = () => new Promise(resolve => { releaseOld = resolve; });
+    const stale = D.handleOpenClick(browser.event, browser.rows, state);
+    global.fetch = async () => ({ ok: true, text: async () => 'Newest selection' });
+    await D.handleOpenClick(browser.event, browser.rows, state);
+    releaseOld({ ok: true, text: async () => 'Obsolete selection' }); await stale;
+    A.ok(browserPreview.innerHTML.includes('Newest selection') && !browserPreview.innerHTML.includes('Obsolete'), 'a late response cannot replace the newest preview');
+    let releaseBody;
+    global.fetch = async () => ({ ok: true, text: () => new Promise(resolve => { releaseBody = resolve; }) });
+    const staleBody = D.handleOpenClick(browser.event, browser.rows, state);
+    await new Promise(resolve => setImmediate(resolve));
+    global.fetch = async () => ({ ok: true, text: async () => 'Latest body' });
+    await D.handleOpenClick(browser.event, browser.rows, state);
+    releaseBody('Obsolete body'); await staleBody;
+    A.ok(browserPreview.innerHTML.includes('Latest body') && !browserPreview.innerHTML.includes('Obsolete'), 'the race guard covers response bodies too');
+    let failOld; const notices = [];
+    global.fetch = () => new Promise((_, reject) => { failOld = reject; });
+    const failedOld = D.handleOpenClick(browser.event, browser.rows, state, text => notices.push(text));
+    global.fetch = async () => ({ ok: true, text: async () => 'Still current' });
+    await D.handleOpenClick(browser.event, browser.rows, state);
+    failOld(new Error('old outage')); await failedOld;
+    A.eq(notices, [], 'stale failures do not clear the current preview or display unrelated errors');
+    A.ok(browserPreview.innerHTML.includes('Still current'), 'latest preview survives stale failure');
   } finally {
     global.window = oldWindow;
     global.fetch = oldFetch;

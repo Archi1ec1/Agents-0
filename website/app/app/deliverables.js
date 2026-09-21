@@ -54,8 +54,11 @@
     return (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
   }
   function revokePreview(state) {
-    if (!state || !state.blobUrl) return;
-    try { URL.revokeObjectURL(state.blobUrl); } catch (_) {}
+    if (!state) return;
+    state.previewId = (state.previewId || 0) + 1;
+    if (state.previewAbort) { state.previewAbort.abort(); state.previewAbort = null; }
+    if (state.previewExpiry) { clearTimeout(state.previewExpiry); state.previewExpiry = null; }
+    if (state.blobUrl) try { URL.revokeObjectURL(state.blobUrl); } catch (_) {}
     state.blobUrl = '';
   }
   async function openDesktop(r, f, href, say) {
@@ -81,23 +84,37 @@
     revokePreview(state);
     if (state && state.previewHost && state.previewHost !== host) state.previewHost.innerHTML = '';
     if (state) state.previewHost = host;
+    const id = state.previewId;
+    const current = () => state.previewId === id && host.isConnected !== false;
+    const controller = new AbortController(); state.previewAbort = controller;
     host.innerHTML = '<p class="muted">Loading safe preview…</p>';
     try {
-      const response = await fetch(fileHref(f), { cache: 'no-store' });
+      const response = await fetch(fileHref(f), { cache: 'no-store', signal: controller.signal });
+      if (!current()) return true;
       if (!response.ok) throw new Error('HTTP ' + response.status);
       if (f.preview === 'image') {
-        const blobUrl = URL.createObjectURL(await response.blob());
+        const blob = await response.blob();
+        if (!current()) return true;
+        const blobUrl = URL.createObjectURL(blob);
         if (state) state.blobUrl = blobUrl;
         host.innerHTML = '<img class="deliverable-image" alt="Preview of ' + esc(f.path) + '">';
         const img = host.querySelector('img');
-        const expiry = setTimeout(() => revokePreview(state), 30000);
-        img.onload = img.onerror = () => { clearTimeout(expiry); revokePreview(state); };
+        const release = () => {
+          // A late load/error from the previous image owns only its own URL.
+          if (state.blobUrl !== blobUrl) return;
+          clearTimeout(state.previewExpiry); state.previewExpiry = null;
+          URL.revokeObjectURL(blobUrl); state.blobUrl = '';
+        };
+        state.previewExpiry = setTimeout(release, 30000);
+        img.onload = img.onerror = release;
         img.src = blobUrl;
       } else {
         const text = await response.text();
+        if (!current()) return true;
         host.innerHTML = '<div class="cfg-block"><b>SAFE PREVIEW · ' + esc(f.path) + '</b>' + (f.preview === 'markdown' ? safeMarkdown(text) : safeCsv(text, 50, 20)) + '</div>';
       }
     } catch (e) {
+      if (!current()) return true;
       host.innerHTML = '';
       // A 404 here has ONE ordinary cause: the file was moved or deleted on disk after the library recorded it.
       // KEEP copies rather than moves, so the archive normally survives — but the Commander owns that folder and
@@ -106,7 +123,7 @@
       if (say) say(gone
         ? 'That file is no longer on disk — it was moved or deleted after this deliverable was recorded.'
         : 'Could not preview that file: ' + e.message, true);
-    }
+    } finally { if (state.previewAbort === controller) state.previewAbort = null; }
     return true;
   }
   async function handleOpenClick(ev, rows, state, say) {

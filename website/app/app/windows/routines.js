@@ -138,7 +138,7 @@
     function wire() {
     const listEl = body.querySelector('#rt-list'), gateEl = body.querySelector('#rt-gate');
     const msgEl = body.querySelector('#rt-msg'), outEl = body.querySelector('#rt-out');
-    const post = (path, payload) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const post = (path, payload, signal) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
     // P0 #11 — run-output placement. lastRunId = the routine whose RUN NOW result #rt-out currently shows.
     // schedulerArmed mirrors GET /api/cron `.enabled` (set in refresh) so the create-confirm can tell the honest
     // armed/disarmed story via AutoJobs.armStateLine. #rt-out lives in the ACTIVE pane (sibling of #rt-list); when a
@@ -420,19 +420,26 @@
        as a function so the RESCHEDULE editor previews through the IDENTICAL path: two implementations of
        "when does this run" would eventually disagree, and this panel's entire job is to be right about it. */
     function wirePreview(inp, pvEl) {
-      let pvTimer = null, previewRevision = 0;
+      let pvTimer = null, previewRevision = 0, previewAbort = null;
       inp.addEventListener('input', () => {
       clearTimeout(pvTimer);
+      if (previewAbort) { previewAbort.abort(); previewAbort = null; }
       const revision = ++previewRevision;
       const v = inp.value.trim();
       if (!v) { pvEl.textContent = ''; return; }
       pvEl.textContent = 'Checking next run…';
       pvTimer = setTimeout(async () => {
+        const controller = new AbortController(); previewAbort = controller;
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const current = () => revision === previewRevision && inp.value.trim() === v && pvEl.isConnected !== false;
         try {
           // tz honesty in the PREVIEW too: the create POST sends the device zone, so a preview computed
           // without it would quote a different 9:00 than the routine will actually keep.
-          const r = await (await post('/api/cron/preview', { schedule: v, tz: deviceTz() })).json();
-          if (r && r.ok) {
+          const response = await post('/api/cron/preview', { schedule: v, tz: deviceTz() }, controller.signal);
+          const r = await response.json();
+          if (!current()) return;
+          if (response.ok && r && r.ok === true) {
+            if (!Array.isArray(r.next) || r.next.some(t => !Number.isFinite(Date.parse(String(t))))) throw new Error('Invalid preview response');
             // show the LOCAL wall-clock time the routine fires (with its tz), not just a relative delta, so a
             // cron schedule reads honestly across DST (e.g. "next: 9:00 AM EDT (in 3h)"). Falls back to the
             // relative-only line when the server didn't supply a localNext (interval/once).
@@ -447,10 +454,11 @@
               const local = esc(wallClock(t) || ln[i] || '');
               return local ? (local + ' <span class="dim">(' + esc(fmtRel(t)) + ')</span>') : esc(fmtRel(t));
             }).join(', ');
-            pvEl.innerHTML = '<span class="rt-next-label">Next run</span> ' + nxt;
+            pvEl.innerHTML = nxt ? '<span class="rt-next-label">Next run</span> ' + nxt : 'No upcoming run for this schedule.';
           }
           else pvEl.innerHTML = '<span style="color:var(--bad)">' + esc((r && r.error) || 'unrecognized schedule') + '</span>';
-        } catch (_) {}
+        } catch (_) { if (current()) pvEl.textContent = 'Could not check the next run. Edit the schedule to retry.'; }
+        finally { clearTimeout(timeout); if (previewAbort === controller) previewAbort = null; }
       }, 300);
       });
     }

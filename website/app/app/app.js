@@ -2836,6 +2836,10 @@ const App = (() => {
     // leaves the prior station intact, and keeps its confirmed grant visible instead of commissioning a fresh
     // Commander who silently inherited cabinet:write. Saved-station resume returns above and keeps its grants.
     if (typeof PermissionsStore !== 'undefined') await PermissionsStore.reset();
+    if (typeof AutonomyStore !== 'undefined') {
+      const autonomyReset = await AutonomyStore.reset();
+      if (!autonomyReset.ok) { wakeBtnBusy(false); msg.className = 'msg bad'; msg.textContent = autonomyReset.error; return false; }
+    }
     const newCommanderEpoch = Date.now();
     if (typeof JourneyStore !== 'undefined' && JourneyStore.reset) {
       const journeyResetResult = await JourneyStore.reset(newCommanderEpoch);
@@ -2879,7 +2883,6 @@ const App = (() => {
     if (typeof UnderstandingStore !== 'undefined' && UnderstandingStore.reset) UnderstandingStore.reset();   // …and no inherited rating corroboration — a new Commander never inherits the prior hero's 👍/👎 confidence signal (own key)
     if (typeof MaintQuestStore !== 'undefined') MaintQuestStore.reset();   // …and no inherited maintenance quests — a new Commander never sees the prior hero's slag/jam backlog (own key)
     if (typeof MintStore !== 'undefined') MintStore.reset();   // …no inherited recurring-task shapes — these feed the seed shelf, so a leak would offer a prior Commander's chores (own key)
-    if (typeof AutonomyStore !== 'undefined') AutonomyStore.reset();   // …and a fresh autonomy posture (safe floor) — a new Commander is never handed the previous one's free-range grant (own key)
     if (typeof AutoJobStore !== 'undefined') AutoJobStore.reset();   // …and re-arm the one-time standing-jobs proposal (own key; server-side routines are separate)
     if (typeof AutopilotStore !== 'undefined') AutopilotStore.reset();   // …and a fresh idle autopilot (no inherited idle/armed state — its decision is re-earned by the new Commander's posture + dossier)
     if (typeof ReturnStore !== 'undefined') ReturnStore.reset();   // …and no inherited return-ritual trail — a fresh Commander gets no prior hero's pending OUTBOX crates or attendance stamp (own key)
@@ -3299,12 +3302,15 @@ const App = (() => {
     // AutonomyStore. The level chooser ties grant + posture so the Commander dials never→fully-autonomous.
     if (typeof PermissionsStore !== 'undefined') PermissionsStore.init({
       getPosture: () => (typeof AutonomyStore !== 'undefined' && AutonomyStore.summary) ? AutonomyStore.summary() : null,
-      applyPreset: (id) => {
-        if (typeof AutonomyStore !== 'undefined' && AutonomyStore.applyPreset) AutonomyStore.applyPreset(id);
+      applyPreset: async (id) => {
+        if (typeof AutonomyStore === 'undefined' || !AutonomyStore.applyPreset) return { ok: false };
+        const result = await AutonomyStore.applyPreset(id);
+        if (!result.ok) return result;
         // GROWTH Tier 3: a permissions-LEVEL change is a NON-DIAL posture writer — reconcile the earned-rung record
         // against the rung the preset just set (a diverged record retires; user override wins), so a stale record
         // can never later demote FROM a rung the dial isn't at (the silent-escalation blocker).
         try { if (typeof TrustStore !== 'undefined' && TrustStore.onManualInitiative && typeof AutonomyStore !== 'undefined' && AutonomyStore.get) TrustStore.onManualInitiative((AutonomyStore.get() || {}).initiative); } catch (_) {}
+        return result;
       },
       api: {
         load: () => Harness.api.get('/api/permissions'),
@@ -3324,7 +3330,7 @@ const App = (() => {
       now: () => Date.now(),
       getStats: () => { const a = agents.get('agent'); return (a && a.stats && typeof Xp !== 'undefined' && Xp.compute) ? Xp.compute(a.stats) : (a ? a.stats : null); },
       getPosture: () => (typeof AutonomyStore !== 'undefined' && AutonomyStore.summary) ? AutonomyStore.summary() : null,
-      setInitiative: (level) => { if (typeof AutonomyStore !== 'undefined' && AutonomyStore.setInitiative) AutonomyStore.setInitiative(level); persist(); },
+      setInitiative: async (level) => { if (typeof AutonomyStore === 'undefined' || !AutonomyStore.setInitiative) return false; const result = await AutonomyStore.setInitiative(level); if (result.ok) persist(); return result; },
       // the ONLY capabilities a grant offer may pre-bless — the sidecar's curated GRANTABLE (cabinet:write today).
       grantable: (typeof SK !== 'undefined' && SK.permgrants && Array.isArray(SK.permgrants.GRANTABLE)) ? SK.permgrants.GRANTABLE.slice() : (typeof Permissions !== 'undefined' && Permissions.grantableKeys ? Permissions.grantableKeys() : ['cabinet:write']),
       getGrants: () => { try { return (typeof PermissionsStore !== 'undefined' && PermissionsStore.snapshot) ? (PermissionsStore.snapshot().grants || []) : []; } catch (_) { return []; } },
