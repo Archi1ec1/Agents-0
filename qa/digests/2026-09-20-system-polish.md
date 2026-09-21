@@ -1,7 +1,7 @@
 # System polish audit — 2026-09-20
 
 Base: `719382f50`. Isolated implementation: `agent/system-polish-0920`.
-Source candidate: `4a2028759`.
+Source candidate: `4a2028759`. Integrated at `21e267c7c` on `feat/harness-backend`; candidate and integrated Git trees match (`bddc698b950707576c41a3794e942eb640c8f6b4`).
 
 Done for each repair means the original failing interaction produces the correct
 observable result in the running seeded app, its adjacent lifecycle paths pass,
@@ -28,6 +28,9 @@ All retained logs below are under `.dogfood/system-polish/` in the owned worktre
 | Campaign | Result / evidence |
 | --- | --- |
 | Full fast gate | **844/844 PASS** against candidate `9f39da7e1`; `candidate-fast-complete.log` |
+| Post-merge fast gate | **844/844 PASS** on exact merge commit; `post-merge-fast.log` |
+| Post-merge live proof | **PASS**: repair failure/retry/reload/restart plus 32 panel states and 20 Settings sections; `post-merge-live.log` |
+| Post-merge HTTP gate | **130/130 PASS** on exact merge commit; `post-merge-http.log` |
 | Full HTTP gate | **130/130 PASS**; `http.log` |
 | Customer reliability campaign | **38/38 PASS**; `customer-journeys.log` (controlled provider endpoints, not customer accounts) |
 | Live task journeys | **139/139 assertions PASS**; `live-journeys.log` |
