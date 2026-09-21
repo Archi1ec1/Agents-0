@@ -4,7 +4,7 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**10** open (open+claimed) of 205 total — 0 P0 · 0 P1 · 10 P2
+**10** open (open+claimed) of 209 total — 0 P0 · 0 P1 · 10 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
@@ -121,6 +121,7 @@ User/owner reports: **97** · source fixed: **86** · installer verified: **6** 
 | P0 | fixed | skills | [skill.view's hydrate-then-bump stores the RENDERED SKILL.md as the skill's body, so every view→persist cycle re-appends '## Setup' and '## Support Files' — unbo](bugs/c70f8965-skill-view-s-hydrate-then-bump-stores-the-render.md) | sweep/skills | 598ab4a4 |
 | P1 | fixed | autonomy | [Agent loop pause leaves cancelled iteration running and lease held](bugs/c66e8c39-agent-loop-pause-leaves-cancelled-iteration-runn.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P1 | fixed | autonomy | [Ambiguous permission and routine acknowledgements report unproven changes](bugs/95d13aaf-ambiguous-permission-and-routine-acknowledgement.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
+| P1 | fixed | autonomy | [Autonomy controls claim unconfirmed settings and overwrite server state on reload](bugs/b0349a7c-autonomy-controls-claim-unconfirmed-settings-and.md) | agent/system-polish-0920 | 4a2028759 |
 | P1 | fixed | autonomy | [Concurrency-limited routines starve later due jobs in store order](bugs/0cfef8af-concurrency-limited-routines-starve-later-due-jo.md) | reliability-audit-0919 | b651a8f5d |
 | P1 | fixed | autonomy | [cron-store's armAt never receives the host defaultTz, so a tz-less cron routine's FIRST nextRunAt is UTC-anchored while every later advance uses local — the mar](bugs/f47a1e3a-cron-store-s-armat-never-receives-the-host-defau.md) | sweep/autonomy | 226cec3c |
 | P1 | fixed | autonomy | [Delegated specialist lacks connected MCP tools](bugs/acd9ecb4-delegated-specialist-lacks-connected-mcp-tools.md) | release-0112-finalprep-0911 | 44c6b4952cd1e468f7caaf4d7ead804dc280cc40 |
@@ -249,6 +250,7 @@ User/owner reports: **97** · source fixed: **86** · installer verified: **6** 
 | P2 | fixed | autonomy | [Loop polling erases the rejection explanation being typed](bugs/2b5b18a3-loop-polling-erases-the-rejection-explanation-be.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P2 | fixed | autonomy | [Paused routines falsely keep an idle desktop armed](bugs/ce430c35-paused-routines-falsely-keep-an-idle-desktop-arm.md) | release-0112-finalprep-0911 | b87bdf26099327e91eae85f9c5b1933ea5dbbe56 |
 | P2 | fixed | autonomy | [routine.create's default `arm:true` bypasses the documented single resume seam and clears the durable cron E-STOP — the workshop auto-arm path at index.js:8214](bugs/300b34ab-routine-create-s-default-arm.md) | sweep/autonomy | 6afeb9ee |
+| P2 | fixed | autonomy | [Routine schedule preview races newer input and stalls after failures](bugs/eba7e8aa-routine-schedule-preview-races-newer-input-and-s.md) | agent/system-polish-0920 | 4a2028759 |
 | P2 | fixed | channels | [COMMS report lists lose plus and tab-separated markers](bugs/3ad3e2b8-comms-report-lists-lose-plus-and-tab-separated-m.md) | agent/release-0112-audit-0910 | cb6c30b4d |
 | P2 | fixed | channels | [Dense service cards squeeze technical prose into tiny columns](bugs/734b469e-dense-service-cards-squeeze-technical-prose-into.md) | agent/ui-density-audit | 221775a85 |
 | P2 | fixed | channels | [E-STOP silences the channel reply path via the supersede flag, so a deliberately stopped run is indistinguishable from a crashed bot on the phone](bugs/600f4982-e-stop-silences-the-channel-reply-path-via-the-s.md) | sweep/channels | 96fe108d |
@@ -282,10 +284,12 @@ User/owner reports: **97** · source fixed: **86** · installer verified: **6** 
 | P2 | fixed | sessions | [Escape from a terminal field loses the dialog keyboard boundary](bugs/8b2ef7e7-escape-from-a-terminal-field-loses-the-dialog-ke.md) | agent/glass-demo-0909 | e6ecdd986 |
 | P2 | fixed | sessions | [Failed session repeats FAILED badge and leaves X steady](bugs/d07d3a35-failed-session-repeats-failed-badge-and-leaves-x.md) | agent/session-failed-marker-0910 | 407ac8433 |
 | P2 | fixed | sessions | [Files dropped onto chat do not attach in the desktop app](bugs/b48aa05d-files-dropped-onto-chat-do-not-attach-in-the-des.md) | agent/chat-drop-0917 | 68a4cfabe |
+| P2 | fixed | sessions | [Late deliverable preview replaces the current file selection](bugs/b1da69a1-late-deliverable-preview-replaces-the-current-fi.md) | agent/system-polish-0920 | 4a2028759 |
 | P2 | fixed | sessions | [Outbox run review can display another run answer](bugs/ecb3df69-outbox-run-review-can-display-another-run-answer.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P2 | fixed | sessions | [Session recommendations ignore user goals and actual work](bugs/a55c0020-session-recommendations-ignore-user-goals-and-ac.md) | agent/useful-starters-0906 | 51768e661 |
 | P2 | fixed | sessions | [Shared query refresh cannot retire a stalled predecessor](bugs/c095c750-shared-query-refresh-cannot-retire-a-stalled-pre.md) | agent/seam-audit-0912-b | b5c5cba75 |
 | P2 | fixed | sessions | [Stalled finite JSON mutations never release their callers](bugs/38aad6db-stalled-finite-json-mutations-never-release-thei.md) | agent/systemic-bugs-0919 | 8eb87b0d3 |
+| P2 | fixed | sessions | [Workshop Keep accepts an empty decision acknowledgement](bugs/9bc0b751-workshop-keep-accepts-an-empty-decision-acknowle.md) | agent/system-polish-0920 | 4a2028759 |
 | P2 | fixed | voice | [Failed Live Voice startup leaves a user mute force-enabled](bugs/d02d029b-failed-live-voice-startup-leaves-a-user-mute-for.md) | agent/voice-release-sweep | 8bc9ff9a |
 | P2 | fixed | voice | [Muting the speaker mid-reply in hands-free nulls the only surviving rearm heartbeat — the mic never re-opens while the mode button still reads 'hands-free ON'](bugs/2f7b280c-muting-the-speaker-mid-reply-in-hands-free-nulls.md) | sweep/voice | 50a8b07b |
 | P2 | fixed | voice | [The /api/stt degrade reason is written to the status line then overwritten by endListening()'s restore in the same synchronous block, so it is never painted](bugs/562b14a5-the-api-stt-degrade-reason-is-written-to-the-sta.md) | sweep/voice | 50a8b07b |
