@@ -1988,7 +1988,8 @@ const commanderPosture = {
   // legacy-frontend station never gets server-minted recommendations it can't justify.
   ready() { return !!(this._beliefs && this._beliefs.ready && this._beliefs.ready.ok); },
   set(posture, beliefs) {
-    if (posture && typeof posture === 'object') this._posture = Autonomy.normalize(posture);
+    const nextPosture = posture && typeof posture === 'object' ? Autonomy.normalize(posture) : this._posture;
+    let nextBeliefs = this._beliefs;
     if (beliefs && typeof beliefs === 'object') {
       // normalize the snapshot defensively: a bounded known[] + a bounded per-dim belief list (text + stamps + weight).
       const known = Array.isArray(beliefs.known) ? beliefs.known.filter(x => typeof x === 'string').slice(0, 24) : [];
@@ -2007,12 +2008,12 @@ const commanderPosture = {
       const rd = (beliefs.ready && typeof beliefs.ready === 'object')
         ? { ok: !!beliefs.ready.ok, reasons: Array.isArray(beliefs.ready.reasons) ? beliefs.ready.reasons.filter(x => typeof x === 'string').slice(0, 8) : [] }
         : null;
-      this._beliefs = { known: known, beliefs: out, ready: rd, at: Date.now() };
+      nextBeliefs = { known: known, beliefs: out, ready: rd, at: Date.now() };
     }
-    try {
-      fs.mkdirSync(WORKSPACES, { recursive: true });
-      saveResilient(AUTONOMY_POSTURE_FILE, { v: 1, posture: this._posture, beliefs: this._beliefs });
-    } catch (e) { console.warn('[autonomy] posture persist failed:', (e && e.message) || e); }
+    fs.mkdirSync(WORKSPACES, { recursive: true });
+    saveResilient(AUTONOMY_POSTURE_FILE, { v: 1, posture: nextPosture, beliefs: nextBeliefs });
+    this._posture = nextPosture;
+    this._beliefs = nextBeliefs;
   },
   load() {
     const o = loadResilient(AUTONOMY_POSTURE_FILE, 'autonomy-posture');
@@ -18333,7 +18334,11 @@ async function handleAutonomyPosture(req, res) {
     : ((body.initiative || body.reach || body.leashPerDay != null) ? body : null);   // tolerate a flat posture too
   const postureWritten = !!posture;
   const resumeRequested = postureWritten && body.resumeHalt === true;
-  commanderPosture.set(posture, body.beliefs);
+  try { commanderPosture.set(posture, body.beliefs); }
+  catch (e) {
+    console.warn('[autonomy] posture persist failed:', (e && e.message) || e);
+    return json(503, { ok: false, error: 'Autonomy could not be saved. Check available disk space and try again.' });
+  }
   // Boot-time posture and beliefs mirrors are background syncs, not Commander consent to resume after E-STOP.
   // Only a dial writer's explicit resumeHalt:true is the Commander's "autonomy back on" signal.
   // halt on the night shift (engaged in handleHalt). Without this an E-STOP would wedge the shift stood-down forever.

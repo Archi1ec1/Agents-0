@@ -425,6 +425,8 @@ test/seeds.test.js
 test/seedstore.test.js
 test/autonomy.test.js
 test/autonomystore.test.js
+test/backup-autonomy.test.js
+test/autonomy-confirmation.http.test.js
 test/autonomy-ui.test.js
 test/autojobs.test.js
 test/autojobstore.test.js
@@ -839,6 +841,7 @@ test/durable-store-faults.test.js
 test/permissions-authority.test.js
 test/api-json-lifecycle.test.js
 test/routine-acknowledgement.test.js
+test/routine-preview-race.test.js
 test/marketplace-authority.test.js
 test/control-acknowledgements.test.js
 test/spend-authority.test.js

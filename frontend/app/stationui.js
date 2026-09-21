@@ -5824,7 +5824,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
           let env; try { env = JSON.parse(String(reader.result || '')); } catch (_) { setMsg('that is not a valid StarNet backup file'); sfx('bad'); fileIn.value = ''; return; }
           setMsg('importing…');
           Harness.api.post('/api/config/import', { envelope: env })
-            .then(({ ok, j }) => {
+            .then(async ({ ok, j }) => {
               fileIn.value = '';
               if (!ok) {
                 const partial = j && Array.isArray(j.applied) && j.applied.length ? ' (already applied: ' + j.applied.join(', ') + ')' : '';
@@ -5835,7 +5835,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
               if (b.settings) { Object.assign(store.settings, b.settings); }
               if (b.notifyPrefs) { store.settings.notifyPrefs = Object.assign(notifyDefaults(), b.notifyPrefs); }
               save(); applySettings();
-              try { if (b.autonomy && typeof AutonomyStore !== 'undefined' && AutonomyStore.importState) AutonomyStore.importState(b.autonomy); } catch (_) {}
+              if (b.autonomy && typeof AutonomyStore !== 'undefined' && AutonomyStore.importState) {
+                const restored = await AutonomyStore.importState(b.autonomy);
+                if (!restored.ok) { setMsg('Backup partly imported. ' + restored.error); sfx('bad'); return; }
+              }
               // GROWTH Tier 3: an import is a NON-DIAL posture writer — reconcile the earned-rung record against
               // the imported rung (a diverged record is retired; user override wins), so a stale earned record can
               // never later demote FROM a rung the dial isn't even at (the silent-escalation blocker).
@@ -6665,19 +6668,22 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       };
       const paintAuto = () => {
         const a = AutonomyStore.summary() || {};
-        if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(x => x.classList.toggle('sel', x.dataset.init === a.initiative));
-        if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', x.dataset.reach === a.reach));
-        if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', Number(x.dataset.pace) === a.leashPerDay));
-        if (autoDesc) autoDesc.textContent = AutonomyStore.describe();
+        const sync = AutonomyStore.status();
+        if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(x => x.classList.toggle('sel', sync.loaded && x.dataset.init === a.initiative));
+        if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', sync.loaded && x.dataset.reach === a.reach));
+        if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', sync.loaded && Number(x.dataset.pace) === a.leashPerDay));
+        for (const wrap of [initWrap, reachWrap, paceWrap]) if (wrap) wrap.querySelectorAll('button').forEach(x => { x.disabled = sync.pending; });
+        if (autoDesc) { autoDesc.setAttribute('role', 'status'); autoDesc.textContent = sync.pending ? 'Confirming autonomy settings…' : (sync.error ? sync.error + (sync.loaded ? ' Current setting: ' + AutonomyStore.describe() : ' Reopen this panel to retry.') : sync.loaded ? AutonomyStore.describe() : 'Autonomy settings have not been confirmed.'); }
         try { paintEarned(a); } catch (_) {}   // GROWTH Tier 3: the EARNED badge on an earned rung
         try { syncPerm(); } catch (_) {}   // keep the permissions level highlight + blurb in step with the dial
       };
       // a MANUAL set retires the earned record (the user override wins, recorded as such) BEFORE the dial writes —
       // so a set above an earned rung reads as a plain user grant, a set below as a user override (no badge either way).
-      if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(b => b.addEventListener('click', () => { try { if (typeof TrustStore !== 'undefined' && TrustStore.onManualInitiative) TrustStore.onManualInitiative(b.dataset.init); } catch (_) {} AutonomyStore.setInitiative(b.dataset.init); paintAuto(); sfx('click'); }));
-      if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(b => b.addEventListener('click', () => { AutonomyStore.setReach(b.dataset.reach); paintAuto(); sfx('click'); }));
-      if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(b => b.addEventListener('click', () => { AutonomyStore.setLeash(Number(b.dataset.pace)); paintAuto(); sfx('click'); }));
+      if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(b => b.addEventListener('click', async () => { const write = AutonomyStore.setInitiative(b.dataset.init); paintAuto(); const result = await write; if (result.ok) { try { if (typeof TrustStore !== 'undefined' && TrustStore.onManualInitiative) TrustStore.onManualInitiative(b.dataset.init); } catch (_) {} } paintAuto(); sfx(result.ok ? 'click' : 'bad'); }));
+      if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(b => b.addEventListener('click', async () => { const write = AutonomyStore.setReach(b.dataset.reach); paintAuto(); const result = await write; paintAuto(); sfx(result.ok ? 'click' : 'bad'); }));
+      if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(b => b.addEventListener('click', async () => { const write = AutonomyStore.setLeash(Number(b.dataset.pace)); paintAuto(); const result = await write; paintAuto(); sfx(result.ok ? 'click' : 'bad'); }));
       repaintAutonomyDial = paintAuto;   // GROWTH Tier 3: let an accepted trust offer repaint the open panel's EARNED badge live
+      AutonomyStore.refresh().then(paintAuto);
       paintAuto();
     }
     // DIRECTION (autonomy-tuning) — focus/steer/off-limits/learned-interests, every value painted from a route's
@@ -7036,13 +7042,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       const plabel = (k) => (typeof Permissions !== 'undefined' && Permissions.catalogLabel) ? Permissions.catalogLabel(k) : k;
       const pcurated = () => (typeof Permissions !== 'undefined' && Permissions.grantableKeys) ? Permissions.grantableKeys() : [];
       const repaintDial = () => {
-        if (typeof AutonomyStore === 'undefined' || !AutonomyStore.summary) return;
-        const a = AutonomyStore.summary() || {};
-        const iw = host.querySelector('#auto-init'), rw = host.querySelector('#auto-reach'), pw = host.querySelector('#auto-pace'), ad = host.querySelector('#auto-desc');
-        if (iw) iw.querySelectorAll('[data-init]').forEach(x => x.classList.toggle('sel', x.dataset.init === a.initiative));
-        if (rw) rw.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', x.dataset.reach === a.reach));
-        if (pw) pw.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', Number(x.dataset.pace) === a.leashPerDay));
-        if (ad && AutonomyStore.describe) ad.textContent = AutonomyStore.describe();
+        if (repaintAutonomyDial) repaintAutonomyDial();
       };
       // the agent's LIVE placed caps (cabinet→files …) — so a granted-but-inert capability is shown honestly with a
       // "place a cabinet" nudge instead of a silent "writes files" lie (object=capability: the grant is consent, the
