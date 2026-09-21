@@ -49,9 +49,24 @@ mid-inspection. A later run caught the silent-catch ratchet; its diagnostic and 
 baseline adjustment were committed before the final uninterrupted, frozen-revision run
 passed all 844 steps. The final receipt itself is documentation only.
 
+## Owner-authorized integration
+
+- User authorized merge after reviewing the isolated-lane result.
+- `agent/cron-reliability-0921` merged into `feat/harness-backend` at
+  `3296f8be2905e7b78b9417ceae55e92063f94b6f`, from rollback point `a934cb61c`.
+- The merged tree exactly matches candidate `ac409bc70`:
+  `42ab2f03ce4515e860ea9ce6a4a25dc72bb3bfeb`.
+- Fresh post-merge gates on the frozen merge revision in the owned worktree:
+  **fast 844/844 PASS**, **HTTP 130/130 PASS**, both exit 0. Logs:
+  `.scratch-cron-audit/post-merge-fast.log` and `post-merge-http.log`.
+- Pre-existing integration edits in `docs/NEXT.md` and `qa/STATUS.md` were
+  byte-preserved at merge. The lane appended its own integration-status notes only.
+- The owned worktree remains because it contains untracked audit/live-test evidence.
+  Integration reservation released after green gates; no installer or publication.
+
 ## Scope limits
 
-No merge into the shared integration tree, installer build, deployment, real channel
+No installer build, deployment, real channel
 message, paid model call, suspend/resume exercise, multi-host claim, multi-day soak,
 release-readiness claim or Hermes runtime benchmark is included. External sends still
 have an ambiguous crash window between acceptance and acknowledgement; the audit describes
