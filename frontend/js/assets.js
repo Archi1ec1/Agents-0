@@ -372,10 +372,19 @@ const SPRITES = (() => {
   const TURN_STEP_W = 1.2;       // rad/s a standing body must exceed before its feet shuffle
   const TURN_STEP_FRAMES = 4 / Math.PI;   // walk frames per radian swept ≈ 2 frames per 90° pivot
   const DIR8_HYST = 0.10;        // rad a sector holds past its boundary (sectors are π/8 half-width)
+  const POSE_FADE_MS = 110;      // outgoing pose dissolves under the incoming one (drawBody)
+  const WALK_FACE_TRUST = 0.9;   // rad: walking art follows the eased facing unless displacement disagrees by more
   const ang = a => Math.atan2(Math.sin(a), Math.cos(a));
   function renderDir8(b, dir, glancing, nowMs) {
     // while walking (and not glancing) follow the true continuous heading; otherwise the game dir
-    const travel = b._resolvedTravelHeading ?? b.faceA;
+    // Arcing bodies travel ALONG their eased facing, so faceA is the smooth truth; raw displacement carries
+    // every separation nudge and flipped the 8-way pose back and forth within a frame or two. Displacement
+    // still wins when the two genuinely disagree (a shove, a chord step) so art never walks backwards.
+    // A displacement that matches the step the gait itself chose (b._travelHeading) is not evidence against
+    // the facing: that is a slow chord step while the body is still turning (the first steps of a U-turn).
+    const moved = b._resolvedTravelHeading, faced = b.faceA, own = b._travelHeading;
+    const shoved = moved != null && (own == null || Math.abs(ang(moved - own)) > 0.5);
+    const travel = moved == null ? faced : faced == null || shoved && Math.abs(ang(moved - faced)) > WALK_FACE_TRUST ? moved : faced;
     const want = (!glancing && b.state === 'walk' && travel != null) ? ang(travel) : DIR8_A[dir];
     if (want == null) return dir;
     const dt = Math.max(0, Math.min(100, nowMs - (b._rAt || 0)));   // clamp: first frame / tab-restore must not spin
@@ -397,7 +406,9 @@ const SPRITES = (() => {
       b._turnAng = (b._turnAng || 0) + swept;
     }
     const cur = b._rD8;
-    if (b.state !== 'walk' && cur && DIR8_A[cur] != null && Math.abs(ang(b._rA - DIR8_A[cur])) < Math.PI / 8 + DIR8_HYST) return cur;
+    // Walking holds its sector past the boundary too: an arcing body sweeps through every sector once,
+    // and separation nudges near a 22.5° edge used to flip the pose back and forth frame to frame.
+    if (cur && DIR8_A[cur] != null && Math.abs(ang(b._rA - DIR8_A[cur])) < Math.PI / 8 + DIR8_HYST) return cur;
     let best = dir, bd = Infinity;
     for (const d in DIR8_A) {
       const t = Math.abs(ang(b._rA - DIR8_A[d]));
@@ -655,7 +666,24 @@ const SPRITES = (() => {
         ctx.rect(x - 1, y - 1, dw + 2, Math.max(0, floor - y - 5));
         ctx.clip();
       }
+      // POSE DISSOLVE (2026-09-22, Andrew: "you can see the frames when they turn"). A change of
+      // POSE — facing sector, walk↔stand, stand↔sit — used to hard-cut between two unrelated
+      // drawings. The outgoing pose now fades out beneath the incoming one for POSE_FADE_MS,
+      // riding the body's position, so a turn reads as a rotation instead of a swap. Frames
+      // WITHIN one walk cycle never dissolve (that smears the legs); reduced motion never fades.
+      const prev = b._poseLast, fadeable = !reduced && !b.noShadow && prev && prev.key !== key
+        && nowMs - prev.at < 200 && Math.hypot(b.px - prev.px, b.py - prev.py) < 6;
+      if (fadeable) b._poseFade = { f: prev.f, ox: prev.x - prev.px, oy: prev.y - prev.py, w: prev.w, h: prev.h, at: nowMs };
+      const fade = b._poseFade, ft = fade && !reduced ? (nowMs - fade.at) / POSE_FADE_MS : 1;
+      if (fade && ft < 1) {
+        const keep = ctx.globalAlpha;
+        ctx.globalAlpha = keep * (1 - ft) * (1 - ft * 0.35);
+        ctx.drawImage(lightFrame(fade.f, light), snap(b.px + fade.ox), snap(b.py + fade.oy), fade.w, fade.h);
+        ctx.globalAlpha = keep;
+      } else if (fade) b._poseFade = null;
+      b._renderPoseFade = fade && ft < 1 ? +ft.toFixed(3) : null;
       ctx.drawImage(lightFrame(f, light), x, y, dw, drawHeight);
+      b._poseLast = { key, f, x, y, px: b.px, py: b.py, w: dw, h: drawHeight, at: nowMs };
       if (tuckDeskFeet) ctx.restore();
       if(speech)ctx.restore();
     }

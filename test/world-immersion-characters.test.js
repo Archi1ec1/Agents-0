@@ -220,7 +220,7 @@ test('reduced motion freezes decorative breath/gesture/spill without inventing o
   assert.equal(worker._pose, 'blank.type.north');
   assert.notEqual(work1.frame.image, work2.frame.image, 'working still follows its real typing track');
   assert.deepEqual(Object.keys(worker).filter(k => !Object.hasOwn(body({ working: true, sitting: true, dir: 'north' }), k)).sort(),
-    ['_pose', '_rA', '_rAt', '_rD8', '_rW', '_renderCycleUnits', '_renderFrame', '_renderGroundGap', '_renderSpeechAccent', '_renderStandingHeight', '_renderTravelError', '_speechAt', '_speechEase', '_turnAng'], 'only render telemetry and speech interpolation state are added');
+    ['_pose', '_poseLast', '_rA', '_rAt', '_rD8', '_rW', '_renderCycleUnits', '_renderFrame', '_renderGroundGap', '_renderPoseFade', '_renderSpeechAccent', '_renderStandingHeight', '_renderTravelError', '_speechAt', '_speechEase', '_turnAng'], 'only render telemetry and pose/speech interpolation state are added');
   const spill1 = draw(sprites, body({ id: 'ULTRON' }), 1000, { reducedMotion: true }).ctx.ellipses;
   const spill2 = draw(sprites, body({ id: 'ULTRON' }), 2200, { reducedMotion: true }).ctx.ellipses;
   assert.deepEqual(spill1, spill2, 'leader spill stops pulsing under reduced motion');
@@ -307,4 +307,27 @@ test('working bodies face their desk and unreachable workers stand on the floor'
     draw(sprites, standing, 1000, {});
     assert.equal(standing._pose, 'blank.rot.' + dir, 'unreachable worker stands facing ' + dir);
   }
+});
+
+test('a POSE change dissolves over ~110ms; a walk-cycle frame advance never does', async () => {
+  const { sprites } = await harness();
+  const b = body({ state: 'walk', dir: 'south', odo: 0, _resolvedTravelHeading: Math.PI / 2 });
+  draw(sprites, b, 1000, {});
+  b.odo = 6;
+  const stride = draw(sprites, b, 1016, {});
+  assert.equal(stride.ctx.draws.length, 1, 'the next frame of the same walk cycle is a crisp swap, never a blend');
+  b._resolvedTravelHeading = 0; b.dir = 'east';
+  const turn = draw(sprites, b, 1032, {});
+  assert.notEqual(b._pose, 'blank.walk.south', 'regression setup: the body really changed pose');
+  assert.equal(turn.ctx.draws.length, 2, 'the outgoing pose is drawn beneath the incoming one');
+  assert.equal(turn.ctx.draws[0].alpha, 1, 'the dissolve begins from the full outgoing pose (no pop to half-strength)');
+  assert.equal(turn.ctx.draws[1].alpha, 1, 'the incoming pose is always drawn at full strength');
+  assert.notEqual(turn.ctx.draws[0].image, turn.ctx.draws[1].image, 'the dissolve blends two different drawings');
+  const mid = draw(sprites, b, 1032 + 60, {});
+  assert.ok(mid.ctx.draws.length === 2 && mid.ctx.draws[0].alpha < turn.ctx.draws[0].alpha, 'the outgoing pose keeps fading');
+  assert.equal(draw(sprites, b, 1032 + 130, {}).ctx.draws.length, 1, 'the dissolve ends and releases the old pose');
+  const still = body({ state: 'walk', dir: 'south', odo: 0, _resolvedTravelHeading: Math.PI / 2 });
+  draw(sprites, still, 1000, { reducedMotion: true });
+  still._resolvedTravelHeading = 0; still.dir = 'east';
+  assert.equal(draw(sprites, still, 1016, { reducedMotion: true }).ctx.draws.length, 1, 'reduced motion keeps the hard cut');
 });
