@@ -634,6 +634,7 @@ function knobEnvLocked(envSuffix) { const e = envSuffix ? ENV(envSuffix) : null;
 // is blind to them). SKYNET_MAX_UNPRICED_TOKENS overrides; 0 disables. OAuth/unmetered providers are exempt.
 const CAPS = { maxIters: resolveKnob('MAX_ITERS', 'maxIters', 0), maxCostUsd: 1.00, maxRepeat: 3, toolTimeoutMs: 30000, maxToolBytes: resolveKnob('MAX_TOOL_BYTES', 'maxToolBytes', 120000), maxUnpricedTokens: resolveKnob('MAX_UNPRICED_TOKENS', 'maxUnpricedTokens', 2000000) };
 const MAX_TOOL_BYTES_PINNED = knobEnvLocked('MAX_TOOL_BYTES');
+const MCP_CALL_TIMEOUT_MS = 120000;   // default connector call/handshake budget (mcp/manager.js); per-connector timeoutMs overrides
 // Optional spend governance: per-run, per-agent, per-day, and global ceilings all default OFF.
 // num() passes a parsed value through (including 0 -> UNGOVERNED via budget.js capOf, e.g. SKYNET_BUDGET_PER_DAY=0
 // disables the day pool); only an empty/missing/negative/non-numeric value falls back to the default.
@@ -4496,7 +4497,9 @@ const connectors = makeConnectorManager({
       })
     }));
   },
-  clock: { now: () => Date.now() }, timeoutMs: CAPS.toolTimeoutMs,
+  // MCP connector calls get their OWN budget (120s), not the 30s fast-tool default: a connector write that is cut
+  // off at 30s still lands remotely (h1 audit 2026-09-22). Per-connector timeoutMs still overrides it.
+  clock: { now: () => Date.now() }, timeoutMs: MCP_CALL_TIMEOUT_MS,
   schemaCache: connectorSchemaCacheStore,
   validateConfig: cfg => cfg && cfg.transportKind === 'stdio' ? mcpStdioIsolationError(cfg) : '',
   fingerprintConfig: cfg => mcpSchemaCache.fingerprint(cfg, value => crypto.createHash('sha256').update(value).digest('hex')),
