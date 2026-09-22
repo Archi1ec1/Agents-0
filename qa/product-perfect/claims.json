@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "0f881f44afde73e79de13f0117cf0dd9f2771ff9",
+    "sourceCommit": "269b05b2b127ebdffe4e8df9986f169ee7d0d916",
     "pathSetSha256": "624df0d0e5b2511e74e175d045f26a8fd916195933e6750693b47d486e2e7b31",
     "files": [
       {
@@ -373,8 +373,8 @@
       },
       {
         "path": "frontend/app/crtlab.js",
-        "bytes": 23936,
-        "sha256": "b67f9780426e1e69fb1af0ddbf8bd9c963808e1be76242d9adbc72fdc78bdb73"
+        "bytes": 25146,
+        "sha256": "12f57d180a9fa277051a0dc5e31835e99cea8ad1b4e6acf635738669520087c6"
       },
       {
         "path": "frontend/app/ctxgauge.js",
@@ -528,8 +528,8 @@
       },
       {
         "path": "frontend/app/industrialtextures.js",
-        "bytes": 31533,
-        "sha256": "a049fcacf100e9cdbe421b3db1c0f851d956067b7938f07dd928ee4f808deb65"
+        "bytes": 32047,
+        "sha256": "477d29d14b2809a01f1a7a0e01a7fd47d866cd386795ff6c060e98bd2201b7f3"
       },
       {
         "path": "frontend/app/intake.js",
@@ -1303,8 +1303,8 @@
       },
       {
         "path": "frontend/app/worldlight.js",
-        "bytes": 35818,
-        "sha256": "c095ff3c1efdbcaab4b19ea2f10af79b6c3a11a1dd10b6b42577201e5a8f84b7"
+        "bytes": 39273,
+        "sha256": "c4dec0d2e5e24f8167dc3fae77b70b1b232aded7d7b0faefb12e5a14a84325cd"
       },
       {
         "path": "frontend/app/worldmodel.js",
@@ -1314,7 +1314,7 @@
       {
         "path": "frontend/app/worldrenderer.js",
         "bytes": 11322,
-        "sha256": "23578793d273ef70127846b49596bd1cfa207649670802f1ce963f3a7e3ac6f9"
+        "sha256": "8e5ac3c821d153e6a36bc1d88f36fd68034ee0e2cac5a7aec68f9adda15c533f"
       },
       {
         "path": "frontend/app/worldsurface.js",
