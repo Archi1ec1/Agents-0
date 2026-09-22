@@ -506,6 +506,50 @@
     return JSON.stringify(value);
   }
 
+  /* ONE TURN, ONE EFFECT PER DISTINCT CALL (2026-09-22 audit, reference-harness parity). Two seams let a single
+     model turn repeat a side effect:
+       · EXACT DUPLICATES — the same tool with the same arguments twice in one batch. Nothing in one turn can make
+         the second copy mean something the first did not, but both were dispatched: two identical channel_send
+         calls sent the message twice. The later copies are dropped from the dispatch list AND from the recorded
+         assistant turn (the DUPLICATE CHECK STOP pattern), so every persisted call still has exactly one result.
+         "Same" is name + canonical JSON of the parsed args (key order cannot hide a duplicate). Calls whose args
+         failed to parse are never merged — their args are not known, so they cannot be proven equal.
+       · DUPLICATE IDS — some models reuse one id for different calls in a batch. Both ran, both results carried
+         the same tool_call_id, and repairToolPairs (providers/provider.js) later re-minted the second CALL and
+         relabelled its real result as "[interrupted — ... Reissue it if it is still needed.]" — an invitation to
+         repeat a write that already happened. The later call gets a fresh id here, before the turn is persisted,
+         checkpointed or dispatched, so the transcript, the journal and the results all agree on it from birth.
+     Runs after repairCalls (repaired args compare as the values they are) and before anything is persisted. Pure
+     and deterministic: same calls -> same ids -> same stream. Mutates `calls` in place, like repairCalls. */
+  function normalizeBatch(calls, messages) {
+    const seenSig = new Set();
+    for (let i = 0; i < calls.length;) {
+      const c = calls[i];
+      if (!c.parseError) {
+        const sig = String(c.name == null ? '' : c.name) + '\u0000' + canonicalJson(c.args == null ? {} : c.args);
+        if (seenSig.has(sig)) { calls.splice(i, 1); continue; }
+        seenSig.add(sig);
+      }
+      i++;
+    }
+    const counts = new Map();
+    for (const c of calls) counts.set(c.id, (counts.get(c.id) || 0) + 1);
+    if (!Array.from(counts.values()).some(n => n > 1)) return;
+    // A minted id must collide with nothing: not this batch, and not any earlier call in the transcript.
+    const taken = new Set(counts.keys());
+    for (const m of (messages || [])) {
+      if (m && m.role === 'assistant' && Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) if (tc && tc.id != null) taken.add(String(tc.id));
+    }
+    const kept = new Set();
+    for (const c of calls) {
+      if (!kept.has(c.id)) { kept.add(c.id); continue; }
+      let n = 2, id;
+      do { id = String(c.id) + '_' + (n++); } while (taken.has(id));
+      taken.add(id);
+      c.id = id;
+    }
+  }
+
   // Keep this deliberately narrow: ordinary reads/polls and every mutation remain repeatable.
   function deterministicCheckSignature(call) {
     if (!call) return '';
@@ -1388,6 +1432,7 @@
       }
 
       repairCalls(calls, emit, agentId, runId);   // L2: fix broken tool-call JSON before it is used or discarded
+      normalizeBatch(calls, messages);            // drop exact in-turn duplicates; give reused ids a unique one
       /* DUPLICATE CHECK STOP. If the model already supplied a sufficient answer while reissuing the exact check
          from the immediately-prior tool turn, dispatching it again adds no evidence and forces another paid turn.
          Drop it before persisting the assistant turn so tool-call/result pairing remains valid. Explicit retry
@@ -1742,5 +1787,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { parseCall, repairCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
+  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
 });

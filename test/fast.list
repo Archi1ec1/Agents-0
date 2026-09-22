@@ -858,3 +858,4 @@ test/cli.test.js
 test/loop.truncated-args-refuse.test.js
 test/loop.verify-on-stop-failed-check.test.js
 test/loop.grace-no-tools.test.js
+test/loop.batch-dedupe.test.js
