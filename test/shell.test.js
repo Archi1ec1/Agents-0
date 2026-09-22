@@ -114,6 +114,18 @@ const SLEEP = process.platform === 'win32' ? 'ping -n 5 127.0.0.1 > NUL' : 'slee
     const r7 = await p7;
     A.ok(/aborted|\[exit -1/.test(r7.content), 'aborted command is killed');
     A.ok(Date.now() - tA < 4500, 'abort fired well before the sleep would finish');
+
+    // ---- 8. the timeout CEILING is 10 min by default, config-bounded, and `timeout_ms` is an accepted spelling ----
+    A.eq(tool.timeoutMs, 600000 + 10000, 'the registry backstop sits 10s above the 600s default ceiling');
+    const t8 = Date.now();
+    const r8 = await tool.run({ cmd: SLEEP, timeout_ms: 1200 }, ctx());
+    A.ok(/timed out after 1200ms/.test(r8.content) && Date.now() - t8 < 4500, 'timeout_ms (snake_case) drives the same kill — got ' + r8.content.slice(-80));
+    const bounded = makeShellTool({ spawn, fs, pathMod: path, root, clock: makeClock(0), limits: { maxTimeoutMs: 1500 } }).execTool;
+    A.eq(bounded.timeoutMs, 1500 + 10000, 'limits.maxTimeoutMs bounds the registry backstop too');
+    const t9 = Date.now();
+    const r9 = await bounded.run({ cmd: SLEEP, timeoutMs: 999999 }, ctx());
+    A.ok(/timed out after 1500ms/.test(r9.content) && Date.now() - t9 < 4500, 'a timeoutMs above the configured ceiling is clamped to it, never honoured');
+    A.ok(/max 10 min/.test(tool.description) && tool.schema.properties.timeout_ms, 'the model-facing description + schema advertise the new ceiling and alias');
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }
