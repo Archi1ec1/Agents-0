@@ -66,18 +66,24 @@
       if (winish) { a = a.toLowerCase(); b = b.toLowerCase(); }
       return a === b || a.indexOf(b + P.sep) === 0;
     }
-    async function realpathOrSelf(p) { try { return await fsp.realpath(p); } catch (_) { return p; } }
+    async function realpathOrSelf(p) {
+      try { return await fsp.realpath(p); }
+      catch (e) { throw new Error('cannot resolve filesystem path (possibly a dangling symlink): ' + p + ': ' + ((e && e.message) || e)); }
+    }
     // realpath the DEEPEST existing ancestor of a (possibly not-yet-created) absolute path, so a symlink
     // anywhere along the real chain is resolved before the containment test (symlink-escape re-proof).
     async function realpathDeepest(abs) {
       let cur = P.resolve(abs);
       for (;;) {
-        try { await fsp.lstat(cur); return await realpathOrSelf(cur); }
-        catch (_) {
+        try { await fsp.lstat(cur); }
+        catch (e) {
+          if (!e || e.code !== 'ENOENT') throw e;
           const parent = P.dirname(cur);
-          if (!parent || parent === cur) return cur;
+          if (!parent || parent === cur) throw new Error('cannot resolve filesystem path: ' + abs);
           cur = parent;
+          continue;
         }
+        return realpathOrSelf(cur);
       }
     }
 
