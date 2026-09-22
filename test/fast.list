@@ -857,3 +857,4 @@ test/project-home-ui.test.js
 test/cli.test.js
 test/summarizer.guards.test.js
 test/micro.durability.test.js
+test/checkpoint-restore-undoable.test.js

@@ -14171,7 +14171,11 @@ async function handleHooksAllow(req, res) {
 
 /* POST /api/checkpoint/restore { agentId, snapshotId } — the manual "rewind": hard-reset an agent's workspace to
    a recorded snapshot (and drop files created since). Only restores a snapshotId IN that agent's index (never an
-   arbitrary git ref); 127.0.0.1-bound. The auto-snapshots that feed this come from the opt-in dispatch hook. */
+   arbitrary git ref); 127.0.0.1-bound. The auto-snapshots that feed this come from the opt-in dispatch hook.
+   UNDOABLE (local backend): the store first records the current tree as a 'pre-restore' restore point and the
+   200 body additively names it ({ ok:true, preRestoreId }) — restoring that id undoes the rewind. If that undo
+   point cannot be saved the rewind is refused (500) with the tree untouched; a git failure after it is saved says
+   so honestly instead of claiming the snapshot does not exist. */
 async function handleCheckpointRestore(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
@@ -14183,13 +14187,21 @@ async function handleCheckpointRestore(req, res) {
   const operationId = 'restore-' + crypto.randomUUID();
   const lifecycle = await agentLifecycle.acquireMutation(agentId, operationId);
   if (!lifecycle.ok) return json(409, { error: lifecycle.deleting ? 'agent is being deleted' : 'workspace busy' });
-  let ok;
-  try { ok = remoteEnv && typeof remoteEnv.restoreCheckpoint === 'function' ? await remoteEnv.restoreCheckpoint(agentId, snapshotId) : await checkpointStore.restore(agentId, snapshotId); }
+  let out;
+  try {
+    out = remoteEnv && typeof remoteEnv.restoreCheckpoint === 'function'
+      ? { ok: !!(await remoteEnv.restoreCheckpoint(agentId, snapshotId)) }
+      : await checkpointStore.restoreDetailed(agentId, snapshotId);
+  }
   catch (e) { return json(500, { error: 'restore failed: ' + ((e && e.message) || e) }); }
   finally { lifecycle.release(); }
-  if (!ok) return json(404, { error: 'no such snapshot for that agent' });
+  if (!out || !out.ok) {
+    if (out && out.reason === 'pre_restore_failed') return json(500, { error: 'restore refused: the current workspace could not be saved as an undo point first, so nothing was changed' });
+    if (out && out.reason === 'git_failed') return json(500, { error: 'restore did not complete; the workspace as it was just before is saved as restore point ' + String(out.preRestoreId || '').slice(0, 12), preRestoreId: out.preRestoreId || '' });
+    return json(404, { error: 'no such snapshot for that agent' });
+  }
   try { checkpointEmit('checkpoint.restored', { agentId: agentId, runId: '', toSnapshotId: snapshotId, reason: 'manual' }); } catch (_) {}
-  json(200, { ok: true });
+  json(200, out.preRestoreId ? { ok: true, preRestoreId: out.preRestoreId } : { ok: true });
 }
 
 // GET /api/checkpoint?agent=<id> — the read-only snapshot index a "rewind" affordance lists from.
