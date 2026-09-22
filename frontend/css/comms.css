@@ -159,7 +159,7 @@
 
 /* TERMINAL MARKDOWN — a small, restrained subset in the agent's prose (chat.js renderMarkdown). Phosphor tokens
    only; a header is BRIGHT text, never oversized web type. XSS is handled upstream (escape-then-wrap). */
-.cmsg .body .md-b { color: var(--ph-bright); }
+.cmsg .body .md-b { color: var(--ph-bright); font-weight: 700; }
 .cmsg .body .md-h { display: inline-block; color: var(--ph-bright); letter-spacing: .5px; }
 .cmsg .body .md-li { display: inline-block; }
 .cmsg .body .md-li .md-bul { color: var(--ph); }
@@ -847,6 +847,7 @@
 .cmsg .body .md-h { display: block; margin: .65em 0 .3em; }
 .cmsg .body .md-list { white-space: normal; margin: .4em 0; padding-left: 1.8em; }
 .cmsg .body .md-list li { margin: .2em 0; }
+.cmsg .body .md-list li > .md-b:first-child { margin-right: .2em; }
 .cmsg .body .md-list .md-list { margin: .15em 0; }
 .cmsg .body .md-quote { white-space: normal; margin: .5em 0; padding: .3em .7em; border-left: 2px solid var(--ph-faint); color: var(--ph); }
 .cmsg .body .md-table-scroll { display: block; max-width: 100%; overflow-x: auto; margin: .6em 0; white-space: normal; }

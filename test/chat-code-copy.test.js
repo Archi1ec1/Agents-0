@@ -96,4 +96,11 @@ A.ok(!mixed.includes('\n\n'),'extra blank separators do not add empty rendered r
 const whitespaceCode=renderMarkdown('Before\n\n```\n  one\n\n\n  two\n```\n\nAfter');
 A.ok(whitespaceCode.includes('<span class="md-pre">  one\n\n\n  two</span>'),'code indentation and empty lines remain exact');
 A.eq(renderMarkdown('1. One\r\n\r\n2. Two'),renderMarkdown('1. One\n\n2. Two'),'CRLF lists match LF lists');
+for (const separator of ['\n\n', '\r\n\r\n', '\n   \n']) {
+  const raw = 'First paragraph' + separator + 'Second paragraph';
+  const body = { textContent: '', innerHTML: '' };
+  renderProse(body, raw);
+  A.eq((body.innerHTML.match(/class="md-p"/g) || []).length, 2, 'plain prose uses the same paragraph structure: ' + JSON.stringify(separator));
+  A.eq(copySource(body), raw, 'paragraph copy preserves original line endings and spaces');
+}
 A.report('chat-report-structure');

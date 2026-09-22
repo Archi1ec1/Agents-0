@@ -525,7 +525,7 @@ const Chat = (() => {
      invariant is inviolate: every model substring is HTML-ESCAPED first (escapeHtml / linkify both escape), and
      we only ever wrap ALREADY-ESCAPED text in our OWN tags — model output never reaches innerHTML raw. `code`
      spans are pulled to placeholders before the bold pass so a ** inside code stays literal. */
-  const MD_MARKERS = /\||^\s*>|^\s*\d+[.)]\s|\*\*|`|^#{1,6}\s|^[ \t]*[-*+]\s/m;   // cheap gate: does this text carry any markdown we render?
+  const MD_MARKERS = /\||^\s*>|^\s*\d+[.)]\s|\*\*|`|^#{1,6}\s|^[ \t]*[-*+]\s|\r?\n[ \t]*\r?\n/m;   // plain paragraph breaks need the same spacing as formatted prose
   function mdInline(safe) {
     // `safe` is escaped-and-linkified HTML. Pull `inline code` to placeholders, bold the rest, restore code.
     const codes = [];
