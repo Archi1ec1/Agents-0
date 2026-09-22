@@ -564,7 +564,8 @@
       : Infinity;
     // GRACE TURN (P0.3): when a run hits the iteration ceiling, give it ONE final no-tools turn to deliver its
     // best answer instead of dead-stopping at 'max_iters' (the reference harness's grace-call pattern). Default on; pass
-    // limits.grace === false to test/force the raw hard cap. Bounded: exactly one grace turn per run.
+    // limits.grace === false to test/force the raw hard cap. Bounded: exactly one grace turn per run. Tool-free is
+    // ENFORCED, not requested: calls emitted on it are dropped unexecuted (see GRACE TURN NEVER DISPATCHES).
     const graceEnabled = (limits.grace !== false);
     let graceUsed = false;
     let maxCostUsd = (limits.maxCostUsd != null) ? limits.maxCostUsd : Infinity;
@@ -1046,11 +1047,14 @@
     while (true) {
       // (1) GUARDS — before any paid call
       if (signal.aborted) return end('cancelled');
+      let graceTurn = false;                              // true only for the ONE turn granted past the ceiling
       if (turns >= maxIters) {                            // per-RUN iteration ceiling
         if (graceUsed || !graceEnabled) return end('max_iters');
         graceUsed = true;                                 // spend ONE grace turn on a final, tool-free answer
+        graceTurn = true;
         messages.push({ role: 'system', content: '<iteration_limit>You have reached the maximum number of tool-using turns (' + maxIters + '). Do NOT call any more tools. Give your best final answer to the user now using what you already have.</iteration_limit>' });
-        // fall through: the grace turn runs below; if it still calls tools, the next pass ends max_iters.
+        // fall through: the grace turn runs below. Tools stay ON THE WIRE (see GRACE TURN NEVER DISPATCHES after
+        // the stream) — but any call it emits is dropped, never executed, and the run ends max_iters.
       }
       if (spentUsd >= maxCostUsd) return end('budget', { budgetScope: 'run', budgetCapUsd: maxCostUsd });   // per-RUN hard ceiling
       // per-RUN token ceiling for turns nothing could price (the $ ceiling above is blind to them — see maxUnpricedTokens)
@@ -1353,6 +1357,26 @@
         }
         collapseContinuation();
         return end(String(acc.text || '').trim() || continuationText.trim() ? 'done' : 'empty');
+      }
+
+      /* GRACE TURN NEVER DISPATCHES (2026-09-22 audit, reference-harness parity). The grace turn is contracted to be
+         tool-free, but that contract lived only in the <iteration_limit> prose: tools stayed on the request, so a
+         model that kept going had its calls executed PAST the Commander's ceiling (cap 2 -> 3 dispatches, a file
+         written after the limit, returned text ""). The tool list is deliberately NOT dropped from the wire to
+         enforce this — provider-compatibility law: a request whose history carries tool_use blocks but no tool
+         definitions is rejected (Anthropic), and every adapter omits `tools` when the list is empty. So the host
+         enforces it here instead: whatever the model says is kept as its final answer, the calls are stripped
+         from the recorded turn BEFORE it is persisted (the DUPLICATE CHECK STOP pattern — nothing unpaired ever
+         reaches the transcript, the checkpoint, or a later replay), nothing is repaired, announced or executed,
+         and the run ends max_iters — never 'done', whether or not any text came with the calls. The surfaces that
+         render max_iters (channels/hub.js, acp/core.js, COMMS in frontend/app/chat.js) already add their own step-limit line,
+         so no host text is added here. */
+      if (graceTurn && calls.length > 0) {
+        const graceFinal = assistantTurn(acc.text, [], acc.reasoning);
+        messages.push(graceFinal);
+        const checkpointEnd = await saveCheckpoint('assistant');
+        if (checkpointEnd) return checkpointEnd;
+        return end('max_iters');
       }
 
       // A clean continuation may legitimately reissue the complete tool call that was cut off. Keep the earlier
