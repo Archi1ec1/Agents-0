@@ -40,8 +40,8 @@ const CHECK = process.argv.includes('--check');
 const WEBSITE_ONLY = new Set(['demo-boot.js', 'demo.css']);
 
 const EMBED_TAGS =
-  '<link rel="stylesheet" href="demo.css"><!-- WEBSITE EMBED ONLY: half-strength glass for the downscaled iframe -->\n' +
-  '<script src="demo-boot.js?v=20260905-current-station-v4"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->';
+  '<link rel="stylesheet" href="demo.css?v=20260921"><!-- WEBSITE EMBED ONLY: camera viewport without duplicate page glass -->\n' +
+  '<script src="demo-boot.js?v=20260921-starter-station-v5"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->';
 
 function walk(dir, base = dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

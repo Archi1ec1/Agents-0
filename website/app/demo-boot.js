@@ -15,7 +15,7 @@
      hand-editing the enormous serialized fixture above; the parsed save remains the app's real
      versioned document and still boots through the normal Save/WorldModel path. */
   var DEMO_REV_KEY = 'starnet.website.demo.rev';
-  var DEMO_REV = '2026-09-05-current-station-v4';
+  var DEMO_REV = '2026-09-21-starter-station-v5';
   try {
     var demoSave = JSON.parse(SEED['starnet.save']);
     var demoRoom = demoSave && demoSave.station && demoSave.station.rooms && demoSave.station.rooms.r1;
@@ -45,12 +45,8 @@
     try {
       if (typeof World !== 'undefined' && World.pauseBridge && document.getElementById('screen-game') && document.getElementById('screen-game').classList.contains('active')) {
         World.pauseBridge(); clearInterval(t);
-        /* soften the tube for the small embed: the iframe renders below native size, so
-           full-strength scan/aberration/grain smear into haze. Same knobs the app owns. */
-        try {
-          World.crt.scan = 0.20; World.crt.aberr = 0.12; World.crt.grain = 0.10;
-          World.crt.dust = 0.30; World.crt.curve = 0.06; World.crt.fade = 0.16;
-        } catch (e) {}
+        /* Use the current renderer's own treatment. The retired embed overrides
+           added fade and colour fringing on top of the generation-II compositor. */
         /* hold the room-fit framing: with no visitor input the idle cinecam would
            follow-lock the agent (in-app behavior); the landing preview stays wide.
            setCinecamIdle is the app's own DEV knob — a huge threshold = never idle. */

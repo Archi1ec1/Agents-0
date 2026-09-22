@@ -25,7 +25,7 @@ A.eq(/clip\.clientWidth\s*\/\s*666/.test(js), false,
   'the current preview scale is not pinned to the retired 666px stage width');
 A.ok(/live-preview\.js\?v=20260809/.test(html),
   'the homepage cache-busts the corrected preview controller');
-A.ok(/app\/embed\.htm\?v=20260905-current-station-v4/.test(html),
+A.ok(/app\/embed\.htm\?v=20260921-starter-station-v5/.test(html),
   'the homepage uses the cache-busted dashboard-upload-safe station document');
 A.ok(/app\/assets\/sprites\/blank\/rot_south\.png/.test(html) && /fetchpriority="high"/.test(html),
   'the marketing page starts the embedded default-skin request before the iframe boot');
@@ -53,7 +53,7 @@ A.eq(upgradedRoom.floorMat, null, 'the website demo inherits the standard starte
 A.eq(upgradedRoom.wallMat, null, 'the website demo inherits the standard starter wall material');
 A.eq(upgradedRoom.hullStyle, null, 'the website demo inherits the standard starter hull style');
 A.eq(upgradedRoom.hullMat, null, 'the website demo uses the standard station hull material');
-A.eq(upgraded['starnet.website.demo.rev'], '2026-09-05-current-station-v4',
+A.eq(upgraded['starnet.website.demo.rev'], '2026-09-21-starter-station-v5',
   'a versioned marker moves returning visitors off the retired captured save');
 
 const currentRev = upgraded['starnet.website.demo.rev'];
