@@ -856,3 +856,6 @@ test/workspace-owner-election.test.js
 test/project-home-ui.test.js
 test/cli.test.js
 test/errorclass.overflow-phrasings.test.js
+test/loop.prestream-outage-ladder.test.js
+test/loop.overflow.anthropic.test.js
+test/loop.output-cap.test.js
