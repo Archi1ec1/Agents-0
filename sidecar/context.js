@@ -224,14 +224,49 @@
     }
     return { scores, queried: true };
   }
+  // PROJECT SCOPE (memory-compound lane): the comparable key for a run's project root. Paths are compared
+  // slash-agnostic, trailing-slash-agnostic and case-folded (a Windows root differs only by case between the
+  // picker and realpath — isBlessedRoot folds case the same way). '' = no project (an unscoped run / a global record).
+  // semantic lane constants: cosine >= SEMANTIC_FLOOR admits a zero-overlap record (text-embedding-3 / gemini
+  // embeddings put unrelated prose around 0.1–0.25 and paraphrases above 0.5); SEMANTIC_WEIGHT keeps a strong
+  // semantic match on par with a one-term BM25 hit in a small notebook (idf ~ 0.7–1.5).
+  const SEMANTIC_FLOOR = 0.35;
+  const SEMANTIC_WEIGHT = 1.5;
+  function cosine(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || !a.length || a.length !== b.length) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { const x = Number(a[i]) || 0, y = Number(b[i]) || 0; dot += x * y; na += x * x; nb += y * y; }
+    if (!na || !nb) return 0;
+    return dot / Math.sqrt(na * nb);
+  }
+
+  function projectKey(root) {
+    const k = String(root == null ? '' : root).trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[a-z]:\//i.test(k) ? k.toLowerCase() : k;   // Windows drive paths are case-insensitive; POSIX paths are not
+  }
+
   function rank(records, query, rankOpts) {
     rankOpts = rankOpts || {};
     const now = typeof rankOpts.now === 'number' ? rankOpts.now : 0;
     const streamId = rankOpts.streamId || null;   // M-mem.2b: the active workstream — same-stream working memory gets a recall boost
+    const project = projectKey(rankOpts.projectRoot);   // the run's project (blessed root) — '' when unscoped
+    // HYBRID RETRIEVAL (memory-compound lane): an OPTIONAL semantic lane. `vectors` (record id -> embedding) and
+    // `queryVec` come from the host's embedding store (sidecar/embed.js); absent => pure BM25, byte-identical to
+    // before. A record whose cosine to the query clears `semanticFloor` is admitted even with ZERO lexical
+    // overlap — the case BM25 alone can never cover ("registry pushes rate-limit" vs "uploads keep getting
+    // throttled") — and the similarity adds to the score alongside the lexical relevance.
+    const vectors = (rankOpts.vectors && typeof rankOpts.vectors === 'object') ? rankOpts.vectors : null;
+    const queryVec = (vectors && Array.isArray(rankOpts.queryVec) && rankOpts.queryVec.length) ? rankOpts.queryVec : null;
+    const semanticFloor = typeof rankOpts.semanticFloor === 'number' ? rankOpts.semanticFloor : SEMANTIC_FLOOR;
     const k = rankOpts.k || 8;
     const halfLife = rankOpts.halfLifeMs || 6048e5;   // 7 days (usage recency)
     const trustHalfLife = rankOpts.trustHalfLifeMs || 2592e6;   // 30 days (endorsement fade — mirrors memcore.TRUST_HALFLIFE_MS)
-    const recs = Array.isArray(records) ? records.filter(Boolean) : [];
+    // PROJECT TIER: a record scoped 'project' belongs to ONE root — it is NEVER injected into a different project
+    // (or an unscoped run): a lesson about repo A's flaky registry must not steer work in repo B. Global records
+    // (no projectRoot, or scope global/stream) always compete, exactly as before. Same-project records get the
+    // same-stream boost below so a project's own lessons float up inside it.
+    const recs = (Array.isArray(records) ? records.filter(Boolean) : [])
+      .filter(r => !(r.scope === 'project' && projectKey(r.projectRoot) && projectKey(r.projectRoot) !== project));
     if (!recs.length) return [];
     const rel = bm25(recs, query);   // shared lexical core — scores align with recs
     let scored = recs.map((r, i) => {
@@ -247,12 +282,13 @@
       // M-mem.2b: same-stream working memory floats up; global records always compete; OTHER streams stay
       // searchable (no boost, not filtered) — "global always-on, workstream-scoped, cross-stream searchable".
       const sameStream = (streamId && r.scope === 'stream' && r.streamId === streamId) ? 0.5 : 0;
-      const projectKey = p => { const s = String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(s) ? s.toLowerCase() : s; };
-      const sameProject = r.projectRoot && rankOpts.projectRoot && projectKey(r.projectRoot) === projectKey(rankOpts.projectRoot);
-      const pinnedHere = r.pinned && (r.scope !== 'stream' || (streamId && r.streamId === streamId) || sameProject);
-      const score = relevance + 0.5 * recency + 0.3 * trust + sameStream + (pinnedHere ? 1000 : 0);
-      const eligible = !(r.pinned && r.projectRoot) || sameProject || (!rankOpts.projectRoot && streamId && r.streamId === streamId);
-      return { r: r, i: i, score: score, relevance: relevance, pinnedHere: pinnedHere, eligible: eligible };
+      const inProject = !!(project && r.projectRoot && projectKey(r.projectRoot) === project);
+      const sameProject = inProject ? 0.5 : 0;   // this project's own lessons float up (memory-compound lane)
+      const pinnedHere = r.pinned && (r.scope !== 'stream' || (streamId && r.streamId === streamId) || inProject);
+      const semantic = queryVec && r.id != null && vectors[r.id] ? Math.max(0, cosine(queryVec, vectors[r.id])) : 0;
+      const score = relevance + SEMANTIC_WEIGHT * semantic + 0.5 * recency + 0.3 * trust + sameStream + sameProject + (pinnedHere ? 1000 : 0);
+      const eligible = !(r.pinned && r.projectRoot) || inProject || (!project && streamId && r.streamId === streamId);
+      return { r: r, i: i, score: score, relevance: relevance, semantic: semantic, pinnedHere: pinnedHere, eligible: eligible };
     });
     // Approved project requirements are not generic facts for another project.
     // Explicit notebook searches remain able to retrieve them (floor:false).
@@ -262,7 +298,7 @@
     // queryless turn (empty / image-only) keeps the recency+trust fallback untouched: the floor must never
     // empty recall for a legitimately generic turn. `floor:false` opts out for a caller whose own gate already
     // admitted the records (notebook.read's substring match — reordering there must never truncate).
-    if (rel.queried && rankOpts.floor !== false) scored = scored.filter(s => s.relevance > 0 || s.pinnedHere);
+    if (rel.queried && rankOpts.floor !== false) scored = scored.filter(s => s.relevance > 0 || s.semantic >= semanticFloor || s.pinnedHere);
     scored.sort((a, b) => (b.score - a.score) || (a.i - b.i));   // deterministic: stable tiebreak by store order
     return scored.slice(0, k).map(s => s.r);
   }
@@ -276,7 +312,7 @@
   function compactionMemoryBlock(records, recentText, opts) {
     opts = opts || {};
     const now = typeof opts.now === 'number' ? opts.now : 0;
-    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, streamId: opts.streamId || null, projectRoot: opts.projectRoot || null });
+    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, streamId: opts.streamId || null, projectRoot: opts.projectRoot || null, vectors: opts.vectors || null, queryVec: opts.queryVec || null });
     if (!ranked.length) return '';
     const rr = renderRecall(ranked, {
       limit: opts.limit || 800,
@@ -437,5 +473,5 @@
     return api;
   }
 
-  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS };
+  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS };
 });
