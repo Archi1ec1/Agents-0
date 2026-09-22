@@ -18,7 +18,12 @@ const IndustrialTextures = (() => {
   // Values read back from the live CRT lab after the combined-room review.
   const lighting = { fixtureTint: projectionReview?.14:.04, propTint: projectionReview?.65:.48,
     propLift: projectionReview?.85:.65, ambientLift: projectionReview?.10:0,
-    floorGain: projectionReview?1.04:1, wallGain: projectionReview?.86:1, contact: .28 };
+    floorGain: projectionReview?1.04:1, wallGain: projectionReview?.86:1, contact: .28,
+    // 2026-09-22 key light (WorldLight KEY buffer): pools open further (cut) and then
+    // carry a warm gain ON the surface (key), tighter than the cut; screens and beacons
+    // splash their own colour (keyProps); unlit deck leans cool (shadeCool).
+    // Lounge crop, zoom 2: mean luma 18 -> 36, crushed 30% -> 7%, chroma 10.5 -> 19.
+    cut: 2.2, key: 2, keyReach: .5, keyProps: 3, keyPropReach: 1.5, shadeCool: .1 };
   const plates = new WeakMap();
   const platePyramids = new WeakMap();
   const detailTargets = new WeakMap(), wallStrips = new Map(), materials = new Map(), emitters = new Map();
