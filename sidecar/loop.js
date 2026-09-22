@@ -26,6 +26,8 @@
   // tool-call argument repair (L2): recover mechanically-broken JSON from non-Anthropic models. Degrades to
   // identity if the module is absent (e.g. a browser build that never runs the loop).
   const repairToolCallArguments = (sanitize && sanitize.repairToolCallArguments) || ((s) => s);
+  const repairToolCallArgumentsDetailed = (sanitize && sanitize.repairToolCallArgumentsDetailed)
+    || ((s) => ({ text: repairToolCallArguments(s), closedOpenString: false }));
   // API error classification (L3): makes `transient` on agent.run.error honest. Degrades to non-retryable if absent.
   const classifyApiError = (errorClass && errorClass.classifyApiError) || (() => ({ retryable: false, message: '' }));
   const continuation = outputContinuation || {
@@ -52,13 +54,25 @@
   // parseError, emitting one tool.args.repaired. A give-up '{}' on content-bearing args is NOT accepted — the
   // call keeps its parseError and becomes one clean isError result downstream (never a silent empty-args run).
   // Pure: same calls -> same emits -> byte-identical stream.
+  /* CUT-OFF VALUES ARE REFUSED, NOT REPAIRED (2026-09-22 audit). The ladder closes a dangling string so the JSON
+     parses — but a string that was still open when the arguments ended is a VALUE that was cut off, not a slip of
+     syntax. Accepting it dispatched '{"path":"src/app.js","content":"function main() {\n  initDatabase();\n  startServ'
+     as a complete write: a 47-char truncated file on disk and a run that ended 'done'. The finishReason 'length'
+     refusal further down cannot catch this on its own — routers rewrite length -> tool_calls and a stream can be
+     cut with no finish reason at all — so the evidence has to come from the arguments themselves. The call keeps a
+     parseError (registry.js refuses it before any gate or run()), the model is told it was NOT executed and must
+     reissue it complete, and no tool.args.repaired is emitted: nothing was repaired. Harmless structural damage (a
+     missing closing brace, a trailing comma) still repairs exactly as before — no value is lost there. */
+  const TRUNCATED_ARGS_ERROR = 'the arguments were cut off mid-value (the JSON ended inside an unterminated string, so at least one argument is incomplete). This call was NOT executed. Reissue the complete call with every argument in full; if a value is very large, split the work into several smaller calls.';
   function repairCalls(calls, emit, agentId, runId) {
     for (const c of calls) {
       if (!c.parseError) continue;
-      const fixed = repairToolCallArguments(c.argsRaw);
+      const detail = repairToolCallArgumentsDetailed(c.argsRaw);
+      const fixed = detail.text;
       if (fixed === c.argsRaw) continue;
       let parsed = null; try { parsed = JSON.parse(fixed); } catch (e) { continue; }
       if (fixed === '{}' && !onlyStructural(c.argsRaw)) continue;   // unrepairable content -> keep the parseError
+      if (detail.closedOpenString) { c.parseError = TRUNCATED_ARGS_ERROR; continue; }   // a cut-off value -> refuse, never dispatch
       emit('tool.args.repaired', { agentId, runId, callId: c.id, name: c.name || 'unknown', before: clip(c.argsRaw), after: clip(fixed) });
       c.args = parsed; c.argsRaw = fixed; c.parseError = null;
     }
@@ -332,7 +346,8 @@
 
      Deliberately narrow, because a false nudge costs a paid turn:
        · Only a SUCCESSFUL mutation of a non-prose path arms it. A README or a SKILL.md edit has nothing to run.
-       · Any successful verification DISARMS it — verify.run, or a shell command that reads like a real check.
+       · Any PASSING verification DISARMS it — verify.run, or a shell command that reads like a real check. A check
+         that ran and failed (non-zero exit, killed, "verify FAILED") leaves it armed: see vosCheckPassed.
        · It never fires without a verification tool actually wired, never on the grace turn (contracted to be
          tool-free), and at most once per run, so a model that refuses to verify still terminates. */
   const VOS_PROSE_EXT = new Set(['md', 'markdown', 'mdx', 'rst', 'txt', 'text', 'adoc', 'asciidoc', 'org', 'log', 'csv', 'tsv', 'json5']);
@@ -428,6 +443,45 @@
     }
     return false;
   }
+  /* DID THE CHECK PASS? (verify-on-stop ledger, 2026-09-22 audit). A check tool that RAN is not a check that
+     PASSED: shell_exec reports a non-zero exit as ordinary content ending "[exit N]", and verify.run reports
+     "✗ FAILED" as an ordinary ok result — both by design, so the model can read the failure. Clearing the ledger on
+     transport success let "fs_write -> npm test prints [exit 1] -> 'Fixed and verified. All done.'" end 'done'.
+     Only the HOST-AUTHORED verdict is read, never the command's own prose:
+       · shell_exec — the LAST "[exit …]" marker (shell.js appends it after the output; a registry receipt or a
+         strategy note may follow it, never precede it). Non-zero, non-numeric (a killed child reports "exit null")
+         or KILLED/TIMED OUT in the marker = not passed. The summary ("exit N (…ms)") is the fallback when a
+         per-turn squeeze cut the marker; with neither, explicitNonzeroExit over the content decides.
+       · verify.run — its own verdict: "✗ FAILED" / summary "verify FAILED" is not a pass, and neither is a
+         non-zero exit marker (the same rule completion-evidence.js applies to the durable ledger).
+     Absent any failure evidence the call counts as passed — exactly the old behavior, so a stub or a future
+     wrapper that reports no verdict never starts nagging; the tools that exist always write one. */
+  const VOS_EXIT_MARKER_RE = /\[\s*exit\s+([^\s\],]+)([^\]]*)\]/gi;
+  function lastExitMarker(text) {
+    let m, last = null;
+    VOS_EXIT_MARKER_RE.lastIndex = 0;
+    while ((m = VOS_EXIT_MARKER_RE.exec(text))) last = { code: m[1], rest: m[2] || '' };
+    return last;
+  }
+  function exitEvidenceFailed(content, summary) {
+    const text = String(content == null ? '' : content);
+    const marker = lastExitMarker(text);
+    if (marker) return !/^0$/.test(marker.code) || /KILLED|TIMED\s*OUT/i.test(marker.rest);
+    const sm = /^\s*exit\s+(\S+)/i.exec(String(summary == null ? '' : summary));
+    if (sm) return !/^0$/.test(sm[1]);
+    return explicitNonzeroExit(text);
+  }
+  function vosCheckPassed(call, result) {
+    if (!result || !result.ok || result.isError) return false;
+    const key = vosKey(call && call.name);
+    const content = String(result.content == null ? '' : result.content);
+    const summary = String(result.summary == null ? '' : result.summary);
+    if (VOS_VERIFIERS.has(key)) {
+      if (/^\s*✗\s*FAILED\b/.test(content) || /\bverify\s+FAILED\b/i.test(summary)) return false;
+      return !exitEvidenceFailed(content, '');
+    }
+    return !exitEvidenceFailed(content, summary);
+  }
   function isCheckShapedCall(call) {
     const key = vosKey(call && call.name);
     if (VOS_VERIFIERS.has(key)) return true;
@@ -451,6 +505,56 @@
     if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalJson(value[k])).join(',') + '}';
     return JSON.stringify(value);
   }
+
+  /* ONE TURN, ONE EFFECT PER DISTINCT CALL (2026-09-22 audit, reference-harness parity). Two seams let a single
+     model turn repeat a side effect:
+       · EXACT DUPLICATES — the same tool with the same arguments twice in one batch. Nothing in one turn can make
+         the second copy mean something the first did not, but both were dispatched: two identical channel_send
+         calls sent the message twice. The later copies are dropped from the dispatch list AND from the recorded
+         assistant turn (the DUPLICATE CHECK STOP pattern), so every persisted call still has exactly one result.
+         "Same" is name + canonical JSON of the parsed args (key order cannot hide a duplicate). Calls whose args
+         failed to parse are never merged — their args are not known, so they cannot be proven equal.
+       · DUPLICATE IDS — some models reuse one id for different calls in a batch. Both ran, both results carried
+         the same tool_call_id, and repairToolPairs (providers/provider.js) later re-minted the second CALL and
+         relabelled its real result as "[interrupted — ... Reissue it if it is still needed.]" — an invitation to
+         repeat a write that already happened. The later call gets a fresh id here, before the turn is persisted,
+         checkpointed or dispatched, so the transcript, the journal and the results all agree on it from birth.
+     ORDER (in the loop): uniqueCallIds BEFORE repairCalls, so a tool.args.repaired event already names the id the
+     transcript will carry; dropDuplicateCalls AFTER it, so repaired args compare as the values they are. Both run
+     before anything is persisted. Pure and deterministic: same calls -> same ids -> same stream. Both mutate
+     `calls` in place, like repairCalls. */
+  function dropDuplicateCalls(calls) {
+    const seenSig = new Set();
+    for (let i = 0; i < calls.length;) {
+      const c = calls[i];
+      if (!c.parseError) {
+        const sig = String(c.name == null ? '' : c.name) + '\u0000' + canonicalJson(c.args == null ? {} : c.args);
+        if (seenSig.has(sig)) { calls.splice(i, 1); continue; }
+        seenSig.add(sig);
+      }
+      i++;
+    }
+  }
+  function uniqueCallIds(calls, messages) {
+    const counts = new Map();
+    for (const c of calls) counts.set(c.id, (counts.get(c.id) || 0) + 1);
+    if (!Array.from(counts.values()).some(n => n > 1)) return;
+    // A minted id must collide with nothing: not this batch, and not any earlier call in the transcript.
+    const taken = new Set(counts.keys());
+    for (const m of (messages || [])) {
+      if (m && m.role === 'assistant' && Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) if (tc && tc.id != null) taken.add(String(tc.id));
+    }
+    const kept = new Set();
+    for (const c of calls) {
+      if (!kept.has(c.id)) { kept.add(c.id); continue; }
+      let n = 2, id;
+      do { id = String(c.id) + '_' + (n++); } while (taken.has(id));
+      taken.add(id);
+      c.id = id;
+    }
+  }
+  // Both halves in their loop order (tests / callers that want the whole normalization in one call).
+  function normalizeBatch(calls, messages) { uniqueCallIds(calls, messages); dropDuplicateCalls(calls); }
 
   // Keep this deliberately narrow: ordinary reads/polls and every mutation remain repeatable.
   function deterministicCheckSignature(call) {
@@ -510,7 +614,8 @@
       : Infinity;
     // GRACE TURN (P0.3): when a run hits the iteration ceiling, give it ONE final no-tools turn to deliver its
     // best answer instead of dead-stopping at 'max_iters' (the reference harness's grace-call pattern). Default on; pass
-    // limits.grace === false to test/force the raw hard cap. Bounded: exactly one grace turn per run.
+    // limits.grace === false to test/force the raw hard cap. Bounded: exactly one grace turn per run. Tool-free is
+    // ENFORCED, not requested: calls emitted on it are dropped unexecuted (see GRACE TURN NEVER DISPATCHES).
     const graceEnabled = (limits.grace !== false);
     let graceUsed = false;
     let maxCostUsd = (limits.maxCostUsd != null) ? limits.maxCostUsd : Infinity;
@@ -628,6 +733,7 @@
     const vosSourcesUnfetched = new Map();
     const sourceGroundingTask = sourceGroundingRequested(messages);
     let vosUsed = 0;
+    let vosFailedCheck = '';   // the most recent check that ran against unverified code and did NOT pass ('' = none)
     let vosExternalUsed = 0;
     let vosSourceUsed = 0;
     /* ACCEPTANCE-ON-STOP (SOP lane, 2026-08-21). A run launched from an SOP recipe carries a typed acceptance
@@ -991,11 +1097,14 @@
     while (true) {
       // (1) GUARDS — before any paid call
       if (signal.aborted) return end('cancelled');
+      let graceTurn = false;                              // true only for the ONE turn granted past the ceiling
       if (turns >= maxIters) {                            // per-RUN iteration ceiling
         if (graceUsed || !graceEnabled) return end('max_iters');
         graceUsed = true;                                 // spend ONE grace turn on a final, tool-free answer
+        graceTurn = true;
         messages.push({ role: 'system', content: '<iteration_limit>You have reached the maximum number of tool-using turns (' + maxIters + '). Do NOT call any more tools. Give your best final answer to the user now using what you already have.</iteration_limit>' });
-        // fall through: the grace turn runs below; if it still calls tools, the next pass ends max_iters.
+        // fall through: the grace turn runs below. Tools stay ON THE WIRE (see GRACE TURN NEVER DISPATCHES after
+        // the stream) — but any call it emits is dropped, never executed, and the run ends max_iters.
       }
       if (spentUsd >= maxCostUsd) return end('budget', { budgetScope: 'run', budgetCapUsd: maxCostUsd });   // per-RUN hard ceiling
       // per-RUN token ceiling for turns nothing could price (the $ ceiling above is blind to them — see maxUnpricedTokens)
@@ -1300,6 +1409,26 @@
         return end(String(acc.text || '').trim() || continuationText.trim() ? 'done' : 'empty');
       }
 
+      /* GRACE TURN NEVER DISPATCHES (2026-09-22 audit, reference-harness parity). The grace turn is contracted to be
+         tool-free, but that contract lived only in the <iteration_limit> prose: tools stayed on the request, so a
+         model that kept going had its calls executed PAST the Commander's ceiling (cap 2 -> 3 dispatches, a file
+         written after the limit, returned text ""). The tool list is deliberately NOT dropped from the wire to
+         enforce this — provider-compatibility law: a request whose history carries tool_use blocks but no tool
+         definitions is rejected (Anthropic), and every adapter omits `tools` when the list is empty. So the host
+         enforces it here instead: whatever the model says is kept as its final answer, the calls are stripped
+         from the recorded turn BEFORE it is persisted (the DUPLICATE CHECK STOP pattern — nothing unpaired ever
+         reaches the transcript, the checkpoint, or a later replay), nothing is repaired, announced or executed,
+         and the run ends max_iters — never 'done', whether or not any text came with the calls. The surfaces that
+         render max_iters (channels/hub.js, acp/core.js, COMMS in frontend/app/chat.js) already add their own step-limit line,
+         so no host text is added here. */
+      if (graceTurn && calls.length > 0) {
+        const graceFinal = assistantTurn(acc.text, [], acc.reasoning);
+        messages.push(graceFinal);
+        const checkpointEnd = await saveCheckpoint('assistant');
+        if (checkpointEnd) return checkpointEnd;
+        return end('max_iters');
+      }
+
       // A clean continuation may legitimately reissue the complete tool call that was cut off. Keep the earlier
       // text turns in their original provider-safe order; they cannot be folded across a tool call/result pair.
       if (calls.length > 0 && continuationParts.length) {
@@ -1308,7 +1437,9 @@
         continuationText = '';
       }
 
+      uniqueCallIds(calls, messages);             // a reused id gets a unique one BEFORE any event names it
       repairCalls(calls, emit, agentId, runId);   // L2: fix broken tool-call JSON before it is used or discarded
+      dropDuplicateCalls(calls);                  // exact in-turn duplicates (name + canonical args) run once
       /* DUPLICATE CHECK STOP. If the model already supplied a sufficient answer while reissuing the exact check
          from the immediately-prior tool turn, dispatching it again adds no evidence and forces another paid turn.
          Drop it before persisting the assistant turn so tool-call/result pairing remains valid. Explicit retry
@@ -1402,7 +1533,12 @@
             && tools.some(t => { const n = vosKey(t && t.function && t.function.name); return VOS_VERIFIERS.has(n) || n === 'shell_exec'; })) {
           vosUsed++;
           const touched = Array.from(vosUnverified).slice(0, 8).join(', ');
-          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.</verify_before_done>' });
+          // Same tag and budget either way; only the premise changes. A model whose check FAILED did run
+          // something — telling it "you ran nothing" would be a false statement from the host.
+          const premise = vosFailedCheck
+            ? 'and are ending although the last check you ran against it (' + vosFailedCheck + ') did NOT pass, and no passing check has run since. A failing check is evidence the change is not done. Fix the cause and rerun the check until it passes, then report what it actually returned. If it cannot be made to pass here, say so plainly: report the failure and state that the change is NOT verified.'
+            : 'and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.';
+          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') ' + premise + '</verify_before_done>' });
           continue;
         }
         // EXTERNAL VERIFY-ON-STOP: a successful custom-connector mutation is not proof that the requested
@@ -1543,14 +1679,21 @@
 
       // VERIFY-ON-STOP LEDGER. Only SUCCESSFUL calls move it: a write that errored changed nothing to verify,
       // and a check that errored is not evidence that anything passed. A verification clears the whole set
-      // rather than one path — a project's check runs the project, not a file.
+      // rather than one path — a project's check runs the project, not a file. A check clears it only when it
+      // PASSED (vosCheckPassed): a failing one leaves the debt standing and is remembered, so the stop nudge
+      // tells the model the truth — its check failed — instead of "you ran nothing".
       if (VOS_MAX > 0) {
-        const okById = {};
-        for (const r of results) okById[r.callId] = !!r.ok && !r.isError;
+        const okById = {}, resultById = {};
+        for (const r of results) { okById[r.callId] = !!r.ok && !r.isError; resultById[r.callId] = r; }
         for (const c of calls) {
           if (!okById[c.id]) continue;
           const k = vosKey(c.name);
-          if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) { vosUnverified.clear(); continue; }
+          if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) {
+            if (vosCheckPassed(c, resultById[c.id])) { vosUnverified.clear(); vosFailedCheck = ''; }
+            // `summarize` is shadowed in this scope by the compaction summarizer (o.summarize) — use clip().
+            else if (vosUnverified.size) vosFailedCheck = clip(k === 'shell_exec' ? ((c.args && (c.args.command || c.args.cmd || c.args.script)) || k) : ((c.args && c.args.cmd) || k), 80);
+            continue;
+          }
           if (VOS_MUTATORS.has(k)) { const p = vosPathOf(c.args); if (vosIsCodePath(p)) vosUnverified.add(p); }
           const externalEffect = vosExternalEffect(c.name);
           if (externalEffect && externalEffect.role === 'observe') {
@@ -1651,5 +1794,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { parseCall, repairCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
+  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
 });
