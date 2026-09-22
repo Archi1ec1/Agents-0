@@ -4,15 +4,16 @@ slug: website-preview-applies-retired-rendering-effect
 title: Website preview applies retired rendering effects and implies live work
 surface: world
 severity: P2
-status: open
+status: fixed
 found: 2026-09-22
 lane: agent/website-demo-0921
-fix:
+fix: 8be5cf230
 origin: owner
 report: Owner screenshot and website request, 2026-09-21
 affected: starnetos.com production on 2026-09-21
 family: website-preview
-installer: unverified
+installer: not-applicable
+installerEvidence: Website-only preview and generation changes; desktop binaries are unchanged.
 recovery: unconfirmed
 ---
 
@@ -34,7 +35,7 @@ Owner screenshot 2026-09-21; live browser reproduction on production and local s
 
 ## Verdict
 
-Source changes: 4d22a0576 and ca30418c0. Removed retired CRT overrides and duplicate page glass, framed the complete hull with the actual renderer camera, and labeled the offline starter layout. Full gate and production deployment remain pending. Owner visual acceptance remains unconfirmed.
+Source changes culminate in 8be5cf230. Generate the real starter layout from WorldModel.starterDoc() and derive its saved-preview revision from the layout hash. Removed retired CRT overrides and duplicate page glass, framed the complete hull with the actual renderer camera, and labeled the offline starter layout. Local desktop/mobile rendering verified; Cloudflare preview is https://723f4bea.starnet-site.pages.dev. Production deployment and final gate receipt are recorded separately in this lane's digest. Owner visual acceptance remains unconfirmed.
 
 ## Regression
 
@@ -44,4 +45,9 @@ Before: executing the trunk demo fixture produces one prop and null floor/wall/h
 
 ## Sibling coverage
 
-
+{
+  "adapters": [{"target":"static website frontend mirror","state":"covered","test":"test/website-app-sync.test.js","scenario":"generated preview matches the app and retains the versioned demo boot and styling","gate":"fast"}],
+  "entrypoints": [{"target":"homepage embed and direct app document","state":"covered","test":"test/website-deploy-staging.test.js","scenario":"unique embed entry matches the generated app and required runtime artwork ships","gate":"fast"}],
+  "displays": [{"target":"desktop and mobile visual appearance","state":"blocked","reason":"1440px desktop and 390px phone browser screenshots and overflow checks passed manually. Visual aesthetics and owner acceptance are not established by an automated fast/http scenario."}],
+  "lifecycle": [{"target":"returning visitor saved station","state":"covered","test":"test/website-live-preview.test.js","scenario":"layout hash refreshes obsolete saved demos once; current revisions retain their saved state; generated layout equals the real starter factory","gate":"fast"}]
+}
