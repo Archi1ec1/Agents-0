@@ -31,6 +31,7 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, rmSync }
 import { join, dirname, resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(ROOT, 'frontend');
@@ -49,8 +50,13 @@ const demoPath = join(DEST, 'demo-boot.js');
 const demoSource = readFileSync(demoPath, 'utf8');
 const stationAnchor = /  var DEMO_STATION = .*; \/\/ GENERATED STARTER/;
 if (!stationAnchor.test(demoSource)) throw new Error('Missing generated starter anchor in demo-boot.js');
+const starterJson = JSON.stringify(starter);
+const starterRevision = 'starter-' + createHash('sha256').update(starterJson).digest('hex').slice(0, 16);
+const revisionAnchor = /  var DEMO_REV = '[^']+';/;
+if (!revisionAnchor.test(demoSource)) throw new Error('Missing demo revision anchor');
 const expectedDemo = demoSource.replace(stationAnchor,
-  '  var DEMO_STATION = ' + JSON.stringify(starter) + '; // GENERATED STARTER');
+  '  var DEMO_STATION = ' + starterJson + '; // GENERATED STARTER')
+  .replace(revisionAnchor, "  var DEMO_REV = '" + starterRevision + "';");
 if (expectedDemo !== demoSource) {
   if (CHECK) { console.error('website-app-sync: starter layout is stale; run npm run sync:website'); process.exit(1); }
   writeFileSync(demoPath, expectedDemo);

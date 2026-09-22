@@ -50,6 +50,8 @@ const upgradedSave = JSON.parse(upgraded['starnet.save']);
 const upgradedRoom = upgradedSave.station.rooms.r1;
 const starter = require('../frontend/app/worldmodel.js').starterDoc();
 starter.meta.createdAt = 0;
+const starterRevision = 'starter-' + require('crypto').createHash('sha256')
+  .update(JSON.stringify(starter)).digest('hex').slice(0, 16);
 starter.props.find(p => p.t === 'desk').agentId = upgradedSave.agent.id;
 A.eq(upgradedSave.station, starter,
   'the complete website layout comes from the current product starter factory, including materials and all eight props');
@@ -58,8 +60,8 @@ A.eq(upgradedRoom.floorMat, 'resin', 'the website demo uses the actual starter f
 A.eq(upgradedRoom.wallMat, 'panelled', 'the website demo uses the actual starter wall material');
 A.eq(upgradedRoom.hullStyle, 'bone', 'the website demo uses the actual starter hull style');
 A.eq(upgradedRoom.hullMat, null, 'the website demo uses the standard station hull material');
-A.eq(upgraded['starnet.website.demo.rev'], '2026-09-22-current-starter-v6',
-  'a versioned marker moves returning visitors off the retired captured save');
+A.eq(upgraded['starnet.website.demo.rev'], starterRevision,
+  'a layout-derived revision moves returning visitors off obsolete starter saves automatically');
 
 const currentRev = upgraded['starnet.website.demo.rev'];
 const alreadyCurrent = bootDemo({
