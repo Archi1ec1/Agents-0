@@ -87,7 +87,6 @@ const { makeRunExecutionState, toolBytesCapFor } = require('./run-execution-stat
 const { recoverToolResult } = require('./tool-recovery.js'); // bounded retry for host-trusted transient reads only
 const transcriptStoreModule = require('./transcriptstore.js');
 const { makeTranscriptStore } = transcriptStoreModule;
-const TRANSCRIPT_PERSISTED = transcriptStoreModule._internals && transcriptStoreModule._internals.PERSISTED;
 const { makeRunJournal, DISPATCH_BOUNDARY_MODEL } = require('./run-journal.js');
 const { makeAffinityIndex } = require('./agent-affinity.js');   // idle-life social graph: which agents the run log proves work together
 const RunRecovery = require('./run-recovery.js');
@@ -16598,12 +16597,24 @@ async function runOnceCore(o) {
   // The summarizer body lives in compaction-summarizer.js (chunked full-slice fold; no 16k input truncation).
   // This is thin wiring: the run's provider/model/cost fallbacks, the aux tier, the STRICT transcript drain and
   // the durable-memory prepend are injected; `live` still overrides provider/model/cost per call (fallback-safe).
+  /* THE DIRECTIVE GOES FIRST. The triggering user turn is in the prompt (so it carries the persisted marker) and is
+     written to the transcript explicitly at run end. A MID-RUN drain (every compaction tier saves the slice it is
+     about to fold or elide) used to land the run's early assistant/tool rows BEFORE that run-end directive row, so
+     a restart replayed the agent answering a question it had not been asked yet. The first mid-run drain writes the
+     directive (text captured pre-loop, see transcriptDirective.text below) and run end then skips it. */
+  const transcriptDirective = { text: '', written: false };
   const summarize = makeSummarizer({
     provider, model, cost, signal, emit, agentId, runId,
     auxModelFor: resolveAuxModel,
     auxEffortFor: auxReasoningEffort,
     summaryPrompt: compactionSummaryPrompt,
-    transcriptDrain: (older) => transcriptStore.appendNewStrict(o.streamId, agentId, older, { sourceRunId: runId }),
+    transcriptDrain: (older) => {
+      if (!transcriptDirective.written && transcriptDirective.text) {
+        transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: transcriptDirective.text, sourceRunId: runId });
+        transcriptDirective.written = true;
+      }
+      return transcriptStore.appendNewStrict(o.streamId, agentId, older, { sourceRunId: runId });
+    },
     memoryBlockFor: (transcript) => {
       // on_pre_compress (MEMORY-CORTEX): rank durable memory against the slice being folded and PREPEND it.
       // '' when nothing to preserve. Fail-open: a memory hiccup must never block the summary.
@@ -17467,6 +17478,14 @@ async function runOnceCore(o) {
   // rebuilds the same array in place and SHORTER, leaving the index past the end and dropping the entire run's
   // dialogue with no error. See the PERSISTED marker in transcriptstore.js.
   transcriptStore.markPersisted(msgs);
+  // The run journal's delta checkpoints exclude exactly THESE objects (the base checkpoint below already holds
+  // them). Identity, not the persisted marker: a mid-run compaction drain also marks messages persisted while they
+  // stay in the working set (the micro tier keeps elided copies, a refused fold keeps the whole slice), and those
+  // must still reach the provider-resumable checkpoint.
+  const initialPromptSet = new WeakSet(msgs.filter(m => m && typeof m === 'object'));
+  // the directive a mid-run drain writes first (same rule as the run-end title write; captured before the loop can
+  // append its own user-role messages, e.g. a screen-capture turn)
+  if (!retryDirective && !o.syntheticTrigger) transcriptDirective.text = latestUserText(msgs);
   if (!internal) {
     try {
       runJournal.begin({
@@ -17651,12 +17670,14 @@ async function runOnceCore(o) {
       steer: typeof o.steer === 'function' ? o.steer : () => drainSteer(runId),   // live parent or generation-bound worker steering
       signal: signal, clock: { now: () => Date.now() },
       onCheckpoint: execution.journalStarted() ? ({ phase, messages: checkpointMessages, turn }) => {
-        // Initial prompt messages carry transcriptStore's non-enumerable PERSISTED marker. Everything without it
-        // was created by this run, so compaction cannot invalidate the boundary and recovery avoids duplicating
-        // the historical seed. System continuation/guard messages remain included because provider resumption
-        // must receive a valid context, even though the user-facing transcript later omits them.
+        // Initial prompt messages (initialPromptSet — the exact objects the base checkpoint recorded) are excluded;
+        // everything else was created by this run, so compaction cannot invalidate the boundary and recovery avoids
+        // duplicating the historical seed. System continuation/guard messages remain included because provider
+        // resumption must receive a valid context, even though the user-facing transcript later omits them. This
+        // used to test the transcript's PERSISTED marker, which a mid-run compaction drain ALSO sets on messages
+        // that stay live (micro-elided turns, a refused fold's slice) — dropping them from the resumable context.
         const fresh = Array.isArray(checkpointMessages)
-          ? checkpointMessages.filter(m => m && typeof m === 'object' && (!TRANSCRIPT_PERSISTED || !m[TRANSCRIPT_PERSISTED]))
+          ? checkpointMessages.filter(m => m && typeof m === 'object' && !initialPromptSet.has(m))
           : [];
         runJournal.checkpoint(runId, { phase, turn, messages: fresh });
       } : null,
@@ -17783,7 +17804,7 @@ async function runOnceCore(o) {
       if (execution.journalStarted()) {
         // Retirement is ordered strictly: each transcript row is fsync/read-back proven, then the journal records
         // that acknowledgement, then (and only then) is the recovery copy removed. A throw leaves it discoverable.
-        if (title && !retryDirective && !o.syntheticTrigger) transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: title, sourceRunId: runId });
+        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: title, sourceRunId: runId });
         if (result && Array.isArray(result.messages)) transcriptStore.appendNewStrict(o.streamId, agentId, result.messages, { sourceRunId: runId });
         const retirement = runJournal.finishAndRetire(runId, {
           reason: (result && result.reason) || 'error', turns: finalTurns, tokens: finalTokens, usd: finalUsd,
@@ -17793,7 +17814,7 @@ async function runOnceCore(o) {
           console.warn('[run-journal] retained unsettled run for review:', runId, retirement.state && retirement.state.status);
         }
       } else {
-        if (title && !retryDirective && !o.syntheticTrigger) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
+        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
         if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages);
       }
     } catch (_) {}

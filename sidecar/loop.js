@@ -860,6 +860,21 @@
       });
       return { older: out, elided };
     }
+    /* An elided copy STANDS IN for its original, so it inherits the original's host-attached identity markers:
+       non-enumerable own symbol keys, which Object.assign above does not copy. The one that matters is
+       transcriptstore.js's PERSISTED marker — with it the run-end drain treats the copy as already recorded (its
+       full body was drained just before the elision) instead of appending the 240-char head as new dialogue.
+       Index-aligned: elideTools maps `older` 1:1. The loop never names the symbol; it only preserves identity. */
+    function carryMarkers(originals, copies) {
+      for (let k = 0; k < originals.length; k++) {
+        const a = originals[k], b = copies[k];
+        if (!a || !b || a === b || typeof a !== 'object' || typeof b !== 'object') continue;
+        for (const sym of Object.getOwnPropertySymbols(a)) {
+          const d = Object.getOwnPropertyDescriptor(a, sym);
+          if (d && !d.enumerable && !Object.prototype.hasOwnProperty.call(b, sym)) Object.defineProperty(b, sym, d);
+        }
+      }
+    }
     // NO-LLM FALLBACK fold: a deterministic bullet note from the oldest messages (first 160 chars each). Lossy and
     // says so — but a run that can no longer summarize must shrink rather than die on context_overflow.
     function fallbackNote(older, prevSummary) {
@@ -908,6 +923,17 @@
           const realBefore = (lastUsage && (lastUsage.prompt_tokens || lastUsage.promptTokens)) || beforeTokens;
           const projected = beforeTokens > 0 ? realBefore * (afterTokens / beforeTokens) : afterTokens;
           if (projected < threshold && afterTokens < beforeTokens) {
+            /* DRAIN THE ORIGINALS BEFORE THE ELISION. The elided copies are NEW objects, so they lost the
+               transcript's persisted marker and the run-end drain (index.js appendNewStrict over result.messages)
+               wrote the 240-char HEADS as the durable record — the full bodies were never saved anywhere, and the
+               run journal that held them is retired right after. Audit probe (09-22, 40 tool turns, micro on by
+               default): 11/40 full tool outputs survived on disk / in recall_conversation. Same barrier as the
+               paid and fallback folds: the full slice is saved strictly FIRST, and a failed save refuses the
+               elision (the prompt keeps the full bodies; nothing is lost, the next turn re-measures). */
+            if (summarize && typeof summarize.drain === 'function') {
+              try { summarize.drain(plan.older); } catch (e) { failNote('loop.compaction.microDrain', e); return false; }
+            }
+            carryMarkers(plan.older, micro.older);   // the drained originals' persisted marker rides onto the elided copies
             messages.length = 0; for (const mm of trial) messages.push(mm);
             lastUsage = null;
             emit('agent.compact', { agentId, runId, beforeTokens, afterTokens, removed: Math.max(0, beforeTokens - afterTokens), reason: 'micro', elided: micro.elided });
