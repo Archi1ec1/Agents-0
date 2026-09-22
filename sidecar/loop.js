@@ -346,7 +346,8 @@
 
      Deliberately narrow, because a false nudge costs a paid turn:
        · Only a SUCCESSFUL mutation of a non-prose path arms it. A README or a SKILL.md edit has nothing to run.
-       · Any successful verification DISARMS it — verify.run, or a shell command that reads like a real check.
+       · Any PASSING verification DISARMS it — verify.run, or a shell command that reads like a real check. A check
+         that ran and failed (non-zero exit, killed, "verify FAILED") leaves it armed: see vosCheckPassed.
        · It never fires without a verification tool actually wired, never on the grace turn (contracted to be
          tool-free), and at most once per run, so a model that refuses to verify still terminates. */
   const VOS_PROSE_EXT = new Set(['md', 'markdown', 'mdx', 'rst', 'txt', 'text', 'adoc', 'asciidoc', 'org', 'log', 'csv', 'tsv', 'json5']);
@@ -441,6 +442,45 @@
       while ((match = re.exec(String(text)))) if (Number(match[1]) !== 0) return true;
     }
     return false;
+  }
+  /* DID THE CHECK PASS? (verify-on-stop ledger, 2026-09-22 audit). A check tool that RAN is not a check that
+     PASSED: shell_exec reports a non-zero exit as ordinary content ending "[exit N]", and verify.run reports
+     "✗ FAILED" as an ordinary ok result — both by design, so the model can read the failure. Clearing the ledger on
+     transport success let "fs_write -> npm test prints [exit 1] -> 'Fixed and verified. All done.'" end 'done'.
+     Only the HOST-AUTHORED verdict is read, never the command's own prose:
+       · shell_exec — the LAST "[exit …]" marker (shell.js appends it after the output; a registry receipt or a
+         strategy note may follow it, never precede it). Non-zero, non-numeric (a killed child reports "exit null")
+         or KILLED/TIMED OUT in the marker = not passed. The summary ("exit N (…ms)") is the fallback when a
+         per-turn squeeze cut the marker; with neither, explicitNonzeroExit over the content decides.
+       · verify.run — its own verdict: "✗ FAILED" / summary "verify FAILED" is not a pass, and neither is a
+         non-zero exit marker (the same rule completion-evidence.js applies to the durable ledger).
+     Absent any failure evidence the call counts as passed — exactly the old behavior, so a stub or a future
+     wrapper that reports no verdict never starts nagging; the tools that exist always write one. */
+  const VOS_EXIT_MARKER_RE = /\[\s*exit\s+([^\s\],]+)([^\]]*)\]/gi;
+  function lastExitMarker(text) {
+    let m, last = null;
+    VOS_EXIT_MARKER_RE.lastIndex = 0;
+    while ((m = VOS_EXIT_MARKER_RE.exec(text))) last = { code: m[1], rest: m[2] || '' };
+    return last;
+  }
+  function exitEvidenceFailed(content, summary) {
+    const text = String(content == null ? '' : content);
+    const marker = lastExitMarker(text);
+    if (marker) return !/^0$/.test(marker.code) || /KILLED|TIMED\s*OUT/i.test(marker.rest);
+    const sm = /^\s*exit\s+(\S+)/i.exec(String(summary == null ? '' : summary));
+    if (sm) return !/^0$/.test(sm[1]);
+    return explicitNonzeroExit(text);
+  }
+  function vosCheckPassed(call, result) {
+    if (!result || !result.ok || result.isError) return false;
+    const key = vosKey(call && call.name);
+    const content = String(result.content == null ? '' : result.content);
+    const summary = String(result.summary == null ? '' : result.summary);
+    if (VOS_VERIFIERS.has(key)) {
+      if (/^\s*✗\s*FAILED\b/.test(content) || /\bverify\s+FAILED\b/i.test(summary)) return false;
+      return !exitEvidenceFailed(content, '');
+    }
+    return !exitEvidenceFailed(content, summary);
   }
   function isCheckShapedCall(call) {
     const key = vosKey(call && call.name);
@@ -642,6 +682,7 @@
     const vosSourcesUnfetched = new Map();
     const sourceGroundingTask = sourceGroundingRequested(messages);
     let vosUsed = 0;
+    let vosFailedCheck = '';   // the most recent check that ran against unverified code and did NOT pass ('' = none)
     let vosExternalUsed = 0;
     let vosSourceUsed = 0;
     /* ACCEPTANCE-ON-STOP (SOP lane, 2026-08-21). A run launched from an SOP recipe carries a typed acceptance
@@ -1416,7 +1457,12 @@
             && tools.some(t => { const n = vosKey(t && t.function && t.function.name); return VOS_VERIFIERS.has(n) || n === 'shell_exec'; })) {
           vosUsed++;
           const touched = Array.from(vosUnverified).slice(0, 8).join(', ');
-          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.</verify_before_done>' });
+          // Same tag and budget either way; only the premise changes. A model whose check FAILED did run
+          // something — telling it "you ran nothing" would be a false statement from the host.
+          const premise = vosFailedCheck
+            ? 'and are ending although the last check you ran against it (' + vosFailedCheck + ') did NOT pass, and no passing check has run since. A failing check is evidence the change is not done. Fix the cause and rerun the check until it passes, then report what it actually returned. If it cannot be made to pass here, say so plainly: report the failure and state that the change is NOT verified.'
+            : 'and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.';
+          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') ' + premise + '</verify_before_done>' });
           continue;
         }
         // EXTERNAL VERIFY-ON-STOP: a successful custom-connector mutation is not proof that the requested
@@ -1557,14 +1603,21 @@
 
       // VERIFY-ON-STOP LEDGER. Only SUCCESSFUL calls move it: a write that errored changed nothing to verify,
       // and a check that errored is not evidence that anything passed. A verification clears the whole set
-      // rather than one path — a project's check runs the project, not a file.
+      // rather than one path — a project's check runs the project, not a file. A check clears it only when it
+      // PASSED (vosCheckPassed): a failing one leaves the debt standing and is remembered, so the stop nudge
+      // tells the model the truth — its check failed — instead of "you ran nothing".
       if (VOS_MAX > 0) {
-        const okById = {};
-        for (const r of results) okById[r.callId] = !!r.ok && !r.isError;
+        const okById = {}, resultById = {};
+        for (const r of results) { okById[r.callId] = !!r.ok && !r.isError; resultById[r.callId] = r; }
         for (const c of calls) {
           if (!okById[c.id]) continue;
           const k = vosKey(c.name);
-          if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) { vosUnverified.clear(); continue; }
+          if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) {
+            if (vosCheckPassed(c, resultById[c.id])) { vosUnverified.clear(); vosFailedCheck = ''; }
+            // `summarize` is shadowed in this scope by the compaction summarizer (o.summarize) — use clip().
+            else if (vosUnverified.size) vosFailedCheck = clip(k === 'shell_exec' ? ((c.args && (c.args.command || c.args.cmd || c.args.script)) || k) : ((c.args && c.args.cmd) || k), 80);
+            continue;
+          }
           if (VOS_MUTATORS.has(k)) { const p = vosPathOf(c.args); if (vosIsCodePath(p)) vosUnverified.add(p); }
           const externalEffect = vosExternalEffect(c.name);
           if (externalEffect && externalEffect.role === 'observe') {
@@ -1665,5 +1718,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { parseCall, repairCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
+  return { runAgentLoop, _internals: { parseCall, repairCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
 });
