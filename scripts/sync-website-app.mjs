@@ -30,6 +30,7 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, rmSync } from 'node:fs';
 import { join, dirname, resolve, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = join(ROOT, 'frontend');
@@ -39,9 +40,25 @@ const CHECK = process.argv.includes('--check');
 // Files that live ONLY in the embed. Never deleted, never taken from frontend/.
 const WEBSITE_ONLY = new Set(['demo-boot.js', 'demo.css']);
 
+// The public preview must start from the same composition as new desktop stations.
+// Embed a deterministic document before browser stores boot; never maintain a second layout.
+const require = createRequire(import.meta.url);
+const starter = require('../frontend/app/worldmodel.js').starterDoc();
+starter.meta.createdAt = 0;
+const demoPath = join(DEST, 'demo-boot.js');
+const demoSource = readFileSync(demoPath, 'utf8');
+const stationAnchor = /  var DEMO_STATION = .*; \/\/ GENERATED STARTER/;
+if (!stationAnchor.test(demoSource)) throw new Error('Missing generated starter anchor in demo-boot.js');
+const expectedDemo = demoSource.replace(stationAnchor,
+  '  var DEMO_STATION = ' + JSON.stringify(starter) + '; // GENERATED STARTER');
+if (expectedDemo !== demoSource) {
+  if (CHECK) { console.error('website-app-sync: starter layout is stale; run npm run sync:website'); process.exit(1); }
+  writeFileSync(demoPath, expectedDemo);
+}
+
 const EMBED_TAGS =
   '<link rel="stylesheet" href="demo.css?v=20260921"><!-- WEBSITE EMBED ONLY: camera viewport without duplicate page glass -->\n' +
-  '<script src="demo-boot.js?v=20260921-starter-station-v5"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->';
+  '<script src="demo-boot.js?v=20260922-current-starter-v6"></script><!-- WEBSITE EMBED ONLY: seeds the captured demo save + DEV seam before any store reads -->';
 
 function walk(dir, base = dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

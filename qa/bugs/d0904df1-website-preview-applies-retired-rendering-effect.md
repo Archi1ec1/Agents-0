@@ -20,7 +20,7 @@ recovery: unconfirmed
 
 ## Symptom
 
-Owner reports an ugly, inaccurate website demo. The deployed starter room appears muddy and colour-fringed, with a live-preview caption although no backend executes tasks.
+Owner reports an ugly, inaccurate website demo. The deployed starter room appears muddy and colour-fringed, with a live-preview caption although no backend executes tasks. It also contains one desk instead of the current starter factory's eight props and uses obsolete floor/wall/hull materials.
 
 ## Repro
 
@@ -37,6 +37,8 @@ Owner screenshot 2026-09-21; live browser reproduction on production and local s
 Source changes: 4d22a0576 and ca30418c0. Removed retired CRT overrides and duplicate page glass, framed the complete hull with the actual renderer camera, and labeled the offline starter layout. Full gate and production deployment remain pending. Owner visual acceptance remains unconfirmed.
 
 ## Regression
+
+Before: executing the trunk demo fixture produces one prop and null floor/wall/hull materials. The current WorldModel.starterDoc() produces eight props with resin/panelled/bone materials. test/website-live-preview.test.js now compares the entire generated station to that actual factory, including prop placement and workstation ownership. The same test covers one-time revision upgrades and preservation after the upgrade.
 
 
 

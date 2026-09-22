@@ -25,7 +25,7 @@ A.eq(/clip\.clientWidth\s*\/\s*666/.test(js), false,
   'the current preview scale is not pinned to the retired 666px stage width');
 A.ok(/live-preview\.js\?v=20260921/.test(html),
   'the homepage cache-busts the corrected preview controller');
-A.ok(/app\/embed\.htm\?v=20260921-starter-station-v5/.test(html),
+A.ok(/app\/embed\.htm\?v=20260922-current-starter-v6/.test(html),
   'the homepage uses the cache-busted dashboard-upload-safe station document');
 A.ok(/app\/assets\/sprites\/blank\/rot_south\.png/.test(html) && /fetchpriority="high"/.test(html),
   'the marketing page starts the embedded default-skin request before the iframe boot');
@@ -48,12 +48,17 @@ function bootDemo(initial) {
 const upgraded = bootDemo({ 'starnet.save': '{"retired":"station"}' });
 const upgradedSave = JSON.parse(upgraded['starnet.save']);
 const upgradedRoom = upgradedSave.station.rooms.r1;
+const starter = require('../frontend/app/worldmodel.js').starterDoc();
+starter.meta.createdAt = 0;
+starter.props.find(p => p.t === 'desk').agentId = upgradedSave.agent.id;
+A.eq(upgradedSave.station, starter,
+  'the complete website layout comes from the current product starter factory, including materials and all eight props');
 A.eq(upgradedRoom.floorStyle, 'hull', 'the website demo uses the standard starter floor style');
-A.eq(upgradedRoom.floorMat, null, 'the website demo inherits the standard starter floor material');
-A.eq(upgradedRoom.wallMat, null, 'the website demo inherits the standard starter wall material');
-A.eq(upgradedRoom.hullStyle, null, 'the website demo inherits the standard starter hull style');
+A.eq(upgradedRoom.floorMat, 'resin', 'the website demo uses the actual starter floor material');
+A.eq(upgradedRoom.wallMat, 'panelled', 'the website demo uses the actual starter wall material');
+A.eq(upgradedRoom.hullStyle, 'bone', 'the website demo uses the actual starter hull style');
 A.eq(upgradedRoom.hullMat, null, 'the website demo uses the standard station hull material');
-A.eq(upgraded['starnet.website.demo.rev'], '2026-09-21-starter-station-v5',
+A.eq(upgraded['starnet.website.demo.rev'], '2026-09-22-current-starter-v6',
   'a versioned marker moves returning visitors off the retired captured save');
 
 const currentRev = upgraded['starnet.website.demo.rev'];
