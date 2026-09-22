@@ -343,6 +343,7 @@ test/inputpolicy.test.js
 test/image.test.js
 test/image-task.test.js
 test/voice-tool.test.js
+test/resolve-tools.test.js
 test/connectors-tool.test.js
 test/attachments.test.js
 test/spotify.pkce.test.js

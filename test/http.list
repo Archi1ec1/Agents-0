@@ -34,6 +34,7 @@ test/failreview.e2e.test.js
 test/questrefresh.e2e.test.js
 test/e2e.run.test.js
 test/image-task.e2e.test.js
+test/resolve-task.e2e.test.js
 test/e2e.workspace-lease.test.js
 test/e2e.attachments.test.js
 test/e2e.summon.test.js
