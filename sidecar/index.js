@@ -243,6 +243,7 @@ const MemoryStore = require('./memory-store.js');                               
 const { makeMemoryStore, resetAgentMemory, restoreDeclined } = MemoryStore;
 const { makeWorkshopStore } = require('./workshop-store.js'); // durable per-agent away-workshop grant + backlog + discard denylist
 const { makeDeliverableStore } = require('./deliverable-store.js'); // durable kept/discarded/failed Workshop lifecycle index
+const { makeSteerBuffers } = require('./steer-buffer.js'); // h1: live-steer buffers + the run-end close (an honest 409 once a run can no longer apply a note)
 const { makeIdempotencyLedger } = require('./idempotency-ledger.js'); // SOP lane: durable connector-WRITE idempotency (no double-send on retry/resume)
 const TaskPostconditions = require('./task-postconditions.js');        // SOP lane: the typed acceptance authority (mid-run probe + end-of-run verdict)
 const RecipeDrift = require('./recipe-drift.js');                      // golden-run drift: latest recipe run vs its own good history (pure, from run rows)
@@ -1465,21 +1466,23 @@ function formatRunHolderAge(ageMs) {
   const mins = Math.floor(ms / 60000);
   return mins + ' min ago';
 }
-// LIVE STEERING: runId -> [pending Commander notes]. POST /api/run/steer appends; the loop's injected steer()
-// drains once per iteration (see runAgentLoop o.steer). A note only lands while the run is IN-FLIGHT (its runId
-// is still in `runs`); once the run ends the entry is dropped, so a stale steer can never reach a later run.
-const steerBuffers = new Map();
-function drainSteer(runId) { const b = steerBuffers.get(runId); if (!b || !b.length) return []; steerBuffers.set(runId, []); return b; }
+// LIVE STEERING: runId -> [pending Commander notes] (sidecar/steer-buffer.js). POST /api/run/steer appends; the loop's
+// injected steer() drains once per iteration AND once more before a tool-free final turn ends the run (see runAgentLoop
+// o.steer); the loop's o.steerClose closes the buffer as the run ends, so a later POST is an honest 409 rather than a
+// 200 for a note nothing will read. A note only lands while the run is IN-FLIGHT (its runId is still in `runs`);
+// once the run ends the entry is dropped, so a stale steer can never reach a later run.
+const STEER_MAX_PENDING = 8;      // bound the buffer so a spammed steer can't grow unbounded between iterations
+const steerBufs = makeSteerBuffers({ maxPending: STEER_MAX_PENDING, maxNoteChars: 2000 });
+function drainSteer(runId) { return steerBufs.drain(runId); }
+function closeSteer(runId) { return steerBufs.close(runId); }
 // Teardown drop with diagnostics (GROUND_UP_AUDIT 2026-07-06 P2): at run end we drop any un-drained steering notes
 // so a stale correction can't leak to a later run. That drop was SILENT — a Commander whose steer arrived after the
 // run's last loop iteration saw nothing happen and no reason why. Log one honest line with the dropped count (the
 // note text is NOT logged — it can contain user content). ctx names the run path so the log is triageable.
 function dropSteer(runId, ctx) {
-  const b = steerBuffers.get(runId);
+  const b = steerBufs.drop(runId);
   if (b && b.length) console.log('[steer] dropped ' + b.length + ' un-applied steering note(s) at ' + (ctx || 'run') + ' teardown for run ' + runId + ' (arrived after the run finished)');
-  steerBuffers.delete(runId);
 }
-const STEER_MAX_PENDING = 8;      // bound the buffer so a spammed steer can't grow unbounded between iterations
 let lastSearchAt = 0;            // module-level web_search throttle (≥1.1s between DDG hits, any run)
 // Stage 2: the crew roster the browser pushes (POST /api/roster) so team.dispatch can run a WORKER as its
 // own identity (its composed system prompt + model/provider). agentId -> { system, name, model, provider }.
@@ -17656,6 +17659,8 @@ async function runOnceCore(o) {
       },
       todoNote: () => Todo.formatForInjection(notebookStore, agentId),   // re-inject the active task plan after a compaction
       steer: typeof o.steer === 'function' ? o.steer : () => drainSteer(runId),   // live parent or generation-bound worker steering
+      // the parent's buffer closes as the loop ends (a worker's generation-bound steer has its own running gate)
+      steerClose: typeof o.steer === 'function' ? null : () => closeSteer(runId),
       signal: signal, clock: { now: () => Date.now() },
       onCheckpoint: execution.journalStarted() ? ({ phase, messages: checkpointMessages, turn }) => {
         // Initial prompt messages carry transcriptStore's non-enumerable PERSISTED marker. Everything without it
@@ -18726,19 +18731,16 @@ async function handleCancel(req, res) {
 // POST /api/run/steer { runId, text } — LIVE MID-RUN STEERING. Append a Commander note to an IN-FLIGHT run's steer
 // buffer; the loop's injected steer() drains it before the NEXT model call and folds it in as a <steering_note>.
 // Only a run whose id is still in `runs` (i.e. actually in flight) accepts a steer — a stale/unknown runId is a
-// clean 404, so a note can never queue against a finished run. Bounded to STEER_MAX_PENDING pending notes per run.
+// clean 404, so a note can never queue against a finished run. A run whose LOOP has already ended (post-run work is
+// still settling) answers 409 {ok:false, applied:false}: a 200 there would promise a fold-in nothing will perform.
+// Bounded to STEER_MAX_PENDING pending notes per run. The success shape {ok:true, pending} is unchanged.
 async function handleRunSteer(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 16)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
   const runId = String(body.runId || '');
   const text = String(body.text == null ? '' : body.text).trim();
-  if (!text) return json(400, { error: 'empty steering note' });
-  if (!runId || !runs.has(runId)) return json(404, { error: 'no in-flight run for that id' });
-  const buf = steerBuffers.get(runId) || [];
-  if (buf.length >= STEER_MAX_PENDING) return json(429, { error: 'steer buffer full', pending: buf.length });
-  buf.push(text.slice(0, 2000));   // clamp a single note so one steer can't blow up the prompt
-  steerBuffers.set(runId, buf);
-  json(200, { ok: true, pending: buf.length });
+  const out = steerBufs.post(runId, text, !!runId && runs.has(runId));
+  json(out.status, out.body);
 }
 
 // GET /api/version — the honest build/version surface for /version. Resolves the harness build id and the Tauri

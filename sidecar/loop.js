@@ -565,6 +565,36 @@
     // corrupt the assistant/tool interleave. Absent = never steered (existing callers byte-identical). Bounded
     // by the caller's buffer; the loop just injects whatever it's handed and emits one telemetry event.
     const steer = (typeof o.steer === 'function') ? o.steer : null;
+    /* STEER AT THE FINISH LINE (h1 audit 2026-09-22). The drain above runs only at the TOP of an iteration, so a note
+       that arrived while the model streamed its FINAL (tool-free) answer was never read — while the UI had already
+       told the Commander "it will fold your note in on its next step". Two additive pieces make that true:
+         · STEER EXTENSION — when a tool-free turn would end the run and notes are pending, fold them exactly like the
+           top-of-loop drain and give the model one more turn. Bounded (limits.steerExtend: false disables, a number
+           overrides; default 2) so a stream of steers can never keep a run alive; never on a cancelled run or on
+           the contracted-tool-free grace turn, and only while the next turn's own guards would let it run.
+         · o.steerClose — called once as the run ends: the host closes its buffer (a later POST gets an honest 409)
+           and hands back anything still pending, which the transcript then names as NOT applied.
+       Both absent = every existing caller byte-identical. */
+    const steerClose = (typeof o.steerClose === 'function') ? o.steerClose : null;
+    const _se = limits.steerExtend;
+    const STEER_EXT_MAX = (_se === false) ? 0 : ((typeof _se === 'number' && _se >= 0) ? Math.floor(_se) : 2);
+    let steerExtUsed = 0;
+    // fold drained notes into the working set: ONE <steering_note> system message each + the '[steering]' token the
+    // Commander watches land. Shared by the top-of-loop drain and the finish-line extension so the two can't drift.
+    function foldSteerNotes(notes) {
+      let n = 0;
+      if (!Array.isArray(notes)) return 0;
+      for (const note of notes) {
+        const t = String(note == null ? '' : note).trim();
+        if (!t) continue;
+        // surface the note in the live transcript as an agent.token delta (a registered event) so the
+        // Commander SEES their steer land, then inject it as a system message for the next model call.
+        emit('agent.token', { agentId, runId, delta: '\n[steering] ' + t + '\n' });
+        messages.push({ role: 'system', content: '<steering_note>' + t + '</steering_note>' });
+        n++;
+      }
+      return n;
+    }
     // LOOP GUARD (default ON): a tool called with IDENTICAL arguments that keeps FAILING is a stuck loop, not
     // progress. Warn once (a system nudge the model can act on) at warnAfter, then hard-stop at stopAfter so a
     // degraded run can't burn the whole budget spinning. Only errored, byte-identical (name+args) calls count;
@@ -779,6 +809,14 @@
       }
     }
     function end(reason, extra) {
+      // close the host's steer buffer AS the run ends (synchronously, before agent.run.end): a later POST gets an honest
+      // non-success, and a note that was accepted but never folded is named here instead of vanishing at teardown.
+      if (steerClose) {
+        let left = null;
+        try { left = steerClose(); } catch (e) { failNote('loop.steer.close', e); left = null; }
+        const unapplied = Array.isArray(left) ? left.filter(n => String(n == null ? '' : n).trim()).length : 0;
+        if (unapplied) emit('agent.token', { agentId, runId, delta: '\n[steering] ' + unapplied + ' steering note' + (unapplied === 1 ? '' : 's') + ' arrived as this run was ending and ' + (unapplied === 1 ? 'was' : 'were') + ' NOT applied — send ' + (unapplied === 1 ? 'it' : 'them') + ' as a new message.\n' });
+      }
       bookToolCosts();
       // A3/Lane5: surface WHY the model stopped when it's a truncation/policy stop, ADDITIVELY — on BOTH the return
       // value (index.js gates reflection/study/skills on it) AND the agent.run.end event (the frontend renders a
@@ -1027,16 +1065,7 @@
       if (steer) {
         let notes = null;
         try { notes = steer(); } catch (_) { notes = null; }
-        if (Array.isArray(notes) && notes.length) {
-          for (const n of notes) {
-            const t = String(n == null ? '' : n).trim();
-            if (!t) continue;
-            // surface the note in the live transcript as an agent.token delta (a registered event) so the
-            // Commander SEES their steer land, then inject it as a system message for the next model call.
-            emit('agent.token', { agentId, runId, delta: '\n[steering] ' + t + '\n' });
-            messages.push({ role: 'system', content: '<steering_note>' + t + '</steering_note>' });
-          }
-        }
+        foldSteerNotes(notes);
       }
       /* HOOKS — pre_llm_call. Same message-boundary safety argument as steering above: the prior iteration's
          tool results are already appended and paired, so an injected note can neither split a tool_call from
@@ -1475,6 +1504,23 @@
         // skill-review, the cron settle path never emits workitem.delivered, and the frontend renders "ended: empty"
         // instead of a delivered crate. A DUPLICATE turn is different: it re-emitted a REAL prior answer, so it stays
         // 'done' (the answer exists — only the genuinely empty final turn is degraded).
+        // STEER EXTENSION: a Commander note that landed while this final answer streamed is folded in and buys one more
+        // turn (bounded; see STEER_EXT_MAX). Only when the next turn's own guards would let it run — a note folded into
+        // a turn that then ends 'budget'/'max_iters' would be read by nobody; those stay pending and end() names them.
+        if (steer && !signal.aborted && !graceUsed && steerExtUsed < STEER_EXT_MAX
+            && spentUsd < maxCostUsd && unpricedTokens < maxUnpricedTokens && (turns < maxIters || graceEnabled)) {
+          let late = null;
+          try { late = steer(); } catch (e) { failNote('loop.steer.finalDrain', e); late = null; }
+          if (Array.isArray(late) && late.some(n => String(n == null ? '' : n).trim())) {
+            steerExtUsed++;
+            if (continuationParts.length) {   // settle a length-continued answer into ONE turn before the note follows it
+              collapseContinuation(assistant);
+              continuationParts.length = 0; continuationPrompts.length = 0; continuationText = '';
+            }
+            foldSteerNotes(late);
+            continue;
+          }
+        }
         if (continuationParts.length) collapseContinuation(assistant);
         return end(empty && !continuedTextExists ? 'empty' : 'done');
       }
