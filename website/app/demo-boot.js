@@ -51,6 +51,9 @@
            follow-lock the agent (in-app behavior); the landing preview stays wide.
            setCinecamIdle is the app's own DEV knob — a huge threshold = never idle. */
         try { World.setCinecamIdle(1e15); } catch (e) {}
+        /* The app's composition camera includes the tall wall and hull skirt.
+           A bare canvas fit can crop the wall at the top of this wider viewport. */
+        try { World.frameReviewRoom('r1'); } catch (e) {}
       }
     } catch (e) {}
   }, 500);
