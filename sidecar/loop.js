@@ -950,7 +950,20 @@
       catch (e) { if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false; }   // summarizer threw -> skip
       if (signal.aborted) return false;
       const summary = (typeof r === 'string') ? r : ((r && r.summary) || '');
-      if (!summary) { if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false; }   // empty -> don't drop history
+      /* A CUT-OFF OR REFUSED SUMMARY IS A FAILED ONE (compaction-summarizer.js rejectReason): a fragment like
+         "Audit config files. VALUE_01=" or "I'm sorry, but I can't..." must never replace the history. `rejected`
+         is honoured here too, so an injected summarizer that reports it can't slip a fragment through. Either way
+         the calls were made and billed, so their spend joins the run tally exactly like a successful fold's —
+         otherwise the per-run ceiling and the ledger never see what a failing summarizer costs. */
+      const rejected = (r && typeof r === 'object' && r.rejected) ? String(r.rejected) : '';
+      if (!summary || rejected) {
+        if (r && typeof r === 'object') {
+          spentUsd += r.usd || 0; spentTokens += r.tokens || 0;
+          if (Array.isArray(r.unpricedUsage)) for (const u of r.unpricedUsage) unpricedUsage.push(u);
+        }
+        if (rejected) failNote('loop.compaction.rejected', new Error('summary rejected (' + rejected + '); history kept'));
+        if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false;   // empty/cut/refused -> don't drop history
+      }
       compactionFails = 0;
       const note = { role: 'system', content: '<conversation_summary>\n' + summary + '\n</conversation_summary>' };
       let rebuilt = prefix.concat([note], plan.tail);
