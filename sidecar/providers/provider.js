@@ -152,10 +152,30 @@
   // whole adapter ladder again: OpenRouter's 3 attempts multiplied by the loop's 5 attempts into 15 identical
   // requests and ~24s of silent "working" against an immediately-broken API. Mid-stream failures never carry
   // this marker, so the loop keeps its separate recovery ladder for a stream that actually started.
-  function markPreStreamRetriesExhausted(error) {
+  //
+  // 2026-09-22 (Hermes audit): "surface the failure" turned a 4x503 blip into a dead single-provider run 1.6s in.
+  // The marker now also says HOW MUCH of the ladder the adapter spent — `meta.attempts` requests and
+  // `meta.waitedMs` of backoff — and the loop (recovery-policy preStreamSpend) counts exactly that against its
+  // own rungs and patience, then continues the ladder for transient classes. Continuation, not multiplication.
+  function markPreStreamRetriesExhausted(error, meta) {
     const e = (error && typeof error === 'object') ? error : new Error(String(error || 'provider request failed'));
-    try { e.preStreamRetriesExhausted = true; } catch (_) {}
+    try {
+      e.preStreamRetriesExhausted = true;
+      if (meta && Number(meta.attempts) >= 1) e.preStreamAttempts = Math.floor(Number(meta.attempts));
+      if (meta && Number(meta.waitedMs) >= 0) e.preStreamWaitMs = Math.floor(Number(meta.waitedMs));
+    } catch (_) {}
     return e;
+  }
+  /* How many pre-stream retries THIS request may make. Adapters default to their own ladder (RETRY_DELAYS); the
+     loop sends req.preStreamRetries = 0 once its ladder owns the turn's pacing, so every rung it sleeps is exactly
+     ONE request instead of one request plus the adapter's two quick re-sends. A request can only LOWER the
+     adapter's budget, never raise it. */
+  function preStreamRetries(req, dflt) {
+    const d = Math.max(0, Math.floor(Number(dflt) || 0));
+    const raw = req && req.preStreamRetries;
+    if (raw == null || raw === '') return d;
+    const n = Number(raw);
+    return (isFinite(n) && n >= 0) ? Math.min(d, Math.floor(n)) : d;
   }
   function abortableDelay(ms, signal) {
     return new Promise((resolve, reject) => {
@@ -232,7 +252,7 @@
   }
 
   const timeouts = { envInt, connectMs, idleMs, connectSignal, connectGuard, idleGuardedReader, timeoutError, makeAbortError };
-  const runtime = { isAbort, abortableDelay, markPreStreamRetriesExhausted };
+  const runtime = { isAbort, abortableDelay, markPreStreamRetriesExhausted, preStreamRetries };
 
   function recoveredToolContent(callId, content) {
     let body;
