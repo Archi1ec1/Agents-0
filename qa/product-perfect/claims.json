@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "9b015f81cff9a7a1d57562cf450f061acf9af467",
+    "sourceCommit": "60d077cafc4edca540ddfe3e2eba4b161d0282a9",
     "pathSetSha256": "624df0d0e5b2511e74e175d045f26a8fd916195933e6750693b47d486e2e7b31",
     "files": [
       {
@@ -1593,8 +1593,8 @@
       },
       {
         "path": "frontend/js/assets.js",
-        "bytes": 46609,
-        "sha256": "278f19ff9363d7b790d5f6403e76a3c0df740d7a21e3b130f0f9c0e5a0edadf0"
+        "bytes": 49161,
+        "sha256": "6924c58602476b5a06ea966707ef834d1c7f848c41d1867821d4655001705370"
       },
       {
         "path": "frontend/js/audio.js",
