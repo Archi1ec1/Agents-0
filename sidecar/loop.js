@@ -38,6 +38,9 @@
   const providerRecovery = recoveryPolicy && typeof recoveryPolicy.providerFailure === 'function'
     ? recoveryPolicy.providerFailure
     : (() => ({ action: 'fail', reason: 'recovery-policy-unavailable', retryable: false, delayMs: 0 }));
+  const preStreamSpend = recoveryPolicy && typeof recoveryPolicy.preStreamSpend === 'function'
+    ? recoveryPolicy.preStreamSpend
+    : (() => ({ rungs: 0, waitedMs: 0 }));
 
   function summarize(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) : s; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) + '…' : s; }
@@ -851,6 +854,37 @@
     // call/result pairs are durable in `messages` and before this turn's calls can reach executeCalls.
     // A server-stated Retry-After still outranks each local rung and remains capped at 60s.
     const STREAM_RETRY_DELAYS = [400, 1200, 4000, 10000, 30000, 60000];
+    /* ONE LADDER, WHEREVER THE FAILURE LANDS (2026-09-22, Hermes audit). The ladder above used to cover only a
+       stream that had STARTED: a provider down for two seconds BEFORE its first byte exhausted the adapter's own
+       400/1200ms retries and the run died 1.6s in (audit probe: 503x4, single provider -> error/overloaded;
+       Hermes rode it out). Now an adapter-exhausted transient failure continues THIS ladder — its spent attempts
+       and backoff are counted against the rungs and the patience clock (recovery-policy preStreamSpend), and once
+       the ladder owns the turn every rung is ONE request (req.preStreamRetries = 0). Total local patience per
+       turn stays STREAM_RETRY_PATIENCE_MS (~105.6s) however the failure splits between adapter and loop.
+       Tools: every one of these retries re-issues only the MODEL call, inside this while(true), before this
+       turn's calls reach executeCalls — earlier tool results are already paired in `messages` and are never
+       dispatched again. */
+    const STREAM_RETRY_PATIENCE_MS = (recoveryPolicy && recoveryPolicy.RETRY_PATIENCE_MS) || STREAM_RETRY_DELAYS.reduce((a, b) => a + b, 0);
+    // OPTIONAL injected randomness for the ladder's ±20% jitter (o.random() -> [0,1)); default Math.random so
+    // agents sharing one key spread their retries. Tests inject a constant (0.5 = the un-jittered rung).
+    const random = (typeof o.random === 'function') ? o.random : Math.random;
+    function jitterSample() {
+      try { const r = Number(random()); return isFinite(r) ? r : 0.5; }
+      catch (e) { failNote('loop.retry.random', e); return 0.5; }
+    }
+    /* OUTPUT BUDGET after an output-cap refusal. 0 = the adapter's own resolution (every existing caller
+       byte-identical). Set once from the ceiling the provider named; it rides every later request of the run as
+       req.maxTokens, because the same model refuses the same max_tokens on every turn. Cleared on a fallback:
+       a different model has its own ceiling, and an explicit value would override a smaller configured one. */
+    let outputCapTokens = 0;
+    // The classifier's overflow ratio needs the prompt's CURRENT size: o.approxTokens is frozen at run start, so a
+    // run that grew mid-way past the window could never be recognized by the ratio. Live estimate when a context
+    // manager exists; the frozen figure is the floor.
+    function currentApproxTokens() {
+      if (!context || typeof context.estimateMessages !== 'function') return approxTokens;
+      try { return Math.max(approxTokens, Number(context.estimateMessages(messages)) || 0); }
+      catch (e) { failNote('loop.classify.estimate', e); return approxTokens; }
+    }
     function noteUnpriced(modelId, c) {
       if (!c || !c.unpriced) return;
       unpricedUsage.push({ model: modelId || '(unknown)', tokensIn: c.tokensIn || 0, tokensOut: c.tokensOut || 0 });
@@ -1181,6 +1215,8 @@
       let recoveries = 0;
       const maxRecoveries = 1 + fallbacks.length;
       let retriesUsed = 0;
+      let ladderWaitMs = 0;          // local backoff spent this turn (loop rungs + an adapter's pre-stream retries)
+      let outputCapRetried = false;  // the output-cap recovery is ONE lowered retry per turn, never a loop
       const MAX_STREAM_RETRIES = STREAM_RETRY_DELAYS.length;   // one per rung; deriving it prevents policy drift
       // A truncation is its own (cheap, transient) retry class — kept separate from MAX_STREAM_RETRIES and
       // deliberately tighter, because a truncation costs a FULL generation to re-run.
@@ -1196,6 +1232,8 @@
           const req = { model, messages, tools, signal, stream: true };
           if (typeof o.isTask === 'boolean') req.isTask = o.isTask;
           if (o.cacheSystemPrefix) req.cacheSystemPrefix = o.cacheSystemPrefix;
+          if (outputCapTokens > 0) req.maxTokens = outputCapTokens;   // the ceiling a provider named (output_cap)
+          if (retriesUsed > 0) req.preStreamRetries = 0;              // the ladder owns pacing: one request per rung
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
             if (ev.type === 'text') {
@@ -1235,12 +1273,29 @@
         if (signal.aborted) break;                   // a cancel mid-stream: fall through to the cancel check below
         // classify so `transient` is honest, and so the shouldCompress / shouldFallback / shouldRotateCredential
         // hints drive recovery instead of being discarded.
-        const cls = classifyApiError(streamErr, { model: model, approxTokens: approxTokens, contextLimit: contextLimit });
-        let decision = providerRecovery({
-          classification: cls, canCompress: !!(context && summarize), hasFallback: fbIndex < fallbacks.length,
+        const cls = classifyApiError(streamErr, { model: model, approxTokens: currentApproxTokens(), contextLimit: contextLimit });
+        // An adapter that exhausted its own pre-stream retries already spent rungs of THIS ladder: advance the rung
+        // index and the patience clock by exactly that spend, so continuing never multiplies it.
+        const spent = preStreamSpend(streamErr);
+        retriesUsed += spent.rungs;
+        ladderWaitMs += spent.waitedMs;
+        const sample = jitterSample();
+        const decide = (canCompress, hasFallback) => providerRecovery({
+          classification: cls, canCompress, hasFallback,
           recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
-          preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted
+          preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted,
+          outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample
         });
+        let decision = decide(!!(context && summarize), fbIndex < fallbacks.length);
+        if (decision.action === 'lower_output') {
+          // output_cap: same turn, same prompt, the output budget lowered to the ceiling the provider named. No
+          // fold (the prompt was never the problem) and no wait; outputCapRetried makes a second refusal fatal.
+          outputCapTokens = decision.maxTokens;
+          outputCapRetried = true;
+          armRetryDedupe(acc);
+          noteRecovery({ stage: 'provider_stream', action: 'lower_output', reason: decision.reason, attempt: 1, model, delayMs: 0 });
+          continue;
+        }
         if (decision.action === 'compress') {
           // context_overflow: fold older turns away, then retry the turn. Only counts as recovery if it shrank.
           if (await maybeCompact(true)) {
@@ -1249,11 +1304,7 @@
             noteRecovery({ stage: 'provider_stream', action: 'compress', reason: decision.reason, attempt: recoveries, model, delayMs: 0 });
             continue;
           }
-          decision = providerRecovery({
-            classification: cls, canCompress: false, hasFallback: fbIndex < fallbacks.length,
-            recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
-            preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted
-          });
+          decision = decide(false, fbIndex < fallbacks.length);
         }
         if (decision.action === 'fallback') {
           const fb = fallbacks[fbIndex++];
@@ -1282,6 +1333,7 @@
             if (typeof fb.maxCostUsd === 'number' && fb.maxCostUsd > 0) maxCostUsd = fb.maxCostUsd;
             if (typeof fb.maxUnpricedTokens === 'number' && fb.maxUnpricedTokens > 0) maxUnpricedTokens = fb.maxUnpricedTokens;
             if (fb.model) model = fb.model;   // the next agent.cost carries the switched model — the visible failover signal
+            outputCapTokens = 0; outputCapRetried = false;   // a lowered output budget belonged to the model we left
             /* RE-RESOLVE THE CONTEXT WINDOW. Everything else about the failover swaps here (provider, model,
                cost, credential) but the compaction threshold was frozen at the PRIMARY model's window: after a
                200k→32k switch the manager kept waiting for ~130k prompt tokens that a 32k window can never
@@ -1301,11 +1353,7 @@
             noteRecovery({ stage: 'provider_stream', action: 'fallback', reason: decision.reason, attempt: recoveries, model, delayMs: 0, rotate: decision.rotate });
             continue;
           }
-          decision = providerRecovery({
-            classification: cls, canCompress: false, hasFallback: false,
-            recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
-            preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted
-          });
+          decision = decide(false, false);
         }
         // A2: bounded SAME-provider retry for a retryable class that has no failover to take (e.g. `timeout`,
         // transient `unknown`) — or a fallback class whose chain is already exhausted. Without this a hung/idle
@@ -1315,10 +1363,13 @@
         // fallback class (overloaded/server_error) with an EMPTY or exhausted chain — every single-provider
         // station, e.g. ChatGPT-login codex — fell straight to fatal on the first blip. The chain-exhausted
         // case the comment always promised is now real.
-        // Adapters mark a fully exhausted pre-stream ladder. Re-running that ladder here multiplied one outage
-        // into 15 requests; only errors from a stream that actually started belong to this recovery budget.
+        // Adapters mark a fully exhausted pre-stream ladder. Re-running that ladder here once multiplied one outage
+        // into 15 requests; refusing it outright killed runs on a 2s blip. Now the adapter's spend is counted
+        // against these rungs above (preStreamSpend) and later rungs send req.preStreamRetries = 0 — one ladder,
+        // ~105.6s of local patience, however the failure splits between adapter and loop.
         if (decision.action === 'retry') {
           retriesUsed++;
+          ladderWaitMs += decision.ladderMs || 0;   // a server-stated wait is honored outside the local budget
           armRetryDedupe(acc);
           // NOTE: no provider.fallback emit here — a same-provider retry is NOT a failover; emitting it would
           // inflate the floor's failover counter and lie about a model/credential switch that didn't happen

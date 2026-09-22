@@ -232,7 +232,7 @@
            four prompt re-sends). Reverses docs/harness-runtime-spec.md's MVP position, dated 2026-08-17. */
       }
       let res;
-      try { res = await requestWithRetry(body, req.signal); }   // retries transient 429/5xx + network errors BEFORE any token streams
+      try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }   // retries transient 429/5xx + network errors BEFORE any token streams
       catch (e) { if (isAbort(e, req.signal)) return; throw e; }  // cancel during the POST/backoff -> end cleanly so the loop reports 'cancelled', not 'error'
       // idle watchdog: no bytes for SKYNET_PROVIDER_IDLE_MS -> cancel the reader + throw a `timeout` error (a hung
       // stream must not pin a paid run forever). A user-cancel via req.signal still surfaces as an AbortError below.
@@ -356,7 +356,11 @@
 
     // POST the chat request, retrying transient failures (429/5xx + network resets) BEFORE the stream
     // starts — safe because no tokens have been emitted yet. Aborts propagate at once. Returns an ok Response.
-    async function requestWithRetry(body, signal) {
+    async function requestWithRetry(body, signal, maxRetries) {
+      // maxRetries: the loop may LOWER this ladder (req.preStreamRetries = 0 once it owns the pacing — provider.js).
+      // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
+      const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
+      let waited = 0;
       let lowCreditHealed = false;   // one-shot: a 402 affordability refusal retries ONCE with a clamped max_tokens
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
@@ -373,8 +377,10 @@
           });
         } catch (e) {
           if (isAbort(e, signal)) throw e;
-          if (attempt < RETRY_DELAYS.length) { await delay(RETRY_DELAYS[attempt], signal); continue; }   // network error / connect timeout -> retry
-          throw provider.runtime.markPreStreamRetriesExhausted(e);
+          // a TLS rejection or a crash in our own request code cannot heal by re-sending: fail fast, unmarked
+          if (!classifyApiError(e, { model: body.model }).retryable) throw e;
+          if (attempt < retries) { waited += RETRY_DELAYS[attempt]; await delay(RETRY_DELAYS[attempt], signal); continue; }   // network error / connect timeout -> retry
+          throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
         } finally {
           guard.disarm();
         }
@@ -403,8 +409,8 @@
         err.headers = res.headers;   // H6.1: let classifyApiError read Retry-After / X-RateLimit-Reset off the real response
         const cls = classifyApiError(err, { model: body.model });   // single source of truth for retryability
         err.transient = cls.retryable;                              // keep the field other code reads, now classifier-derived
-        if (cls.retryable && attempt < RETRY_DELAYS.length) { await delay(Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)), signal); continue; }   // honor the server-stated wait, capped at 60s
-        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err) : err;
+        if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }   // honor the server-stated wait, capped at 60s
+        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err, { attempts: attempt + 1, waitedMs: waited }) : err;
       }
     }
 
