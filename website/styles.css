@@ -247,7 +247,7 @@ a:hover{ color:var(--amber); }
   position:absolute; left:0; top:0; width:960px; height:660px; border:0;
   pointer-events:none;                       /* a preview, not a control surface */
   transform-origin:0 0;
-  transform:scale(var(--appk,1)) translate(var(--appx,-283px),var(--appy,-88px));
+  transform:scale(var(--appk,1)) translate(var(--appx,0px),var(--appy,0px));
 }
 
 /* feature cards */
