@@ -41,6 +41,21 @@ async function rejects(promise, msg) { try { await promise; A.ok(false, msg + ' 
       try { fs.rmSync(outside, { recursive: true, force: true }); } catch (e) {}
     }
   }
+  // A dangling final symlink must not be treated as a missing ordinary file. The
+  // former realpath fallback allowed fs.write to create its outside target.
+  {
+    const outside = path.join(os.tmpdir(), 'starnet-fs-dangling-' + process.pid + '.json');
+    const link = path.join(ROOT, 'ag', 'dangling.json');
+    let linked = false;
+    try { await fsp.symlink(outside, link, 'file'); linked = true; }
+    catch (e) { if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(e.code)) throw e; }
+    if (linked) {
+      await rejects(writeTool.run({ path: 'dangling.json', content: 'x' }, { agentId: 'ag' }), 'fs.write refuses a dangling final symlink');
+      await rejects(appendTool.run({ path: 'dangling.json', content: 'x' }, { agentId: 'ag' }), 'fs.append refuses a dangling final symlink');
+      A.ok(!fs.existsSync(outside), 'dangling symlink did not create the outside target');
+      await fsp.unlink(link);
+    }
+  }
 
   // ---- write -> read -> list roundtrip (real disk) ----
   {
