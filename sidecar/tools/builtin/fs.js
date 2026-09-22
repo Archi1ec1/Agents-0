@@ -132,11 +132,16 @@
     async function realpathOrSelf(p) {
       try { return await fsp.realpath(p); } catch (_) { return p; }
     }
+    async function realpathExisting(p) {
+      try { return await fsp.realpath(p); }
+      catch (e) { throw new Error('cannot resolve filesystem path (possibly a dangling symlink): ' + p + ': ' + ((e && e.message) || e)); }
+    }
     async function deepestExisting(abs, base) {
       let cur = abs;
       for (;;) {
         try { await fsp.lstat(cur); return cur; }
         catch (e) {
+          if (!e || e.code !== 'ENOENT') throw e;
           const parent = P.dirname(cur);
           if (!parent || parent === cur) return base;
           cur = parent;
@@ -178,9 +183,9 @@
         // Selecting a relative base is not authority: re-run the station grant and protected-file floor for
         // every resolved target, just as an explicit absolute path would.
         await pathTrust(abs, { scope: opts.scope === 'write' ? 'write' : 'read', agentId: agentId, ctx: opts.ctx });
-        const baseReal = await realpathOrSelf(base);
+        const baseReal = await realpathExisting(base);
         const existing = await deepestExisting(abs, base);
-        const existingReal = await realpathOrSelf(existing);
+        const existingReal = await realpathExisting(existing);
         if (!pathInside(existingReal, baseReal)) throw new Error('path escapes project root via symlink');
         await checkpointResolvedRoot(base, opts);
         return { base, abs };
@@ -188,9 +193,9 @@
       const base = await workspaceRoot(agentId);
       const abs = P.resolve(base, rel || '.');
       if (!pathInside(abs, base)) throw new Error('path escapes workspace');
-      const baseReal = await realpathOrSelf(base);
+      const baseReal = await realpathExisting(base);
       const existing = await deepestExisting(abs, base);
-      const existingReal = await realpathOrSelf(existing);
+      const existingReal = await realpathExisting(existing);
       if (!pathInside(existingReal, baseReal)) throw new Error('path escapes workspace via symlink');
       await checkpointResolvedRoot(base, opts);
       return { base, abs };
