@@ -519,9 +519,11 @@
          relabelled its real result as "[interrupted — ... Reissue it if it is still needed.]" — an invitation to
          repeat a write that already happened. The later call gets a fresh id here, before the turn is persisted,
          checkpointed or dispatched, so the transcript, the journal and the results all agree on it from birth.
-     Runs after repairCalls (repaired args compare as the values they are) and before anything is persisted. Pure
-     and deterministic: same calls -> same ids -> same stream. Mutates `calls` in place, like repairCalls. */
-  function normalizeBatch(calls, messages) {
+     ORDER (in the loop): uniqueCallIds BEFORE repairCalls, so a tool.args.repaired event already names the id the
+     transcript will carry; dropDuplicateCalls AFTER it, so repaired args compare as the values they are. Both run
+     before anything is persisted. Pure and deterministic: same calls -> same ids -> same stream. Both mutate
+     `calls` in place, like repairCalls. */
+  function dropDuplicateCalls(calls) {
     const seenSig = new Set();
     for (let i = 0; i < calls.length;) {
       const c = calls[i];
@@ -532,6 +534,8 @@
       }
       i++;
     }
+  }
+  function uniqueCallIds(calls, messages) {
     const counts = new Map();
     for (const c of calls) counts.set(c.id, (counts.get(c.id) || 0) + 1);
     if (!Array.from(counts.values()).some(n => n > 1)) return;
@@ -549,6 +553,8 @@
       c.id = id;
     }
   }
+  // Both halves in their loop order (tests / callers that want the whole normalization in one call).
+  function normalizeBatch(calls, messages) { uniqueCallIds(calls, messages); dropDuplicateCalls(calls); }
 
   // Keep this deliberately narrow: ordinary reads/polls and every mutation remain repeatable.
   function deterministicCheckSignature(call) {
@@ -1431,8 +1437,9 @@
         continuationText = '';
       }
 
+      uniqueCallIds(calls, messages);             // a reused id gets a unique one BEFORE any event names it
       repairCalls(calls, emit, agentId, runId);   // L2: fix broken tool-call JSON before it is used or discarded
-      normalizeBatch(calls, messages);            // drop exact in-turn duplicates; give reused ids a unique one
+      dropDuplicateCalls(calls);                  // exact in-turn duplicates (name + canonical args) run once
       /* DUPLICATE CHECK STOP. If the model already supplied a sufficient answer while reissuing the exact check
          from the immediately-prior tool turn, dispatching it again adds no evidence and forces another paid turn.
          Drop it before persisting the assistant turn so tool-call/result pairing remains valid. Explicit retry
@@ -1787,5 +1794,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
+  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
 });

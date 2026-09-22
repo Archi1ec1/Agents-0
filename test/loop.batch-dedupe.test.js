@@ -114,6 +114,19 @@ async function run(turns, o) {
     A.ok(!JSON.stringify(repaired).includes('[interrupted'), 'no real result is relabelled "interrupted — reissue it"');
   }
 
+  // ---- 2b. a reused id on a call that needed REPAIR: the repaired event names the id the transcript carries ----
+  {
+    const { ran, messages, seq } = await run(batch([
+      ['dup', 'fs_write', '{"path":"a.txt","content":"A"}'],
+      ['dup', 'fs_write', '{"path":"b.txt","content":"B"']
+    ]));
+    A.eq(ran.map(r => r[1].path), ['a.txt', 'b.txt'], 'both run (the second after a structural repair)');
+    const rep = seq.filter(e => e.name === 'tool.args.repaired');
+    const persisted = messages.find(m => m.role === 'assistant' && m.tool_calls).tool_calls.map(tc => tc.id);
+    A.eq(rep.map(e => e.payload.callId), ['dup_2'], 'tool.args.repaired names the unique id, not the reused one');
+    A.ok(persisted.indexOf(rep[0] && rep[0].payload.callId) >= 0, 'and that id is the one persisted in the assistant turn');
+  }
+
   // ---- 3. same id AND same args -> one dispatch (duplicate wins over re-id) ----
   {
     const { ran, messages } = await run(batch([
