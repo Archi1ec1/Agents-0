@@ -4,11 +4,11 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**10** open (open+claimed) of 213 total — 0 P0 · 0 P1 · 10 P2
+**11** open (open+claimed) of 214 total — 0 P0 · 0 P1 · 11 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
-User/owner reports: **97** · source fixed: **86** · installer verified: **6** · customer confirmed: **1** · still reported failing: **2** · recovery unconfirmed: **94**.
+User/owner reports: **98** · source fixed: **86** · installer verified: **6** · customer confirmed: **1** · still reported failing: **2** · recovery unconfirmed: **95**.
 
 | Report | Family | Source | Installer | Customer |
 | --- | --- | --- | --- | --- |
@@ -77,6 +77,7 @@ User/owner reports: **97** · source fixed: **86** · installer verified: **6** 
 | [Ollama run times out with no chat POST observed by reporter](bugs/5274c7b7-ollama-chat-request-not-observed.md) | local-provider-transport | open | unverified | unconfirmed |
 | [Ollama task runs finish without reported filesystem tool calls](bugs/678ac951-ollama-task-runs-finish-without-reported-filesys.md) | local-provider-tool-projection | open | unverified | unconfirmed |
 | [Mac installer reports application unsupported on the computer](bugs/ff3fb4cb-mac-unsupported-installation-uncorrelated.md) | mac-install-compatibility | open | unverified | unconfirmed |
+| [Website preview applies retired rendering effects and implies live work](bugs/d0904df1-website-preview-applies-retired-rendering-effect.md) | website-preview | open | unverified | unconfirmed |
 | [Deliverable naming instruction conflicts with explicit stop limits](bugs/5a35bcfe-deliverable-note-overrides-stop.md) | task-scope | fixed | unverified | unconfirmed |
 | [Paused routines falsely keep an idle desktop armed](bugs/ce430c35-paused-routines-falsely-keep-an-idle-desktop-arm.md) | lifecycle-truth | fixed | verified | unconfirmed |
 | [Dense service cards squeeze technical prose into tiny columns](bugs/734b469e-dense-service-cards-squeeze-technical-prose-into.md) | record-readability | fixed | unverified | unconfirmed |
@@ -248,6 +249,7 @@ User/owner reports: **97** · source fixed: **86** · installer verified: **6** 
 | P2 | open | providers | [Ollama task runs finish without reported filesystem tool calls](bugs/678ac951-ollama-task-runs-finish-without-reported-filesys.md) | agent/reliability-audit-0919 | — |
 | P2 | open | release | [Mac installer reports application unsupported on the computer](bugs/ff3fb4cb-mac-unsupported-installation-uncorrelated.md) | release-0120-prep-0915 | — |
 | P2 | open | release | [Windows Node 24 HTTP test exits with a native libuv assertion after passing](bugs/6e29727c-windows-node-24-http-test-exits-with-a-native-li.md) | reliability-audit-0919 | — |
+| P2 | open | world | [Website preview applies retired rendering effects and implies live work](bugs/d0904df1-website-preview-applies-retired-rendering-effect.md) | agent/website-demo-0921 | — |
 | P2 | fixed | autonomy | [Cancelled edit starts a replacement language server](bugs/37059128-cancelled-edit-starts-a-replacement-language-ser.md) | reliability-audit | 547dd03d7 |
 | P2 | fixed | autonomy | [Deliverable naming instruction conflicts with explicit stop limits](bugs/5a35bcfe-deliverable-note-overrides-stop.md) | report-0110-0908 | 72a8a3043c263cd53ed353daed2042e256c8e236 |
 | P2 | fixed | autonomy | [Loop pause and resume discard refused control responses](bugs/32fd08b2-loop-pause-and-resume-discard-refused-control-re.md) | agent/seam-audit-0912-b | b5c5cba75 |
@@ -337,7 +339,7 @@ User/owner reports: **97** · source fixed: **86** · installer verified: **6** 
 | sessions | 0 |
 | skills | 0 |
 | onboarding | 1 |
-| world | 0 |
+| world | 1 |
 | voice | 0 |
 | release | 2 |
 
