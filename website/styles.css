@@ -234,7 +234,11 @@ a:hover{ color:var(--amber); }
 /* the live preview IS the app (website/app, a verbatim frontend copy booted from a seeded
    save) — an iframe with a dedicated 960x660 camera viewport, clipped to the station-camera panel
    and scaled to the column. live-preview.js measures the current panel rectangle. */
-.bezel.live{ position:relative; z-index:63; border:1px solid var(--line); background:#080b0d; padding:0; box-shadow:0 16px 60px rgba(0,0,0,.3); }
+/* The section forms a stacking context: lift it, not just its figure, above
+   the global page glass so the real renderer is not darkened a second time. */
+#station{ z-index:63; }
+.topbar.topbar{ z-index:70; }
+.bezel.live{ position:relative; border:1px solid var(--line); background:#080b0d; padding:0; box-shadow:0 16px 60px rgba(0,0,0,.3); }
 .bezel.live figcaption{ padding:18px 20px; border-top:1px solid var(--line); background:#100e0b; color:var(--ink-d); letter-spacing:0; line-height:1.5; }
 .bezel.live figcaption strong{ display:block; color:var(--amber-b); font-weight:400; letter-spacing:2px; margin-bottom:6px; }
 .bezel.live figcaption span{ display:block; font-family:Arial,sans-serif; font-size:13px; }
