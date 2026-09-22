@@ -876,3 +876,4 @@ test/provider.codex-quota-body.test.js
 test/transcript-torn-tail-append.test.js
 test/logbound-torn-tail-append.test.js
 test/loop.fatal-keeps-partial.test.js
+test/transcript.per-turn-durable.test.js

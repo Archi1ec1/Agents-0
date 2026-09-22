@@ -91,6 +91,7 @@ const { makeRunJournal, DISPATCH_BOUNDARY_MODEL } = require('./run-journal.js');
 const { makeAffinityIndex } = require('./agent-affinity.js');   // idle-life social graph: which agents the run log proves work together
 const RunRecovery = require('./run-recovery.js');
 const { makeSegmentedTranscriptIo } = require('./transcript-history.js');
+const { makeRunTranscript, recoveryBase } = require('./transcript-run.js');   // H2: a run's transcript rows land at the loop's durable boundaries, not only at run end
 const { makeSkillStore } = require('./skillstore.js');             // H4: per-agent owned skill library (singleton)
 const { makeCredPool } = require('./credpool.js');
 const { resolveTools } = require('./capability/resolve.js');
@@ -1293,6 +1294,12 @@ const transcriptIo = makeSegmentedTranscriptIo({
   onWarning: (message) => console.warn('[transcript] ' + message)
 });
 const transcriptStore = makeTranscriptStore({ io: transcriptIo, clock: { now: () => Date.now() }, redact });
+/* H2: runs whose transcript rows are being written per turn RIGHT NOW (runTranscript start → run-end drain). The rows
+   are durable the moment they land (a crash keeps them), but GET /api/transcript keeps the browser's pre-H2 view — a
+   run's rows appear when it ends — because COMMS already renders the live run from its own stream, and its canonical
+   merge would otherwise insert the in-flight intermediate turns next to the reply it pushes at run end (and a cron
+   session would take an intermediate note for the routine's output). A request for one run (?runId=) sees them. */
+const transcriptLiveRuns = new Set();
 // Active runs journal their provider-valid message and tool side-effect boundaries outside the agent fs jail.
 // Finished journals remain until the segmented transcript store acknowledges their final durable checkpoint;
 // this avoids deleting the only recovery copy after the legacy transcript writer's fail-open append.
@@ -15275,6 +15282,23 @@ function userMsgText(m) {
   }
   return parts.join('');                          // '' for an image-only turn: honest, and it IS a real turn
 }
+/* H2 durable transcript — a recovery continuation's view of what its SOURCE run already recorded. The continuation's
+   prompt is the source's journal checkpoint: the source's initial prompt (its base checkpoint — system, restored
+   history, the directive) followed by the turns the source made and the planner's pairing results. Returns the base
+   length plus the source run's own transcript rows, so runTranscript.adoptRecovery can mark exactly the recovered
+   turns those rows prove and append the rest. null = unknown (journal unreadable, or a plan that does not begin with
+   the journal's base): the caller keeps the conservative mark-everything rule. */
+function transcriptRecoveryTail(recovery, msgs, streamId) {
+  const src = recovery && recovery.sourceRunId ? String(recovery.sourceRunId) : '';
+  if (!src || !Array.isArray(msgs)) return null;
+  try {
+    const state = runJournal.inspect(src);
+    const base = recoveryBase(state, msgs);
+    if (!base) return null;
+    const rows = transcriptStore.history(streamId, { sourceRunId: src, limit: 5000 });
+    return { base, rows, sourceWasContinuation: !!(state.meta && state.meta.recoveryOf) };
+  } catch (e) { failNote('transcript.recovery.inspect', e); return null; }
+}
 function latestUserText(list) {
   const msgs = Array.isArray(list) ? list : [];
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -16615,24 +16639,25 @@ async function runOnceCore(o) {
   // The summarizer body lives in compaction-summarizer.js (chunked full-slice fold; no 16k input truncation).
   // This is thin wiring: the run's provider/model/cost fallbacks, the aux tier, the STRICT transcript drain and
   // the durable-memory prepend are injected; `live` still overrides provider/model/cost per call (fallback-safe).
-  /* THE DIRECTIVE GOES FIRST. The triggering user turn is in the prompt (so it carries the persisted marker) and is
-     written to the transcript explicitly at run end. A MID-RUN drain (every compaction tier saves the slice it is
-     about to fold or elide) used to land the run's early assistant/tool rows BEFORE that run-end directive row, so
-     a restart replayed the agent answering a question it had not been asked yet. The first mid-run drain writes the
-     directive (text captured pre-loop, see transcriptDirective.text below) and run end then skips it. */
-  const transcriptDirective = { text: '', written: false };
+  /* THE DIRECTIVE GOES FIRST, AND THE DIALOGUE LANDS AS IT HAPPENS (H2). The triggering user turn is in the prompt
+     (so it carries the persisted marker) and is written to the transcript as its own row BEFORE any of this run's
+     assistant/tool rows — otherwise a restart replays the agent answering a question it had not been asked yet.
+     runTranscript (transcript-run.js) owns that order for every writer: the pre-loop start (directive before the
+     first model call), each loop durable boundary (onCheckpoint below: the assistant tool-call turn before tools
+     dispatch, the results after), the compaction tiers' strict drain, and run end — which then appends only what
+     is left. Directive text is captured pre-loop (runTranscript.setDirective below). */
+  const runTranscript = makeRunTranscript({
+    store: transcriptStore, streamId: o.streamId, agentId, runId,
+    // mid-run write failures never kill the run or reorder dialogue: the rows stay pending (and in the run journal)
+    // and retry at the next boundary / strict run end. Counted + warned, so a failing disk is never invisible.
+    onFailure: (stage, e) => failNote('transcript.run.' + stage, e)
+  });
   const summarize = makeSummarizer({
     provider, model, cost, signal, emit, agentId, runId,
     auxModelFor: resolveAuxModel,
     auxEffortFor: auxReasoningEffort,
     summaryPrompt: compactionSummaryPrompt,
-    transcriptDrain: (older) => {
-      if (!transcriptDirective.written && transcriptDirective.text) {
-        transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: transcriptDirective.text, sourceRunId: runId });
-        transcriptDirective.written = true;
-      }
-      return transcriptStore.appendNewStrict(o.streamId, agentId, older, { sourceRunId: runId });
-    },
+    transcriptDrain: (older) => runTranscript.drain(older),
     memoryBlockFor: (transcript) => {
       // on_pre_compress (MEMORY-CORTEX): rank durable memory against the slice being folded and PREPEND it.
       // '' when nothing to preserve. Fail-open: a memory hiccup must never block the summary.
@@ -17499,15 +17524,21 @@ async function runOnceCore(o) {
   // the LOOP adds. This used to be a positional `msgs.length`, which a compaction silently invalidated — it
   // rebuilds the same array in place and SHORTER, leaving the index past the end and dropping the entire run's
   // dialogue with no error. See the PERSISTED marker in transcriptstore.js.
-  transcriptStore.markPersisted(msgs);
+  // H2 RECOVERY: a continuation's prompt is the SOURCE run's journal checkpoint — its initial prompt, the turns it
+  // made, and the recovery planner's pairing results. Only that initial prompt is recorded by definition; a later
+  // turn is recorded exactly when the source run's own transcript rows prove it (markRecorded, by identity), and
+  // runTranscript.start() below appends the rest. Unknown base -> the old conservative rule (mark all).
+  const recoveredTranscript = transcriptRecoveryTail(o.recovery, msgs, o.streamId);
+  if (recoveredTranscript) runTranscript.adoptRecovery(msgs, recoveredTranscript);
+  else transcriptStore.markPersisted(msgs);
   // The run journal's delta checkpoints exclude exactly THESE objects (the base checkpoint below already holds
   // them). Identity, not the persisted marker: a mid-run compaction drain also marks messages persisted while they
   // stay in the working set (the micro tier keeps elided copies, a refused fold keeps the whole slice), and those
   // must still reach the provider-resumable checkpoint.
   const initialPromptSet = new WeakSet(msgs.filter(m => m && typeof m === 'object'));
-  // the directive a mid-run drain writes first (same rule as the run-end title write; captured before the loop can
-  // append its own user-role messages, e.g. a screen-capture turn)
-  if (!retryDirective && !o.syntheticTrigger) transcriptDirective.text = latestUserText(msgs);
+  // the directive every transcript writer puts first (same rule as the run-end title write; captured before the loop
+  // can append its own user-role messages, e.g. a screen-capture turn). A continuation's is its SOURCE's directive.
+  if (!retryDirective && !o.syntheticTrigger) runTranscript.setDirective(latestUserText(recoveredTranscript ? msgs.slice(0, recoveredTranscript.base) : msgs));
   if (!internal) {
     try {
       runJournal.begin({
@@ -17526,6 +17557,9 @@ async function runOnceCore(o) {
       return;
     }
   }
+  // H2: the user's directive (and a continuation's still-missing recovered turns) are durable BEFORE the first model
+  // call. Never throws; a failure retries at the first loop boundary, ahead of any assistant row.
+  if (execution.journalStarted()) { transcriptLiveRuns.add(runId); runTranscript.start(msgs); }
   let bufferedTaskEnd = null;
   // Hold a successful user-facing Task Brief end until the final text is known; a question maps to the
   // contract's additive `clarifying` terminal (neither product nor slag — every success path keys on 'done').
@@ -17704,6 +17738,9 @@ async function runOnceCore(o) {
           ? checkpointMessages.filter(m => m && typeof m === 'object' && !initialPromptSet.has(m))
           : [];
         runJournal.checkpoint(runId, { phase, turn, messages: fresh });
+        // H2 per-turn transcript: AFTER the journal (the recovery copy is written first), the new dialogue rows —
+        // the assistant tool-call turn before any tool runs, the results after. Never throws (see transcript-run.js).
+        runTranscript.checkpoint({ phase, messages: checkpointMessages });
       } : null,
       agentId, runId, model, trigger: trigger,
       // rough initial estimate for the error classifier's context-overflow ratio; contextLimit is 0 until the
@@ -17828,8 +17865,11 @@ async function runOnceCore(o) {
       if (execution.journalStarted()) {
         // Retirement is ordered strictly: each transcript row is fsync/read-back proven, then the journal records
         // that acknowledgement, then (and only then) is the recovery copy removed. A throw leaves it discoverable.
-        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: title, sourceRunId: runId });
-        if (result && Array.isArray(result.messages)) transcriptStore.appendNewStrict(o.streamId, agentId, result.messages, { sourceRunId: runId });
+        // H2: most rows already landed at the loop's durable boundaries; this appends only what is left (the final
+        // answer, a pending retry) — the persisted marker makes it exactly-once, the directive still goes first.
+        if (title && !retryDirective && !o.syntheticTrigger) runTranscript.fallbackDirective(title);
+        try { runTranscript.drain(result && result.messages); }
+        catch (e) { failNote('transcript.run.end', e); throw e; }   // visible, and the journal stays un-retired
         const retirement = runJournal.finishAndRetire(runId, {
           reason: (result && result.reason) || 'error', turns: finalTurns, tokens: finalTokens, usd: finalUsd,
           transcriptAck: true
@@ -17838,10 +17878,11 @@ async function runOnceCore(o) {
           console.warn('[run-journal] retained unsettled run for review:', runId, retirement.state && retirement.state.status);
         }
       } else {
-        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
+        if (title && !retryDirective && !o.syntheticTrigger && !runTranscript.directiveWritten()) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
         if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages);
       }
     } catch (_) {}
+    transcriptLiveRuns.delete(runId);   // H2: settled (or retained in the journal) — its rows are ordinary history now
     // QUEST V2 §A — the run-lifecycle sweeps at the settle point: a run ending 'done' completes every OPEN quest
     // whose run-contract is bound to this runId (bound at the injection seam / the quest.update progress tick);
     // a non-'done' end (error/budget/max_iters/refusal) STALLS them instead (stamp reason, release the binding)
@@ -20821,7 +20862,11 @@ function serveTranscript(req, res) {
     const stream = u.searchParams.get('stream') || 'global';
     const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 200));
     const sourceRunId = u.searchParams.get('runId') || '';
-    json(200, { stream, turns: transcriptStore.history(stream, { limit, sourceRunId }) });
+    // H2: a run still writing per turn stays out of the stream view until it ends (see transcriptLiveRuns).
+    const turns = sourceRunId || !transcriptLiveRuns.size
+      ? transcriptStore.history(stream, { limit, sourceRunId })
+      : transcriptStore.history(stream, { limit: limit + 500 }).filter(r => !transcriptLiveRuns.has(String(r.sourceRunId || ''))).slice(-limit);
+    json(200, { stream, turns });
   } catch (e) { json(500, readRouteFailure('transcript', e)); }   // broken ≠ empty: every reader gates on r.ok (autosessions/chat/returnstore)
 }
 
