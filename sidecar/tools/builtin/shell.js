@@ -547,8 +547,15 @@
      exit code (captured BEFORE the marker so the appended echo can't mask it), parse it back, strip it from the
      shown output, and persist the cwd PER AGENT — clamped to the fs jail so it can never drift outside. */
   const MARK_A = '__SK_CWD__', MARK_EC = '__SK_EC__', MARK_END = '__SK_END__';
+  /* WINDOWS: THE CARET IS LOAD-BEARING (h1 F5, 2026-09-22). cmd.exe expands %VAR% for the WHOLE line when it PARSES it
+     — before the user's command runs — so the original `call echo …%CD%…%ERRORLEVEL%` printed the PRE-command cwd and
+     errorlevel: every Windows shell.exec reported [exit 0] even when the command failed, and a `cd` never persisted
+     (bug since e72ee0b00, 2026-06-23). `%^ERRORLEVEL%` survives the parse-time pass (no variable is named ^ERRORLEVEL),
+     the caret is then consumed, and `call` performs a SECOND expansion at run time — after the command finished.
+     Proven with Node's own spawn mode (shell:true -> cmd.exe /d /s /c "…"): `cmd /c exit 3 & call echo %^ERRORLEVEL%`
+     prints 3 and `cd sub & call echo %^CD%` prints …\sub. Output format unchanged, so parseMarker is untouched. */
   function buildMarkedCmd(cmd, isWin) {
-    if (isWin) return cmd + ' & call echo ' + MARK_A + '%CD%' + MARK_EC + '%ERRORLEVEL%' + MARK_END;   // `call echo` re-expands %ERRORLEVEL% at runtime
+    if (isWin) return cmd + ' & call echo ' + MARK_A + '%^CD%' + MARK_EC + '%^ERRORLEVEL%' + MARK_END;
     return cmd + '\n__sk_ec=$?; printf "\\n' + MARK_A + '%s' + MARK_EC + '%s' + MARK_END + '" "$(pwd)" "$__sk_ec"';
   }
   function parseMarker(out) {
