@@ -6,13 +6,14 @@
      register(def) -> tool,
      get(name), list(capSet) -> tool[],          // capSet = Set/array of allowed tool names or capIds
      wireFormat(tools?) -> OpenAI tools[] ,       // {type:'function', function:{name,description,parameters}}
-     dispatch(call, ctx) -> { ok, isError, content, summary }   // async; NEVER throws
+     dispatch(call, ctx) -> { ok, isError, content, summary, effectUnknown? }   // async; NEVER throws
    }
 
    dispatch order (each step short-circuits to an isError result; run() is reached only if all pass):
      parseError -> unknown-tool -> capability gate (ctx.canUse) -> schema-validate ->
      consent gate (tool.requiresConsent && ctx.consent) -> pre-tool hook -> durable dispatch callback ->
-     per-tool timeout -> run() once. */
+     per-tool timeout (+ run-abort grace race) -> run() once.
+   effectUnknown:true marks a non-read tool that timed out or was cancelled without confirming it stopped. */
 'use strict';
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
@@ -136,6 +137,42 @@
     });
   }
 
+  /* STOP MUST REACH A DEAF TOOL (h1 audit 2026-09-22). withTimeout above races the tool only against its OWN timer;
+     the run's abort signal was threaded into ctx.signal but never RACED, so a tool that ignores ctx.signal held a
+     stopped run hostage until it finished on its own (probe: cancelled at 1s, returned at 8,007ms with a normal
+     result). Once the run signal aborts, a cooperative tool still gets `graceMs` to settle with its own truthful
+     result (the fast path — a shell kill lands in ~250ms); past the grace this rejects with __cancelUnconfirmed so
+     dispatch can answer "cancelled, stop NOT confirmed, effect unknown" instead of waiting. The listener is always
+     detached on settle (a long run shares one parent signal across hundreds of calls). */
+  function withCancelGrace(value, signal, graceMs) {
+    if (!signal || typeof signal.addEventListener !== 'function') return Promise.resolve(value);
+    return new Promise((resolve, reject) => {
+      let done = false, timer = null;
+      const onAbort = () => {
+        if (done || timer) return;
+        timer = setTimeout(() => {
+          if (done) return;
+          done = true; detach();
+          const e = new Error('cancel unconfirmed'); e.__cancelUnconfirmed = true; e.graceMs = graceMs; reject(e);
+        }, graceMs);
+      };
+      const detach = () => { try { signal.removeEventListener('abort', onAbort); } catch (e) { failNote('tools.registry.cancelGrace.detach', e); } };
+      const settle = (fn, v) => { if (done) return; done = true; if (timer) clearTimeout(timer); detach(); fn(v); };
+      try {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      } catch (e) { failNote('tools.registry.cancelGrace.attach', e); }
+      Promise.resolve(value).then(v => settle(resolve, v), e => settle(reject, e));
+    });
+  }
+
+  // A tool whose scope is not host-proven read-only may have CHANGED something by the time a timeout/cancel is
+  // declared. Connector annotations never prove read-only here (same trust rule as recovery-policy.toolFailure).
+  function provenReadOnly(tool) {
+    return !!tool && tool.scope === 'read' && tool.readOnly === true && tool.provenance !== 'connector';
+  }
+  const EFFECT_UNKNOWN_NOTE = ' Its effect is UNKNOWN: the call was already sent and may have taken effect (a record created, a message sent, a file written) even though no result came back. Verify the current state with a read/list/get call BEFORE retrying — do not repeat this call blindly.';
+
   // Chain a child AbortController to an optional parent signal: the child aborts when the parent aborts OR when
   // the per-tool timeout fires. Threaded into ctx.signal for the dispatched run() so signal-honoring tools
   // (team.dispatch → cancel workers, web_* → cancel the fetch, shell/verify → kill the child) actually STOP on
@@ -156,8 +193,13 @@
     return { ctrl, detach };
   }
 
-  function makeRegistry() {
+  // makeRegistry(opts?) — opts.cancelGraceMs: how long a cancelled tool may take to settle on its own before
+  // dispatch answers for it (default 3000). ctx.cancelGraceMs overrides per dispatch (tests).
+  const DEFAULT_CANCEL_GRACE_MS = 3000;
+  function graceOf(v) { const n = Number(v); return (v != null && Number.isFinite(n) && n >= 0) ? n : null; }
+  function makeRegistry(opts) {
     const tools = {};
+    const registryGraceMs = graceOf(opts && opts.cancelGraceMs);
 
     function register(def, registration) {
       const provenance = registration && registration.provenance === 'connector' ? 'connector' : 'host';
@@ -292,7 +334,9 @@
           }
           if (boundary && boundary.ok === false) return boundary;
         }
-        const out = await withTimeout(tool.run(call.args, runCtx), timeoutMs, () => { try { ac.abort(new Error('tool timeout')); } catch (_) { try { ac.abort(); } catch (_) {} } });
+        const graceMs = graceOf(ctx.cancelGraceMs) != null ? graceOf(ctx.cancelGraceMs) : (registryGraceMs != null ? registryGraceMs : DEFAULT_CANCEL_GRACE_MS);
+        const work = withCancelGrace(tool.run(call.args, runCtx), ctx.signal, graceMs);
+        const out = await withTimeout(work, timeoutMs, () => { try { ac.abort(new Error('tool timeout')); } catch (_) { try { ac.abort(); } catch (_) {} } });
         const shaped = (out && typeof out === 'object' && 'content' in out);
         const raw = shaped ? out.content : (out == null ? '' : out);
         // A narrower tool ceiling may already have produced a preview. `fullContent` crosses this persistence
@@ -309,7 +353,26 @@
         const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked) : raw;
         return await notifyPost(okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null), elapsed());
       } catch (e) {
-        if (e && e.__timeout) return await notifyPost(errResult('tool ' + call.name + ' timed out after ' + timeoutMs + 'ms', 'timeout'), elapsed());
+        /* A TIMEOUT IS NOT A NO-OP (h1 audit 2026-09-22). "timed out" read like "nothing happened", the failure-recovery
+           nudge invited another attempt, and a connector write that had landed remotely was sent twice. A read tool
+           keeps its plain wording; anything else says its effect is unknown and to verify first, and carries
+           effectUnknown so the host's idempotency ledger can hold an identical retry. An in-tool timer (the MCP
+           client's own request timeout) marks its error __timeout too and names its own budget. */
+        if (e && e.__timeout) {
+          const ms = Number(e.timeoutMs) > 0 ? Number(e.timeoutMs) : timeoutMs;
+          if (provenReadOnly(tool)) return await notifyPost(errResult('tool ' + call.name + ' timed out after ' + ms + 'ms', 'timeout'), elapsed());
+          const timedOut = errResult('tool ' + call.name + ' timed out after ' + ms + 'ms.' + EFFECT_UNKNOWN_NOTE, 'timeout');
+          timedOut.effectUnknown = true;
+          return await notifyPost(timedOut, elapsed());
+        }
+        if (e && e.__cancelUnconfirmed) {
+          const readOnly = provenReadOnly(tool);
+          const cancelled = errResult('tool ' + call.name + ' was cancelled (the run was stopped) but did not confirm it stopped within '
+            + e.graceMs + 'ms of the cancel — it may still be running.'
+            + (readOnly ? ' Treat its result as missing.' : EFFECT_UNKNOWN_NOTE), 'cancelled - unconfirmed');
+          if (!readOnly) cancelled.effectUnknown = true;
+          return await notifyPost(cancelled, elapsed());
+        }
         const errorText = 'tool ' + call.name + ' failed: ' + (e && e.message ? e.message : String(e));
         const fullError = e && typeof e.fullContent === 'string' ? e.fullContent : errorText;
         let parked = null;
@@ -318,7 +381,17 @@
         }
         const fullErrorBytes = utf8Bytes(fullError);
         const visibleError = fullError !== errorText ? intrinsicReceipt(errorText, fullError.length, fullErrorBytes, parked) : errorText;
-        return await notifyPost(errResult(visibleError, e && e.precondition ? 'precondition' : 'error', parked, fullError.length, fullErrorBytes, e && e.mutationReceipt, e && e.precondition), elapsed());
+        // A tool may name its own failure (shell.exec: 'timeout' / 'cancelled' for a killed command) via a short
+        // toolSummary on the thrown error; otherwise the generic labels stand.
+        const thrownSummary = e && typeof e.toolSummary === 'string' && e.toolSummary.trim() ? e.toolSummary.trim().slice(0, 60) : '';
+        // A tool that gave up waiting AFTER its request left (an MCP call cancelled mid-flight) flags effectUnknown:
+        // for anything not proven read-only the model is told the effect may have landed, same as a timeout.
+        const unknownEffect = !!(e && e.effectUnknown === true) && !provenReadOnly(tool);
+        const failed = errResult(unknownEffect ? visibleError + EFFECT_UNKNOWN_NOTE : visibleError,
+          thrownSummary || (unknownEffect && e.cancelled ? 'cancelled' : (e && e.precondition ? 'precondition' : 'error')),
+          parked, fullError.length, fullErrorBytes, e && e.mutationReceipt, e && e.precondition);
+        if (unknownEffect) failed.effectUnknown = true;
+        return await notifyPost(failed, elapsed());
       } finally {
         // A long run may execute hundreds of tools against one parent signal. Once this call settles, its child
         // controller no longer needs cancellation propagation; retaining every listener until run end leaks the
