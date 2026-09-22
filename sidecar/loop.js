@@ -895,9 +895,10 @@
        turn's calls reach executeCalls — earlier tool results are already paired in `messages` and are never
        dispatched again. */
     const STREAM_RETRY_PATIENCE_MS = (recoveryPolicy && recoveryPolicy.RETRY_PATIENCE_MS) || STREAM_RETRY_DELAYS.reduce((a, b) => a + b, 0);
-    // OPTIONAL injected randomness for the ladder's ±20% jitter (o.random() -> [0,1)); default Math.random so
-    // agents sharing one key spread their retries. Tests inject a constant (0.5 = the un-jittered rung).
-    const random = (typeof o.random === 'function') ? o.random : Math.random;
+    // OPTIONAL injected randomness for the ladder's ±20% jitter (o.random() -> [0,1)). The loop never reaches for
+    // ambient randomness (lint-determinism): the host (index.js, the composition root) injects Math.random for real
+    // runs so agents sharing one key spread their retries; absent = 0.5, the exact un-jittered rung (tests, aux loops).
+    const random = (typeof o.random === 'function') ? o.random : () => 0.5;
     function jitterSample() {
       try { const r = Number(random()); return isFinite(r) ? r : 0.5; }
       catch (e) { failNote('loop.retry.random', e); return 0.5; }

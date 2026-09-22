@@ -17692,7 +17692,7 @@ async function runOnceCore(o) {
       steer: typeof o.steer === 'function' ? o.steer : () => drainSteer(runId),   // live parent or generation-bound worker steering
       // the parent's buffer closes as the loop ends (a worker's generation-bound steer has its own running gate)
       steerClose: typeof o.steer === 'function' ? null : () => closeSteer(runId),
-      signal: signal, clock: { now: () => Date.now() },
+      signal: signal, clock: { now: () => Date.now() }, random: Math.random,   // retry-ladder jitter source (loop.js never reads ambient randomness)
       onCheckpoint: execution.journalStarted() ? ({ phase, messages: checkpointMessages, turn }) => {
         // Initial prompt messages (initialPromptSet — the exact objects the base checkpoint recorded) are excluded;
         // everything else was created by this run, so compaction cannot invalidate the boundary and recovery avoids
