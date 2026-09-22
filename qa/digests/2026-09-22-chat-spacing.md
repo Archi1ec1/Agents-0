@@ -27,3 +27,9 @@ Incremental rendering at 420px and 1000px panel widths retained one list, six it
 - Full `npm run test:fast` on committed candidate `a6d1b3023`: **844/844 steps passed** (`.dogfood/chat-spacing/fast-final.log`).
 
 No integration merge, installer rebuild, deployment or customer-recovery claim. Owner report: `a9862eb0`; installer unverified, recovery unconfirmed.
+
+## Output polish follow-up
+
+The owner's preview review prompted a narrow follow-up: plain multi-paragraph replies now use the same explicit paragraph spacing as formatted replies, and bold list labels receive actual weight and a small gap before their descriptions. The existing Markdown block structure and copy behavior remain unchanged. Source commit `f6fe79d21`; source lock `c802381ea`.
+
+The seeded local browser preview showed improved list-label hierarchy and compact plain paragraphs. The public renderer regression passed 75 assertions, including LF, CRLF and whitespace-only paragraph breaks. Final `npm run test:fast` passed **844/844** (`.dogfood/chat-spacing/fast-polish-final.log`); `npm run qa:customer-journeys` passed **38/38** (`.dogfood/chat-spacing/journeys-polish.log`). Temporary local preview pages were mirrored solely so the website-sync check could inspect the checkout. They are untracked development artifacts and are not part of the source commits.
