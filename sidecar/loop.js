@@ -26,6 +26,8 @@
   // tool-call argument repair (L2): recover mechanically-broken JSON from non-Anthropic models. Degrades to
   // identity if the module is absent (e.g. a browser build that never runs the loop).
   const repairToolCallArguments = (sanitize && sanitize.repairToolCallArguments) || ((s) => s);
+  const repairToolCallArgumentsDetailed = (sanitize && sanitize.repairToolCallArgumentsDetailed)
+    || ((s) => ({ text: repairToolCallArguments(s), closedOpenString: false }));
   // API error classification (L3): makes `transient` on agent.run.error honest. Degrades to non-retryable if absent.
   const classifyApiError = (errorClass && errorClass.classifyApiError) || (() => ({ retryable: false, message: '' }));
   const continuation = outputContinuation || {
@@ -52,13 +54,25 @@
   // parseError, emitting one tool.args.repaired. A give-up '{}' on content-bearing args is NOT accepted — the
   // call keeps its parseError and becomes one clean isError result downstream (never a silent empty-args run).
   // Pure: same calls -> same emits -> byte-identical stream.
+  /* CUT-OFF VALUES ARE REFUSED, NOT REPAIRED (2026-09-22 audit). The ladder closes a dangling string so the JSON
+     parses — but a string that was still open when the arguments ended is a VALUE that was cut off, not a slip of
+     syntax. Accepting it dispatched '{"path":"src/app.js","content":"function main() {\n  initDatabase();\n  startServ'
+     as a complete write: a 47-char truncated file on disk and a run that ended 'done'. The finishReason 'length'
+     refusal further down cannot catch this on its own — routers rewrite length -> tool_calls and a stream can be
+     cut with no finish reason at all — so the evidence has to come from the arguments themselves. The call keeps a
+     parseError (registry.js refuses it before any gate or run()), the model is told it was NOT executed and must
+     reissue it complete, and no tool.args.repaired is emitted: nothing was repaired. Harmless structural damage (a
+     missing closing brace, a trailing comma) still repairs exactly as before — no value is lost there. */
+  const TRUNCATED_ARGS_ERROR = 'the arguments were cut off mid-value (the JSON ended inside an unterminated string, so at least one argument is incomplete). This call was NOT executed. Reissue the complete call with every argument in full; if a value is very large, split the work into several smaller calls.';
   function repairCalls(calls, emit, agentId, runId) {
     for (const c of calls) {
       if (!c.parseError) continue;
-      const fixed = repairToolCallArguments(c.argsRaw);
+      const detail = repairToolCallArgumentsDetailed(c.argsRaw);
+      const fixed = detail.text;
       if (fixed === c.argsRaw) continue;
       let parsed = null; try { parsed = JSON.parse(fixed); } catch (e) { continue; }
       if (fixed === '{}' && !onlyStructural(c.argsRaw)) continue;   // unrepairable content -> keep the parseError
+      if (detail.closedOpenString) { c.parseError = TRUNCATED_ARGS_ERROR; continue; }   // a cut-off value -> refuse, never dispatch
       emit('tool.args.repaired', { agentId, runId, callId: c.id, name: c.name || 'unknown', before: clip(c.argsRaw), after: clip(fixed) });
       c.args = parsed; c.argsRaw = fixed; c.parseError = null;
     }

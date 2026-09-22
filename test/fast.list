@@ -855,3 +855,4 @@ test/overseer-ui.test.js
 test/workspace-owner-election.test.js
 test/project-home-ui.test.js
 test/cli.test.js
+test/loop.truncated-args-refuse.test.js
