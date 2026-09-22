@@ -22,6 +22,9 @@
   "engines": {
     "node": ">=18"
   },
+  "bin": {
+    "starnet": "bin/starnet.js"
+  },
   "scripts": {
     "validate:raw": "node test/validate_map.js",
     "test:http": "node scripts/timeout.mjs --label test:http --timeout=1200000 -- npm run test:http:raw",
