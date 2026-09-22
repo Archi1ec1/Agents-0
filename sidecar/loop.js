@@ -1456,6 +1456,29 @@
         // A2 reconcile-on-fatal: if usage arrived before the stream failed, RECORD it before ending 'error' so the
         // ledger/spend reflect tokens the provider will bill — a fatal path must not silently drop billed usage.
         bookUsage(usage, usageModel);
+        /* STREAMED TEXT OUTLIVES A FATAL STREAM ERROR (H2, reference-harness parity). The Commander already read these
+           words live (agent.token), but the turn was never appended, so the durable transcript, result.messages and a
+           resumed run all acted as if the model had said nothing (E2E: a mid-stream 401 after streamed text left no
+           assistant row). Only on this FINAL fatal end — a retry/compress/fallback re-runs the turn and never lands
+           here, so a recovered stream leaves no fragment behind. The kept text is what was SHOWN: an earlier
+           attempt's text when a retry armed the dedupe and then produced nothing, else this attempt's (its novel
+           suffix is flushed first so COMMS and the record agree). The turn is provider-valid (text, no tool calls —
+           a half-streamed call is never kept) and says it is incomplete in its own content, in the bracketed
+           "[interrupted — …]" style the provider layer's pairing repair uses, because a transcript row has no other
+           place for that flag. A length-continuation already in flight is folded into one turn first. The live
+           surfaces keep their own error conventions (COMMS ⚠ row, openai-compat partial:true + failed): the marker is
+           not streamed as a token. */
+        const shownBefore = (dedupeAgainst != null && dedupeKeepFull) ? String(dedupeAgainst) : '';
+        emitContinuationText(acc, streamedTextChunks);
+        const partialText = String(acc.text || '').trim() ? String(acc.text) : shownBefore;
+        if (partialText.trim() || continuationParts.length) {
+          let tailPart = null;
+          if (partialText.trim()) { tailPart = assistantTurn(partialText, [], null); messages.push(tailPart); }
+          if (continuationParts.length) collapseContinuation(tailPart);
+          const kept = continuationParts.length ? continuationParts[0] : tailPart;
+          kept.content = String(kept.content == null ? '' : kept.content)
+            + '\n\n[response interrupted — ' + (fatal.reason ? 'provider error: ' + String(fatal.reason).slice(0, 60) : 'provider stream failed') + '; this answer is incomplete]';
+        }
         emit('agent.run.error', { agentId, runId, message: fatal.message || 'model call failed', transient: !!fatal.retryable });
         return end('error', { failureStage: 'provider_stream', failureCode: fatal.reason || 'provider_failure' });
       }
