@@ -823,7 +823,15 @@
           return { content: content, summary: r.ok ? ('bg started ' + r.bgId) : 'bg refused' };
           });
         });
-        const timeoutMs = clamp((args && (args.timeoutMs || args.timeout_ms)) || DEFAULT_MS, 1000, MAX_MS);
+        const requestedMs = args && (args.timeoutMs || args.timeout_ms);
+        const timeoutMs = clamp(requestedMs || DEFAULT_MS, 1000, MAX_MS);
+        /* A CLAMP IS NEVER SILENT (h1 audit 2026-09-22): a model that asked for 30 min and silently got 10 reads the
+           kill as its own mistake. The first line of the result names both numbers. It rides the TOP of the content
+           so the `[exit N]` receipt stays the last line (the cron script gate parses it). */
+        const clampNote = (requestedMs != null && isFinite(Number(requestedMs)) && Number(requestedMs) !== timeoutMs)
+          ? '[timeout: requested ' + Number(requestedMs) + 'ms is ' + (Number(requestedMs) > timeoutMs ? 'above the ' + MAX_MS + 'ms ceiling' : 'below the 1000ms minimum')
+            + ' — this command ran with an effective timeout of ' + timeoutMs + 'ms]\n'
+          : '';
         const markerIsWin = environment && environmentBackendId !== 'local' ? false : isWin;
         const run = checkpoint.then(function () {
           return environment && typeof environment.execute === 'function'
@@ -843,9 +851,9 @@
           const exitCode = (pm.ec != null && !res.timedOut && !res.aborted) ? pm.ec : res.exitCode;
           const note = res.timedOut ? ' — KILLED (timed out after ' + timeoutMs + 'ms)' : res.aborted ? ' — KILLED (aborted)' : '';
           const body = redact((res.truncated ? preview.cleanOut : pm.cleanOut) || '(no output)');
-          const content = body + '\n[exit ' + exitCode + (res.truncated ? ', output truncated to ' + Math.round(MAX_BYTES / 1000) + 'KB' : '') + note + ']';
+          const content = clampNote + body + '\n[exit ' + exitCode + (res.truncated ? ', output truncated to ' + Math.round(MAX_BYTES / 1000) + 'KB' : '') + note + ']';
           const fullContent = res.truncated
-            ? redact(pm.cleanOut || '(no output)') + '\n[exit ' + exitCode + note + ']'
+            ? clampNote + redact(pm.cleanOut || '(no output)') + '\n[exit ' + exitCode + note + ']'
             : undefined;
           try {
             if (typeof ctx.emit === 'function') ctx.emit('shell.exec', {
@@ -853,6 +861,23 @@
               cmdSummary: redact(clip(cmd)), cwd: aid, exitCode: exitCode, ms: res.ms, truncated: res.truncated
             });
           } catch (_) {}
+          /* A KILLED COMMAND IS AN ERROR, NOT A RESULT (h1 audit 2026-09-22). A timed-out command used to come back
+             ok=true with summary "exit -1 (2288ms)" — the words "timed out" lived only in the body, so the tool card,
+             the telemetry and the recovery policy all read a successful call. The tool contract is "THROW on error"
+             (tool.js): the registry turns this into an isError result whose summary names the cause. The partial
+             output and the `[exit -1 — KILLED …]` receipt are kept verbatim. A plain non-zero exit stays a RESULT. */
+          if (res.timedOut || res.aborted) {
+            const head = (res.timedOut
+              ? 'TIMEOUT: the command did not finish within its ' + timeoutMs + 'ms timeout, so the host KILLED it (the whole process tree).'
+              : 'CANCELLED: the command was stopped before it finished, so the host KILLED it (the whole process tree).')
+              + ' It did not complete — anything it was doing may be only partly done.'
+              + (res.timedOut ? ' For a longer job raise timeoutMs (max ' + MAX_MS + 'ms) or start it with background:true.' : '')
+              + ' Output captured before the kill:\n';
+            const killed = new Error(head + content);
+            killed.toolSummary = res.timedOut ? 'timeout' : 'cancelled';
+            if (fullContent) killed.fullContent = head + fullContent;
+            throw killed;
+          }
           return { content: content, fullContent: fullContent, summary: 'exit ' + exitCode + ' (' + res.ms + 'ms)' + (res.truncated ? ', truncated' : '') };
         });
       }

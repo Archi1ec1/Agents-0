@@ -855,3 +855,5 @@ test/overseer-ui.test.js
 test/workspace-owner-election.test.js
 test/project-home-ui.test.js
 test/cli.test.js
+test/shell.timeout-telemetry.test.js
+test/registry.cancel-races-deaf-tool.test.js
