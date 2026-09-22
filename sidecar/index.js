@@ -16712,13 +16712,15 @@ async function runOnceCore(o) {
     // SUCCEEDED for this work item is not sent again: the model gets the recorded result, plainly labelled. This sits
     // with the recovery barrier — before capability withholding and before the journal's intent boundary — because a
     // replayed write is not a dispatch at all. Fail-open on a ledger read error (the write executes as before).
-    let idemKey = null;
-    if (idempotencyScope && idempotencyLedger.isWrite(c.name)) {
+    // UNCERTAIN (h1 audit 2026-09-22): an identical write that earlier TIMED OUT / was cancelled after it was sent may
+    // have landed, so its re-send is HELD until a successful read on that connector has verified. The whole rule lives
+    // in idempotency-ledger.js before()/after() so its unit test drives exactly this decision.
+    let idemGate = null;
+    if (idempotencyScope) {
       try {
-        idemKey = idempotencyLedger.keyFor(idempotencyScope, c.name, c.argsRaw || JSON.stringify(c.args || {}));
-        const prior = idempotencyLedger.lookup(idemKey);
-        if (prior) return idempotencyLedger.replayResult(prior);   // the loop's own agent.tool_result carries summary 'idempotent-replay'
-      } catch (e) { failNote('idempotency.lookup', e); idemKey = null; }
+        idemGate = idempotencyLedger.before(idempotencyScope, c.name, c.argsRaw || JSON.stringify(c.args || {}));
+        if (idemGate.result) return idemGate.result;   // replay ('idempotent-replay') or hold ('held-uncertain') — the loop's agent.tool_result carries the summary
+      } catch (e) { failNote('idempotency.lookup', e); idemGate = null; }
     }
     if (fromWire.has(c.name)) c = Object.assign({}, c, { name: realName });   // wire -> real (dotted) name
     else if (!grantedSet.has(c.name) && registry.get(allWire.get(c.name) || c.name)) {
@@ -16944,8 +16946,10 @@ async function runOnceCore(o) {
       // in the durable-store mutex when the process died — the retry then missed on lookup and RE-SENT the
       // write (the exact double-send this ledger exists to prevent). The loop may not advance past a
       // protected mutation until its receipt is on disk. Still fail-open on ledger errors.
-      if (idemKey && r && r.ok && !r.isError) {
-        try { await idempotencyLedger.record(idemKey, { scope: idempotencyScope, runId, tool: c.name, summary: r.summary, content: r.content }); }
+      // An effectUnknown write (timed out / cancelled after it was sent) is recorded as UNCERTAIN under the same rule, so
+      // the model's very next identical retry is held; a successful connector read releases it (noteObserved).
+      if (idemGate) {
+        try { await idempotencyLedger.after(idemGate, r, { runId, tool: c.name }); }
         catch (e) { failNote('idempotency.record', e); }
       }
     } catch (e) {

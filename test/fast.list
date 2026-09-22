@@ -857,3 +857,4 @@ test/project-home-ui.test.js
 test/cli.test.js
 test/shell.timeout-telemetry.test.js
 test/registry.cancel-races-deaf-tool.test.js
+test/registry.timeout-effect-unknown.test.js
