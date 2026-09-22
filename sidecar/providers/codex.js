@@ -391,12 +391,18 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.code)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.code)) || JSON.stringify(j); }
         catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('codex http ' + res.status + ' — ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY. The message above keeps only error.message, but the classifier's decisive
+           signal is error.code: a ChatGPT plan 429 carries code 'usage_limit_reached' — a spent quota that no amount
+           of waiting fixes — while its message can read like any rate limit ('Codex quota exceeded'). Dropping the
+           body classed it rate_limit, and once the loop's pre-stream ladder rode out transient 429s a spent plan was
+           retried for ~100 s before failing. With the body, errorClass reads the code and fails fast (or falls over). */
+        if (errBody && typeof errBody === 'object') err.body = errBody;
         if (res.status === 401 && renew && !renewed) {
           renewed = true;
           try {
