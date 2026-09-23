@@ -269,7 +269,10 @@
       // station, PROMPT TEXT ONLY: it never touches routing (resolveTarget/chainNext ignore it) or capability
       // (stationFor reads objects, never brief), and `dockBays` is outside the hash so it cannot move dispatch
       // either. Bounded here so no surface can post an unbounded blob.
-      const brief = (typeof p.brief === 'string' && p.brief.trim()) ? p.brief.trim().slice(0, 2000) : null;
+      // HANDS OFF (workflow panel, 2026-09-22): the dock's optional hand-off phrase is COMPOSED into the brief
+      // here, so the agent is actually told it (object=capability — never a cosmetic field). Same list, same
+      // bound, still outside the hash: prompt text only.
+      const brief = composeStageBrief(p.brief, p.hands);
       const dockRec = { propId: p.id, agentId: p.agentId, x: p.x, y: p.y, w: p.w || 1, h: p.h || 1 };
       if (brief) dockRec.brief = brief;
       dockBays.push(dockRec);
@@ -506,6 +509,18 @@
      surface uses (router.lineOfAgent, the gate below, the floor's crate honesty) so "which line is this"
      can never be answered two different ways. A plan compiled before line identity existed answers null,
      which the gate reads as TERMINAL — see chainNext. */
+  /* composeStageBrief(brief, hands) -> the standing brief a dock's agent RECEIVES, or null. The workflow panel's
+     HANDS OFF phrase ("a 200-word draft") rides on the prop as `hands` and becomes a closing instruction —
+     "When you're done, hand off: <hands>" — so what the card says the step hands off is what the agent is told
+     to produce. Bounded like the brief (2000 total); the phrase itself is capped at 160 (worldmodel's cap). */
+  const HANDS_LEAD = "When you're done, hand off: ";
+  function composeStageBrief(brief, hands) {
+    const b = (typeof brief === 'string' && brief.trim()) ? brief.trim() : '';
+    const h = (typeof hands === 'string' && hands.trim()) ? hands.trim().slice(0, 160) : '';
+    const out = b && h ? b + '\n\n' + HANDS_LEAD + h : (b || (h ? HANDS_LEAD + h : ''));
+    return out ? out.slice(0, 2000) : null;
+  }
+
   function lineOf(plan, agentId) {
     if (!plan || !agentId || !plan.lineOfAgent) return null;
     return plan.lineOfAgent[agentId] || null;
@@ -1151,5 +1166,5 @@
     return rec && typeof rec === 'object' ? rec : null;
   }
 
-  return { compileRoutingPlan, resolveTarget, lineOf, lineOriginOf, lineLimitsOf, normalizeLineLimits, LINE_LIMIT_DEFAULTS, LINE_LIMIT_CEILINGS, sourceFor, ok, liveTiles, routeFrom, junctionLaneOwners, chainNext, chainStep, fanSiblings, handoffPrompt, joinPayload, lineComponents, LOOP_MAX_DEFAULT, LOOP_MAX_CEILING, _internals: { DIRV, OPP, LANE_ORDER, key, buildBeltMap, outLanes, inLanes, loopLanes, beltTileNear, nextTiles, detectCycle, hashStr, compileChains, chainCycle, shipFrom, propIdCmp } };
+  return { compileRoutingPlan, composeStageBrief, HANDS_LEAD, resolveTarget, lineOf, lineOriginOf, lineLimitsOf, normalizeLineLimits, LINE_LIMIT_DEFAULTS, LINE_LIMIT_CEILINGS, sourceFor, ok, liveTiles, routeFrom, junctionLaneOwners, chainNext, chainStep, fanSiblings, handoffPrompt, joinPayload, lineComponents, LOOP_MAX_DEFAULT, LOOP_MAX_CEILING, _internals: { DIRV, OPP, LANE_ORDER, key, buildBeltMap, outLanes, inLanes, loopLanes, beltTileNear, nextTiles, detectCycle, hashStr, compileChains, chainCycle, shipFrom, propIdCmp } };
 });
