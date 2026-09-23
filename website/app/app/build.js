@@ -235,7 +235,7 @@ const Build = (() => {
     tool = 'select';   // SELECT is the default mode — a fresh REFIT session never opens with a placement tool armed
     ridePending = false; rideAgentId = null; ridePrevReach = null;   // the auto first-ride re-arms (and re-baselines its reach snapshot) from THIS session's compile, never a stale one
     // finish-the-line: fresh session state (the registry itself persists in localStorage) + one seam probe
-    wfHighlightId = null; wfPaused = null; wfHostMemo = null;
+    wfHighlightId = null; wfPaused = null; wfHostMemo = null; wfKitAuto = false;
     finSample = null; finKeySel = null; finEngaged = false; finSig = ''; finCardEl = null; finComp = null; valComps = null; lastStampIds = null; finPollTs = 0; finSampleRes = null;
     for (const k in stampNameOf) delete stampNameOf[k];   // session-scoped blueprint-name placeholders (line naming)
     clearLineFields();   // a fresh session never inherits a prior floor's "where can this go" answers
@@ -1141,6 +1141,7 @@ const Build = (() => {
   function toggleKit(collapsed) {
     const dock = root && root.querySelector('.refit-dock'); if (!dock) return;
     const hide = collapsed == null ? !dock.classList.contains('is-collapsed') : collapsed;
+    if (!hide) wfKitAuto = false;   // the library was (re)opened — the Workflow panel no longer owes it a restore
     dock.classList.toggle('is-collapsed', hide);
     const b = root.querySelector('#refit-kit-toggle');
     b.textContent = hide ? 'OPEN KIT ▾' : 'MINIMIZE ▴'; b.setAttribute('aria-expanded', String(!hide));
@@ -1669,6 +1670,7 @@ const Build = (() => {
      you land it. Do not reinstate a second voice for the same step. */
 
   function selectTool(id, o) {
+    const wasSelect = tool === 'select';
     movingPropId=null;selectedPropId=null;renderSelection();
     if (drag || dragPid != null) releaseDrag();
     tool = id; drag = null; connectFrom = null; dupe = null; hideTip(); hidePropCard();
@@ -1678,7 +1680,10 @@ const Build = (() => {
       b.classList.toggle('active', active);
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
-    toggleKit(false); renderPalette(); repaintIcons(); setHint(); setCursor();
+    // arming a tool shows its options; a bare deselect (ESC, select→select) leaves a minimized library alone —
+    // the docked Workflow panel may have stepped it aside, and a deselect is not a request to bring it back
+    if (id !== 'select' || !wasSelect) toggleKit(false);
+    renderPalette(); repaintIcons(); setHint(); setCursor();
     if (buildGroup === 'props' && window.matchMedia('(max-width: 700px)').matches) fitCamera();
     renderFinCard();
     if (id === 'line') frameBlueprint();   // a footprint you cannot see whole cannot be aimed
@@ -2184,7 +2189,7 @@ const Build = (() => {
   }
   // the machines a line is made of — clicking one on the floor opens/selects it in the panel
   const WF_PART = { bay: 1, intake: 1, outbox: 1, loop: 1, joiner: 1, merger: 1, splitter: 1 };
-  let wfHighlightId = null, wfPaused = null, wfHostMemo = null;
+  let wfHighlightId = null, wfPaused = null, wfHostMemo = null, wfKitAuto = false;   // wfKitAuto: the panel minimized the Build Library (and owes it back)
   /* the HOST the panel is handed: live reads of THIS editor's state (station, compiled plan, camera) and the
      seams it already owns (sample, plan gate, flash/sfx). Lazy getters — the panel never caches a plan. */
   function wfHost() {
@@ -2212,6 +2217,16 @@ const Build = (() => {
       frameLine: key => frameLineOnFloor(key),
       pausedMarker: m => { wfPaused = m || null; },
       layoutChanged: () => { bumpUi(); insMemo = null; },
+      /* TWO PANELS SQUEEZE THE FLOOR (Andrew, 2026-09-22): opening the docked Workflow panel MINIMIZES the Build
+         Library through its own MINIMIZE state (toggleKit), and closing the panel restores it — only if the
+         panel was the one that minimized it, and only if the Commander has not reopened it since (toggleKit
+         clears wfKitAuto on any reopen, so a deliberate OPEN KIT is never overridden). */
+      panelShown: on => {
+        const dock = root && root.querySelector('.refit-dock');
+        if (on) { if (dock && !dock.classList.contains('is-collapsed')) { toggleKit(true); wfKitAuto = true; } }
+        else { const restore = wfKitAuto; wfKitAuto = false; if (restore && dock && dock.classList.contains('is-collapsed')) toggleKit(false); }
+        bumpUi(); insMemo = null;
+      },
       lineRenamed: () => { if (running) { finSig = ''; renderFinCard(); } },
       loopExits: id => {
         const p = station.propById(id), jt = p && junctionBeltTile(p), o = (cacheGeo && cacheGeo.origin) || { tx: 0, ty: 0 };

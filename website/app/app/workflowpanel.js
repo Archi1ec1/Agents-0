@@ -128,7 +128,7 @@ const WorkflowPanel = (() => {
       + '<div class="wf-body" id="wf-body"></div></div><footer class="wf-foot" id="wf-foot"></footer>';
     H.root().appendChild(el);
     el.addEventListener('keydown', e => { if (e.key === 'Escape' && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) { e.stopPropagation(); close(); } });
-    H.layoutChanged();
+    H.panelShown(true);   // the Build Library steps aside so the floor is not squeezed between two panels
   }
   function close() {
     if (!el) return;
@@ -137,7 +137,7 @@ const WorkflowPanel = (() => {
     el.remove(); el = null;
     S.sel = null; S.lineKey = null; S.lone = null;
     H.highlight(null); H.pausedMarker(null);
-    H.layoutChanged();
+    H.panelShown(false);   // the Build Library comes back as it was — unless the Commander reopened it meanwhile
   }
   const isOpen = () => !!el;
   // the floor's click lands here while the panel is open: the same part, selected in the card
