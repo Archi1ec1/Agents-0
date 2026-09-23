@@ -157,6 +157,13 @@
       aliases: ['google', 'gmail', 'google mail', 'email', 'gsuite', 'g suite', 'google workspace'],
       staticOauth: GOOGLE_OAUTH(['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose']),
       blurb: 'Search and read Gmail, create drafts, and send approved drafts. Sign in with Google to connect your account.' },
+    // gmail.send is a SENSITIVE scope (Gmail read/compose are RESTRICTED), so this card can release on Google's
+    // app verification alone, without waiting on the security assessment the full Gmail card needs.
+    { id: 'gmail-send', name: 'Gmail (send only)', category: 'Productivity', authType: 'oauth', transport: 'http',
+      url: 'https://gmail.googleapis.com/gmail/v1/users/me#send-only', googleApi: true, official: false, homepage: 'https://mail.google.com',
+      aliases: ['gmail send', 'send email', 'email', 'gmail'],
+      staticOauth: GOOGLE_OAUTH(['https://www.googleapis.com/auth/gmail.send']),
+      blurb: 'Send plain-text email from your Gmail account after you approve each message. Cannot read, search, or draft mail. Sign in with Google to connect your account.' },
     { id: 'google-drive', name: 'Google Drive', category: 'Productivity', authType: 'oauth', transport: 'http',
       url: 'https://www.googleapis.com/drive/v3', googleApi: true, official: false, homepage: 'https://drive.google.com',
       aliases: ['google', 'google drive', 'gdrive', 'drive', 'gsuite', 'g suite', 'google workspace'],

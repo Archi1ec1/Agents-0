@@ -26,6 +26,8 @@
   // tool-call argument repair (L2): recover mechanically-broken JSON from non-Anthropic models. Degrades to
   // identity if the module is absent (e.g. a browser build that never runs the loop).
   const repairToolCallArguments = (sanitize && sanitize.repairToolCallArguments) || ((s) => s);
+  const repairToolCallArgumentsDetailed = (sanitize && sanitize.repairToolCallArgumentsDetailed)
+    || ((s) => ({ text: repairToolCallArguments(s), closedOpenString: false }));
   // API error classification (L3): makes `transient` on agent.run.error honest. Degrades to non-retryable if absent.
   const classifyApiError = (errorClass && errorClass.classifyApiError) || (() => ({ retryable: false, message: '' }));
   const continuation = outputContinuation || {
@@ -36,6 +38,9 @@
   const providerRecovery = recoveryPolicy && typeof recoveryPolicy.providerFailure === 'function'
     ? recoveryPolicy.providerFailure
     : (() => ({ action: 'fail', reason: 'recovery-policy-unavailable', retryable: false, delayMs: 0 }));
+  const preStreamSpend = recoveryPolicy && typeof recoveryPolicy.preStreamSpend === 'function'
+    ? recoveryPolicy.preStreamSpend
+    : (() => ({ rungs: 0, waitedMs: 0 }));
 
   function summarize(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) : s; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) + '…' : s; }
@@ -52,13 +57,25 @@
   // parseError, emitting one tool.args.repaired. A give-up '{}' on content-bearing args is NOT accepted — the
   // call keeps its parseError and becomes one clean isError result downstream (never a silent empty-args run).
   // Pure: same calls -> same emits -> byte-identical stream.
+  /* CUT-OFF VALUES ARE REFUSED, NOT REPAIRED (2026-09-22 audit). The ladder closes a dangling string so the JSON
+     parses — but a string that was still open when the arguments ended is a VALUE that was cut off, not a slip of
+     syntax. Accepting it dispatched '{"path":"src/app.js","content":"function main() {\n  initDatabase();\n  startServ'
+     as a complete write: a 47-char truncated file on disk and a run that ended 'done'. The finishReason 'length'
+     refusal further down cannot catch this on its own — routers rewrite length -> tool_calls and a stream can be
+     cut with no finish reason at all — so the evidence has to come from the arguments themselves. The call keeps a
+     parseError (registry.js refuses it before any gate or run()), the model is told it was NOT executed and must
+     reissue it complete, and no tool.args.repaired is emitted: nothing was repaired. Harmless structural damage (a
+     missing closing brace, a trailing comma) still repairs exactly as before — no value is lost there. */
+  const TRUNCATED_ARGS_ERROR = 'the arguments were cut off mid-value (the JSON ended inside an unterminated string, so at least one argument is incomplete). This call was NOT executed. Reissue the complete call with every argument in full; if a value is very large, split the work into several smaller calls.';
   function repairCalls(calls, emit, agentId, runId) {
     for (const c of calls) {
       if (!c.parseError) continue;
-      const fixed = repairToolCallArguments(c.argsRaw);
+      const detail = repairToolCallArgumentsDetailed(c.argsRaw);
+      const fixed = detail.text;
       if (fixed === c.argsRaw) continue;
       let parsed = null; try { parsed = JSON.parse(fixed); } catch (e) { continue; }
       if (fixed === '{}' && !onlyStructural(c.argsRaw)) continue;   // unrepairable content -> keep the parseError
+      if (detail.closedOpenString) { c.parseError = TRUNCATED_ARGS_ERROR; continue; }   // a cut-off value -> refuse, never dispatch
       emit('tool.args.repaired', { agentId, runId, callId: c.id, name: c.name || 'unknown', before: clip(c.argsRaw), after: clip(fixed) });
       c.args = parsed; c.argsRaw = fixed; c.parseError = null;
     }
@@ -332,7 +349,8 @@
 
      Deliberately narrow, because a false nudge costs a paid turn:
        · Only a SUCCESSFUL mutation of a non-prose path arms it. A README or a SKILL.md edit has nothing to run.
-       · Any successful verification DISARMS it — verify.run, or a shell command that reads like a real check.
+       · Any PASSING verification DISARMS it — verify.run, or a shell command that reads like a real check. A check
+         that ran and failed (non-zero exit, killed, "verify FAILED") leaves it armed: see vosCheckPassed.
        · It never fires without a verification tool actually wired, never on the grace turn (contracted to be
          tool-free), and at most once per run, so a model that refuses to verify still terminates. */
   const VOS_PROSE_EXT = new Set(['md', 'markdown', 'mdx', 'rst', 'txt', 'text', 'adoc', 'asciidoc', 'org', 'log', 'csv', 'tsv', 'json5']);
@@ -428,6 +446,45 @@
     }
     return false;
   }
+  /* DID THE CHECK PASS? (verify-on-stop ledger, 2026-09-22 audit). A check tool that RAN is not a check that
+     PASSED: shell_exec reports a non-zero exit as ordinary content ending "[exit N]", and verify.run reports
+     "✗ FAILED" as an ordinary ok result — both by design, so the model can read the failure. Clearing the ledger on
+     transport success let "fs_write -> npm test prints [exit 1] -> 'Fixed and verified. All done.'" end 'done'.
+     Only the HOST-AUTHORED verdict is read, never the command's own prose:
+       · shell_exec — the LAST "[exit …]" marker (shell.js appends it after the output; a registry receipt or a
+         strategy note may follow it, never precede it). Non-zero, non-numeric (a killed child reports "exit null")
+         or KILLED/TIMED OUT in the marker = not passed. The summary ("exit N (…ms)") is the fallback when a
+         per-turn squeeze cut the marker; with neither, explicitNonzeroExit over the content decides.
+       · verify.run — its own verdict: "✗ FAILED" / summary "verify FAILED" is not a pass, and neither is a
+         non-zero exit marker (the same rule completion-evidence.js applies to the durable ledger).
+     Absent any failure evidence the call counts as passed — exactly the old behavior, so a stub or a future
+     wrapper that reports no verdict never starts nagging; the tools that exist always write one. */
+  const VOS_EXIT_MARKER_RE = /\[\s*exit\s+([^\s\],]+)([^\]]*)\]/gi;
+  function lastExitMarker(text) {
+    let m, last = null;
+    VOS_EXIT_MARKER_RE.lastIndex = 0;
+    while ((m = VOS_EXIT_MARKER_RE.exec(text))) last = { code: m[1], rest: m[2] || '' };
+    return last;
+  }
+  function exitEvidenceFailed(content, summary) {
+    const text = String(content == null ? '' : content);
+    const marker = lastExitMarker(text);
+    if (marker) return !/^0$/.test(marker.code) || /KILLED|TIMED\s*OUT/i.test(marker.rest);
+    const sm = /^\s*exit\s+(\S+)/i.exec(String(summary == null ? '' : summary));
+    if (sm) return !/^0$/.test(sm[1]);
+    return explicitNonzeroExit(text);
+  }
+  function vosCheckPassed(call, result) {
+    if (!result || !result.ok || result.isError) return false;
+    const key = vosKey(call && call.name);
+    const content = String(result.content == null ? '' : result.content);
+    const summary = String(result.summary == null ? '' : result.summary);
+    if (VOS_VERIFIERS.has(key)) {
+      if (/^\s*✗\s*FAILED\b/.test(content) || /\bverify\s+FAILED\b/i.test(summary)) return false;
+      return !exitEvidenceFailed(content, '');
+    }
+    return !exitEvidenceFailed(content, summary);
+  }
   function isCheckShapedCall(call) {
     const key = vosKey(call && call.name);
     if (VOS_VERIFIERS.has(key)) return true;
@@ -451,6 +508,56 @@
     if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalJson(value[k])).join(',') + '}';
     return JSON.stringify(value);
   }
+
+  /* ONE TURN, ONE EFFECT PER DISTINCT CALL (2026-09-22 audit, reference-harness parity). Two seams let a single
+     model turn repeat a side effect:
+       · EXACT DUPLICATES — the same tool with the same arguments twice in one batch. Nothing in one turn can make
+         the second copy mean something the first did not, but both were dispatched: two identical channel_send
+         calls sent the message twice. The later copies are dropped from the dispatch list AND from the recorded
+         assistant turn (the DUPLICATE CHECK STOP pattern), so every persisted call still has exactly one result.
+         "Same" is name + canonical JSON of the parsed args (key order cannot hide a duplicate). Calls whose args
+         failed to parse are never merged — their args are not known, so they cannot be proven equal.
+       · DUPLICATE IDS — some models reuse one id for different calls in a batch. Both ran, both results carried
+         the same tool_call_id, and repairToolPairs (providers/provider.js) later re-minted the second CALL and
+         relabelled its real result as "[interrupted — ... Reissue it if it is still needed.]" — an invitation to
+         repeat a write that already happened. The later call gets a fresh id here, before the turn is persisted,
+         checkpointed or dispatched, so the transcript, the journal and the results all agree on it from birth.
+     ORDER (in the loop): uniqueCallIds BEFORE repairCalls, so a tool.args.repaired event already names the id the
+     transcript will carry; dropDuplicateCalls AFTER it, so repaired args compare as the values they are. Both run
+     before anything is persisted. Pure and deterministic: same calls -> same ids -> same stream. Both mutate
+     `calls` in place, like repairCalls. */
+  function dropDuplicateCalls(calls) {
+    const seenSig = new Set();
+    for (let i = 0; i < calls.length;) {
+      const c = calls[i];
+      if (!c.parseError) {
+        const sig = String(c.name == null ? '' : c.name) + '\u0000' + canonicalJson(c.args == null ? {} : c.args);
+        if (seenSig.has(sig)) { calls.splice(i, 1); continue; }
+        seenSig.add(sig);
+      }
+      i++;
+    }
+  }
+  function uniqueCallIds(calls, messages) {
+    const counts = new Map();
+    for (const c of calls) counts.set(c.id, (counts.get(c.id) || 0) + 1);
+    if (!Array.from(counts.values()).some(n => n > 1)) return;
+    // A minted id must collide with nothing: not this batch, and not any earlier call in the transcript.
+    const taken = new Set(counts.keys());
+    for (const m of (messages || [])) {
+      if (m && m.role === 'assistant' && Array.isArray(m.tool_calls)) for (const tc of m.tool_calls) if (tc && tc.id != null) taken.add(String(tc.id));
+    }
+    const kept = new Set();
+    for (const c of calls) {
+      if (!kept.has(c.id)) { kept.add(c.id); continue; }
+      let n = 2, id;
+      do { id = String(c.id) + '_' + (n++); } while (taken.has(id));
+      taken.add(id);
+      c.id = id;
+    }
+  }
+  // Both halves in their loop order (tests / callers that want the whole normalization in one call).
+  function normalizeBatch(calls, messages) { uniqueCallIds(calls, messages); dropDuplicateCalls(calls); }
 
   // Keep this deliberately narrow: ordinary reads/polls and every mutation remain repeatable.
   function deterministicCheckSignature(call) {
@@ -510,7 +617,8 @@
       : Infinity;
     // GRACE TURN (P0.3): when a run hits the iteration ceiling, give it ONE final no-tools turn to deliver its
     // best answer instead of dead-stopping at 'max_iters' (the reference harness's grace-call pattern). Default on; pass
-    // limits.grace === false to test/force the raw hard cap. Bounded: exactly one grace turn per run.
+    // limits.grace === false to test/force the raw hard cap. Bounded: exactly one grace turn per run. Tool-free is
+    // ENFORCED, not requested: calls emitted on it are dropped unexecuted (see GRACE TURN NEVER DISPATCHES).
     const graceEnabled = (limits.grace !== false);
     let graceUsed = false;
     let maxCostUsd = (limits.maxCostUsd != null) ? limits.maxCostUsd : Infinity;
@@ -565,6 +673,36 @@
     // corrupt the assistant/tool interleave. Absent = never steered (existing callers byte-identical). Bounded
     // by the caller's buffer; the loop just injects whatever it's handed and emits one telemetry event.
     const steer = (typeof o.steer === 'function') ? o.steer : null;
+    /* STEER AT THE FINISH LINE (h1 audit 2026-09-22). The drain above runs only at the TOP of an iteration, so a note
+       that arrived while the model streamed its FINAL (tool-free) answer was never read — while the UI had already
+       told the Commander "it will fold your note in on its next step". Two additive pieces make that true:
+         · STEER EXTENSION — when a tool-free turn would end the run and notes are pending, fold them exactly like the
+           top-of-loop drain and give the model one more turn. Bounded (limits.steerExtend: false disables, a number
+           overrides; default 2) so a stream of steers can never keep a run alive; never on a cancelled run or on
+           the contracted-tool-free grace turn, and only while the next turn's own guards would let it run.
+         · o.steerClose — called once as the run ends: the host closes its buffer (a later POST gets an honest 409)
+           and hands back anything still pending, which the transcript then names as NOT applied.
+       Both absent = every existing caller byte-identical. */
+    const steerClose = (typeof o.steerClose === 'function') ? o.steerClose : null;
+    const _se = limits.steerExtend;
+    const STEER_EXT_MAX = (_se === false) ? 0 : ((typeof _se === 'number' && _se >= 0) ? Math.floor(_se) : 2);
+    let steerExtUsed = 0;
+    // fold drained notes into the working set: ONE <steering_note> system message each + the '[steering]' token the
+    // Commander watches land. Shared by the top-of-loop drain and the finish-line extension so the two can't drift.
+    function foldSteerNotes(notes) {
+      let n = 0;
+      if (!Array.isArray(notes)) return 0;
+      for (const note of notes) {
+        const t = String(note == null ? '' : note).trim();
+        if (!t) continue;
+        // surface the note in the live transcript as an agent.token delta (a registered event) so the
+        // Commander SEES their steer land, then inject it as a system message for the next model call.
+        emit('agent.token', { agentId, runId, delta: '\n[steering] ' + t + '\n' });
+        messages.push({ role: 'system', content: '<steering_note>' + t + '</steering_note>' });
+        n++;
+      }
+      return n;
+    }
     // LOOP GUARD (default ON): a tool called with IDENTICAL arguments that keeps FAILING is a stuck loop, not
     // progress. Warn once (a system nudge the model can act on) at warnAfter, then hard-stop at stopAfter so a
     // degraded run can't burn the whole budget spinning. Only errored, byte-identical (name+args) calls count;
@@ -628,6 +766,7 @@
     const vosSourcesUnfetched = new Map();
     const sourceGroundingTask = sourceGroundingRequested(messages);
     let vosUsed = 0;
+    let vosFailedCheck = '';   // the most recent check that ran against unverified code and did NOT pass ('' = none)
     let vosExternalUsed = 0;
     let vosSourceUsed = 0;
     /* ACCEPTANCE-ON-STOP (SOP lane, 2026-08-21). A run launched from an SOP recipe carries a typed acceptance
@@ -745,6 +884,38 @@
     // call/result pairs are durable in `messages` and before this turn's calls can reach executeCalls.
     // A server-stated Retry-After still outranks each local rung and remains capped at 60s.
     const STREAM_RETRY_DELAYS = [400, 1200, 4000, 10000, 30000, 60000];
+    /* ONE LADDER, WHEREVER THE FAILURE LANDS (2026-09-22, Hermes audit). The ladder above used to cover only a
+       stream that had STARTED: a provider down for two seconds BEFORE its first byte exhausted the adapter's own
+       400/1200ms retries and the run died 1.6s in (audit probe: 503x4, single provider -> error/overloaded;
+       Hermes rode it out). Now an adapter-exhausted transient failure continues THIS ladder — its spent attempts
+       and backoff are counted against the rungs and the patience clock (recovery-policy preStreamSpend), and once
+       the ladder owns the turn every rung is ONE request (req.preStreamRetries = 0). Total local patience per
+       turn stays STREAM_RETRY_PATIENCE_MS (~105.6s) however the failure splits between adapter and loop.
+       Tools: every one of these retries re-issues only the MODEL call, inside this while(true), before this
+       turn's calls reach executeCalls — earlier tool results are already paired in `messages` and are never
+       dispatched again. */
+    const STREAM_RETRY_PATIENCE_MS = (recoveryPolicy && recoveryPolicy.RETRY_PATIENCE_MS) || STREAM_RETRY_DELAYS.reduce((a, b) => a + b, 0);
+    // OPTIONAL injected randomness for the ladder's ±20% jitter (o.random() -> [0,1)). The loop never reaches for
+    // ambient randomness (lint-determinism): the host (index.js, the composition root) injects Math.random for real
+    // runs so agents sharing one key spread their retries; absent = 0.5, the exact un-jittered rung (tests, aux loops).
+    const random = (typeof o.random === 'function') ? o.random : () => 0.5;
+    function jitterSample() {
+      try { const r = Number(random()); return isFinite(r) ? r : 0.5; }
+      catch (e) { failNote('loop.retry.random', e); return 0.5; }
+    }
+    /* OUTPUT BUDGET after an output-cap refusal. 0 = the adapter's own resolution (every existing caller
+       byte-identical). Set once from the ceiling the provider named; it rides every later request of the run as
+       req.maxTokens, because the same model refuses the same max_tokens on every turn. Cleared on a fallback:
+       a different model has its own ceiling, and an explicit value would override a smaller configured one. */
+    let outputCapTokens = 0;
+    // The classifier's overflow ratio needs the prompt's CURRENT size: o.approxTokens is frozen at run start, so a
+    // run that grew mid-way past the window could never be recognized by the ratio. Live estimate when a context
+    // manager exists; the frozen figure is the floor.
+    function currentApproxTokens() {
+      if (!context || typeof context.estimateMessages !== 'function') return approxTokens;
+      try { return Math.max(approxTokens, Number(context.estimateMessages(messages)) || 0); }
+      catch (e) { failNote('loop.classify.estimate', e); return approxTokens; }
+    }
     function noteUnpriced(modelId, c) {
       if (!c || !c.unpriced) return;
       unpricedUsage.push({ model: modelId || '(unknown)', tokensIn: c.tokensIn || 0, tokensOut: c.tokensOut || 0 });
@@ -779,6 +950,14 @@
       }
     }
     function end(reason, extra) {
+      // close the host's steer buffer AS the run ends (synchronously, before agent.run.end): a later POST gets an honest
+      // non-success, and a note that was accepted but never folded is named here instead of vanishing at teardown.
+      if (steerClose) {
+        let left = null;
+        try { left = steerClose(); } catch (e) { failNote('loop.steer.close', e); left = null; }
+        const unapplied = Array.isArray(left) ? left.filter(n => String(n == null ? '' : n).trim()).length : 0;
+        if (unapplied) emit('agent.token', { agentId, runId, delta: '\n[steering] ' + unapplied + ' steering note' + (unapplied === 1 ? '' : 's') + ' arrived as this run was ending and ' + (unapplied === 1 ? 'was' : 'were') + ' NOT applied — send ' + (unapplied === 1 ? 'it' : 'them') + ' as a new message.\n' });
+      }
       bookToolCosts();
       // A3/Lane5: surface WHY the model stopped when it's a truncation/policy stop, ADDITIVELY — on BOTH the return
       // value (index.js gates reflection/study/skills on it) AND the agent.run.end event (the frontend renders a
@@ -860,6 +1039,21 @@
       });
       return { older: out, elided };
     }
+    /* An elided copy STANDS IN for its original, so it inherits the original's host-attached identity markers:
+       non-enumerable own symbol keys, which Object.assign above does not copy. The one that matters is
+       transcriptstore.js's PERSISTED marker — with it the run-end drain treats the copy as already recorded (its
+       full body was drained just before the elision) instead of appending the 240-char head as new dialogue.
+       Index-aligned: elideTools maps `older` 1:1. The loop never names the symbol; it only preserves identity. */
+    function carryMarkers(originals, copies) {
+      for (let k = 0; k < originals.length; k++) {
+        const a = originals[k], b = copies[k];
+        if (!a || !b || a === b || typeof a !== 'object' || typeof b !== 'object') continue;
+        for (const sym of Object.getOwnPropertySymbols(a)) {
+          const d = Object.getOwnPropertyDescriptor(a, sym);
+          if (d && !d.enumerable && !Object.prototype.hasOwnProperty.call(b, sym)) Object.defineProperty(b, sym, d);
+        }
+      }
+    }
     // NO-LLM FALLBACK fold: a deterministic bullet note from the oldest messages (first 160 chars each). Lossy and
     // says so — but a run that can no longer summarize must shrink rather than die on context_overflow.
     function fallbackNote(older, prevSummary) {
@@ -908,6 +1102,17 @@
           const realBefore = (lastUsage && (lastUsage.prompt_tokens || lastUsage.promptTokens)) || beforeTokens;
           const projected = beforeTokens > 0 ? realBefore * (afterTokens / beforeTokens) : afterTokens;
           if (projected < threshold && afterTokens < beforeTokens) {
+            /* DRAIN THE ORIGINALS BEFORE THE ELISION. The elided copies are NEW objects, so they lost the
+               transcript's persisted marker and the run-end drain (index.js appendNewStrict over result.messages)
+               wrote the 240-char HEADS as the durable record — the full bodies were never saved anywhere, and the
+               run journal that held them is retired right after. Audit probe (09-22, 40 tool turns, micro on by
+               default): 11/40 full tool outputs survived on disk / in recall_conversation. Same barrier as the
+               paid and fallback folds: the full slice is saved strictly FIRST, and a failed save refuses the
+               elision (the prompt keeps the full bodies; nothing is lost, the next turn re-measures). */
+            if (summarize && typeof summarize.drain === 'function') {
+              try { summarize.drain(plan.older); } catch (e) { failNote('loop.compaction.microDrain', e); return false; }
+            }
+            carryMarkers(plan.older, micro.older);   // the drained originals' persisted marker rides onto the elided copies
             messages.length = 0; for (const mm of trial) messages.push(mm);
             lastUsage = null;
             emit('agent.compact', { agentId, runId, beforeTokens, afterTokens, removed: Math.max(0, beforeTokens - afterTokens), reason: 'micro', elided: micro.elided });
@@ -950,7 +1155,20 @@
       catch (e) { if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false; }   // summarizer threw -> skip
       if (signal.aborted) return false;
       const summary = (typeof r === 'string') ? r : ((r && r.summary) || '');
-      if (!summary) { if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false; }   // empty -> don't drop history
+      /* A CUT-OFF OR REFUSED SUMMARY IS A FAILED ONE (compaction-summarizer.js rejectReason): a fragment like
+         "Audit config files. VALUE_01=" or "I'm sorry, but I can't..." must never replace the history. `rejected`
+         is honoured here too, so an injected summarizer that reports it can't slip a fragment through. Either way
+         the calls were made and billed, so their spend joins the run tally exactly like a successful fold's —
+         otherwise the per-run ceiling and the ledger never see what a failing summarizer costs. */
+      const rejected = (r && typeof r === 'object' && r.rejected) ? String(r.rejected) : '';
+      if (!summary || rejected) {
+        if (r && typeof r === 'object') {
+          spentUsd += r.usd || 0; spentTokens += r.tokens || 0;
+          if (Array.isArray(r.unpricedUsage)) for (const u of r.unpricedUsage) unpricedUsage.push(u);
+        }
+        if (rejected) failNote('loop.compaction.rejected', new Error('summary rejected (' + rejected + '); history kept'));
+        if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false;   // empty/cut/refused -> don't drop history
+      }
       compactionFails = 0;
       const note = { role: 'system', content: '<conversation_summary>\n' + summary + '\n</conversation_summary>' };
       let rebuilt = prefix.concat([note], plan.tail);
@@ -991,11 +1209,14 @@
     while (true) {
       // (1) GUARDS — before any paid call
       if (signal.aborted) return end('cancelled');
+      let graceTurn = false;                              // true only for the ONE turn granted past the ceiling
       if (turns >= maxIters) {                            // per-RUN iteration ceiling
         if (graceUsed || !graceEnabled) return end('max_iters');
         graceUsed = true;                                 // spend ONE grace turn on a final, tool-free answer
+        graceTurn = true;
         messages.push({ role: 'system', content: '<iteration_limit>You have reached the maximum number of tool-using turns (' + maxIters + '). Do NOT call any more tools. Give your best final answer to the user now using what you already have.</iteration_limit>' });
-        // fall through: the grace turn runs below; if it still calls tools, the next pass ends max_iters.
+        // fall through: the grace turn runs below. Tools stay ON THE WIRE (see GRACE TURN NEVER DISPATCHES after
+        // the stream) — but any call it emits is dropped, never executed, and the run ends max_iters.
       }
       if (spentUsd >= maxCostUsd) return end('budget', { budgetScope: 'run', budgetCapUsd: maxCostUsd });   // per-RUN hard ceiling
       // per-RUN token ceiling for turns nothing could price (the $ ceiling above is blind to them — see maxUnpricedTokens)
@@ -1027,16 +1248,7 @@
       if (steer) {
         let notes = null;
         try { notes = steer(); } catch (_) { notes = null; }
-        if (Array.isArray(notes) && notes.length) {
-          for (const n of notes) {
-            const t = String(n == null ? '' : n).trim();
-            if (!t) continue;
-            // surface the note in the live transcript as an agent.token delta (a registered event) so the
-            // Commander SEES their steer land, then inject it as a system message for the next model call.
-            emit('agent.token', { agentId, runId, delta: '\n[steering] ' + t + '\n' });
-            messages.push({ role: 'system', content: '<steering_note>' + t + '</steering_note>' });
-          }
-        }
+        foldSteerNotes(notes);
       }
       /* HOOKS — pre_llm_call. Same message-boundary safety argument as steering above: the prior iteration's
          tool results are already appended and paired, so an injected note can neither split a tool_call from
@@ -1072,6 +1284,8 @@
       let recoveries = 0;
       const maxRecoveries = 1 + fallbacks.length;
       let retriesUsed = 0;
+      let ladderWaitMs = 0;          // local backoff spent this turn (loop rungs + an adapter's pre-stream retries)
+      let outputCapRetried = false;  // the output-cap recovery is ONE lowered retry per turn, never a loop
       const MAX_STREAM_RETRIES = STREAM_RETRY_DELAYS.length;   // one per rung; deriving it prevents policy drift
       // A truncation is its own (cheap, transient) retry class — kept separate from MAX_STREAM_RETRIES and
       // deliberately tighter, because a truncation costs a FULL generation to re-run.
@@ -1087,6 +1301,8 @@
           const req = { model, messages, tools, signal, stream: true };
           if (typeof o.isTask === 'boolean') req.isTask = o.isTask;
           if (o.cacheSystemPrefix) req.cacheSystemPrefix = o.cacheSystemPrefix;
+          if (outputCapTokens > 0) req.maxTokens = outputCapTokens;   // the ceiling a provider named (output_cap)
+          if (retriesUsed > 0) req.preStreamRetries = 0;              // the ladder owns pacing: one request per rung
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
             if (ev.type === 'text') {
@@ -1126,12 +1342,29 @@
         if (signal.aborted) break;                   // a cancel mid-stream: fall through to the cancel check below
         // classify so `transient` is honest, and so the shouldCompress / shouldFallback / shouldRotateCredential
         // hints drive recovery instead of being discarded.
-        const cls = classifyApiError(streamErr, { model: model, approxTokens: approxTokens, contextLimit: contextLimit });
-        let decision = providerRecovery({
-          classification: cls, canCompress: !!(context && summarize), hasFallback: fbIndex < fallbacks.length,
+        const cls = classifyApiError(streamErr, { model: model, approxTokens: currentApproxTokens(), contextLimit: contextLimit });
+        // An adapter that exhausted its own pre-stream retries already spent rungs of THIS ladder: advance the rung
+        // index and the patience clock by exactly that spend, so continuing never multiplies it.
+        const spent = preStreamSpend(streamErr);
+        retriesUsed += spent.rungs;
+        ladderWaitMs += spent.waitedMs;
+        const sample = jitterSample();
+        const decide = (canCompress, hasFallback) => providerRecovery({
+          classification: cls, canCompress, hasFallback,
           recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
-          preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted
+          preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted,
+          outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample
         });
+        let decision = decide(!!(context && summarize), fbIndex < fallbacks.length);
+        if (decision.action === 'lower_output') {
+          // output_cap: same turn, same prompt, the output budget lowered to the ceiling the provider named. No
+          // fold (the prompt was never the problem) and no wait; outputCapRetried makes a second refusal fatal.
+          outputCapTokens = decision.maxTokens;
+          outputCapRetried = true;
+          armRetryDedupe(acc);
+          noteRecovery({ stage: 'provider_stream', action: 'lower_output', reason: decision.reason, attempt: 1, model, delayMs: 0 });
+          continue;
+        }
         if (decision.action === 'compress') {
           // context_overflow: fold older turns away, then retry the turn. Only counts as recovery if it shrank.
           if (await maybeCompact(true)) {
@@ -1140,11 +1373,7 @@
             noteRecovery({ stage: 'provider_stream', action: 'compress', reason: decision.reason, attempt: recoveries, model, delayMs: 0 });
             continue;
           }
-          decision = providerRecovery({
-            classification: cls, canCompress: false, hasFallback: fbIndex < fallbacks.length,
-            recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
-            preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted
-          });
+          decision = decide(false, fbIndex < fallbacks.length);
         }
         if (decision.action === 'fallback') {
           const fb = fallbacks[fbIndex++];
@@ -1173,6 +1402,7 @@
             if (typeof fb.maxCostUsd === 'number' && fb.maxCostUsd > 0) maxCostUsd = fb.maxCostUsd;
             if (typeof fb.maxUnpricedTokens === 'number' && fb.maxUnpricedTokens > 0) maxUnpricedTokens = fb.maxUnpricedTokens;
             if (fb.model) model = fb.model;   // the next agent.cost carries the switched model — the visible failover signal
+            outputCapTokens = 0; outputCapRetried = false;   // a lowered output budget belonged to the model we left
             /* RE-RESOLVE THE CONTEXT WINDOW. Everything else about the failover swaps here (provider, model,
                cost, credential) but the compaction threshold was frozen at the PRIMARY model's window: after a
                200k→32k switch the manager kept waiting for ~130k prompt tokens that a 32k window can never
@@ -1192,11 +1422,7 @@
             noteRecovery({ stage: 'provider_stream', action: 'fallback', reason: decision.reason, attempt: recoveries, model, delayMs: 0, rotate: decision.rotate });
             continue;
           }
-          decision = providerRecovery({
-            classification: cls, canCompress: false, hasFallback: false,
-            recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
-            preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted
-          });
+          decision = decide(false, false);
         }
         // A2: bounded SAME-provider retry for a retryable class that has no failover to take (e.g. `timeout`,
         // transient `unknown`) — or a fallback class whose chain is already exhausted. Without this a hung/idle
@@ -1206,10 +1432,13 @@
         // fallback class (overloaded/server_error) with an EMPTY or exhausted chain — every single-provider
         // station, e.g. ChatGPT-login codex — fell straight to fatal on the first blip. The chain-exhausted
         // case the comment always promised is now real.
-        // Adapters mark a fully exhausted pre-stream ladder. Re-running that ladder here multiplied one outage
-        // into 15 requests; only errors from a stream that actually started belong to this recovery budget.
+        // Adapters mark a fully exhausted pre-stream ladder. Re-running that ladder here once multiplied one outage
+        // into 15 requests; refusing it outright killed runs on a 2s blip. Now the adapter's spend is counted
+        // against these rungs above (preStreamSpend) and later rungs send req.preStreamRetries = 0 — one ladder,
+        // ~105.6s of local patience, however the failure splits between adapter and loop.
         if (decision.action === 'retry') {
           retriesUsed++;
+          ladderWaitMs += decision.ladderMs || 0;   // a server-stated wait is honored outside the local budget
           armRetryDedupe(acc);
           // NOTE: no provider.fallback emit here — a same-provider retry is NOT a failover; emitting it would
           // inflate the floor's failover counter and lie about a model/credential switch that didn't happen
@@ -1300,6 +1529,26 @@
         return end(String(acc.text || '').trim() || continuationText.trim() ? 'done' : 'empty');
       }
 
+      /* GRACE TURN NEVER DISPATCHES (2026-09-22 audit, reference-harness parity). The grace turn is contracted to be
+         tool-free, but that contract lived only in the <iteration_limit> prose: tools stayed on the request, so a
+         model that kept going had its calls executed PAST the Commander's ceiling (cap 2 -> 3 dispatches, a file
+         written after the limit, returned text ""). The tool list is deliberately NOT dropped from the wire to
+         enforce this — provider-compatibility law: a request whose history carries tool_use blocks but no tool
+         definitions is rejected (Anthropic), and every adapter omits `tools` when the list is empty. So the host
+         enforces it here instead: whatever the model says is kept as its final answer, the calls are stripped
+         from the recorded turn BEFORE it is persisted (the DUPLICATE CHECK STOP pattern — nothing unpaired ever
+         reaches the transcript, the checkpoint, or a later replay), nothing is repaired, announced or executed,
+         and the run ends max_iters — never 'done', whether or not any text came with the calls. The surfaces that
+         render max_iters (channels/hub.js, acp/core.js, COMMS in frontend/app/chat.js) already add their own step-limit line,
+         so no host text is added here. */
+      if (graceTurn && calls.length > 0) {
+        const graceFinal = assistantTurn(acc.text, [], acc.reasoning);
+        messages.push(graceFinal);
+        const checkpointEnd = await saveCheckpoint('assistant');
+        if (checkpointEnd) return checkpointEnd;
+        return end('max_iters');
+      }
+
       // A clean continuation may legitimately reissue the complete tool call that was cut off. Keep the earlier
       // text turns in their original provider-safe order; they cannot be folded across a tool call/result pair.
       if (calls.length > 0 && continuationParts.length) {
@@ -1308,7 +1557,9 @@
         continuationText = '';
       }
 
+      uniqueCallIds(calls, messages);             // a reused id gets a unique one BEFORE any event names it
       repairCalls(calls, emit, agentId, runId);   // L2: fix broken tool-call JSON before it is used or discarded
+      dropDuplicateCalls(calls);                  // exact in-turn duplicates (name + canonical args) run once
       /* DUPLICATE CHECK STOP. If the model already supplied a sufficient answer while reissuing the exact check
          from the immediately-prior tool turn, dispatching it again adds no evidence and forces another paid turn.
          Drop it before persisting the assistant turn so tool-call/result pairing remains valid. Explicit retry
@@ -1402,7 +1653,12 @@
             && tools.some(t => { const n = vosKey(t && t.function && t.function.name); return VOS_VERIFIERS.has(n) || n === 'shell_exec'; })) {
           vosUsed++;
           const touched = Array.from(vosUnverified).slice(0, 8).join(', ');
-          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.</verify_before_done>' });
+          // Same tag and budget either way; only the premise changes. A model whose check FAILED did run
+          // something — telling it "you ran nothing" would be a false statement from the host.
+          const premise = vosFailedCheck
+            ? 'and are ending although the last check you ran against it (' + vosFailedCheck + ') did NOT pass, and no passing check has run since. A failing check is evidence the change is not done. Fix the cause and rerun the check until it passes, then report what it actually returned. If it cannot be made to pass here, say so plainly: report the failure and state that the change is NOT verified.'
+            : 'and are ending without running anything against it. Code that compiles is not code that works, and an unverified claim of "done" is the one thing this station never ships. Run the narrowest real check that proves the change — the project\'s own test/build command via verify_run, or shell_exec if that fits better — then report what it actually returned. If you genuinely cannot run a check here, say so plainly and state what you did NOT verify.';
+          messages.push({ role: 'system', content: '<verify_before_done>You changed code in this run (' + touched + ') ' + premise + '</verify_before_done>' });
           continue;
         }
         // EXTERNAL VERIFY-ON-STOP: a successful custom-connector mutation is not proof that the requested
@@ -1475,6 +1731,23 @@
         // skill-review, the cron settle path never emits workitem.delivered, and the frontend renders "ended: empty"
         // instead of a delivered crate. A DUPLICATE turn is different: it re-emitted a REAL prior answer, so it stays
         // 'done' (the answer exists — only the genuinely empty final turn is degraded).
+        // STEER EXTENSION: a Commander note that landed while this final answer streamed is folded in and buys one more
+        // turn (bounded; see STEER_EXT_MAX). Only when the next turn's own guards would let it run — a note folded into
+        // a turn that then ends 'budget'/'max_iters' would be read by nobody; those stay pending and end() names them.
+        if (steer && !signal.aborted && !graceUsed && steerExtUsed < STEER_EXT_MAX
+            && spentUsd < maxCostUsd && unpricedTokens < maxUnpricedTokens && (turns < maxIters || graceEnabled)) {
+          let late = null;
+          try { late = steer(); } catch (e) { failNote('loop.steer.finalDrain', e); late = null; }
+          if (Array.isArray(late) && late.some(n => String(n == null ? '' : n).trim())) {
+            steerExtUsed++;
+            if (continuationParts.length) {   // settle a length-continued answer into ONE turn before the note follows it
+              collapseContinuation(assistant);
+              continuationParts.length = 0; continuationPrompts.length = 0; continuationText = '';
+            }
+            foldSteerNotes(late);
+            continue;
+          }
+        }
         if (continuationParts.length) collapseContinuation(assistant);
         return end(empty && !continuedTextExists ? 'empty' : 'done');
       }
@@ -1543,14 +1816,21 @@
 
       // VERIFY-ON-STOP LEDGER. Only SUCCESSFUL calls move it: a write that errored changed nothing to verify,
       // and a check that errored is not evidence that anything passed. A verification clears the whole set
-      // rather than one path — a project's check runs the project, not a file.
+      // rather than one path — a project's check runs the project, not a file. A check clears it only when it
+      // PASSED (vosCheckPassed): a failing one leaves the debt standing and is remembered, so the stop nudge
+      // tells the model the truth — its check failed — instead of "you ran nothing".
       if (VOS_MAX > 0) {
-        const okById = {};
-        for (const r of results) okById[r.callId] = !!r.ok && !r.isError;
+        const okById = {}, resultById = {};
+        for (const r of results) { okById[r.callId] = !!r.ok && !r.isError; resultById[r.callId] = r; }
         for (const c of calls) {
           if (!okById[c.id]) continue;
           const k = vosKey(c.name);
-          if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) { vosUnverified.clear(); continue; }
+          if (VOS_VERIFIERS.has(k) || (k === 'shell_exec' && vosIsCheckCommand(c.args))) {
+            if (vosCheckPassed(c, resultById[c.id])) { vosUnverified.clear(); vosFailedCheck = ''; }
+            // `summarize` is shadowed in this scope by the compaction summarizer (o.summarize) — use clip().
+            else if (vosUnverified.size) vosFailedCheck = clip(k === 'shell_exec' ? ((c.args && (c.args.command || c.args.cmd || c.args.script)) || k) : ((c.args && c.args.cmd) || k), 80);
+            continue;
+          }
           if (VOS_MUTATORS.has(k)) { const p = vosPathOf(c.args); if (vosIsCodePath(p)) vosUnverified.add(p); }
           const externalEffect = vosExternalEffect(c.name);
           if (externalEffect && externalEffect.role === 'observe') {
@@ -1651,5 +1931,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { parseCall, repairCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
+  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
 });

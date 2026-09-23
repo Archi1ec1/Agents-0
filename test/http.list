@@ -45,6 +45,9 @@ test/e2e.subagent-background.test.js
 test/google-signin.e2e.test.js
 test/google-files.e2e.test.js
 test/google-release-deferred.e2e.test.js
+test/google-per-service-release.e2e.test.js
+test/google-relay-guard.e2e.test.js
+test/google-early-access.e2e.test.js
 test/e2e.mcp-connector.test.js
 test/e2e.mcp-session-expiry.test.js
 test/e2e.idempotency.test.js
@@ -105,6 +108,7 @@ test/routing.persist.e2e.test.js
 test/run-recovery.api.test.js
 test/routing.sample.e2e.test.js
 test/routing.sample-provider.e2e.test.js
+test/routing.steptest.e2e.test.js
 test/station-template-example.e2e.test.js
 test/route-honesty.e2e.test.js
 test/effective-toolsets.e2e.test.js

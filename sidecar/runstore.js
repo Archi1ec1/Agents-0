@@ -239,6 +239,10 @@
         internal: !!e.internal,                 // progression catch-up excludes harness self-talk from agent work
         surface: e.surface === 'interactive' || e.surface === 'autonomous' ? e.surface : '',
         clarifying: !!e.clarifying,             // additive outcome truth; `reason` remains the execution terminal
+        // STEP-THROUGH TEST (additive, 2026-09-22): TRUE only when the handoff this run was handed had been EDITED
+        // by the owner before it continued — history must never claim an agent wrote the owner's words. Present
+        // only when true, so every other row stays byte-identical.
+        ...(e.handoffEdited ? { handoffEdited: true } : {}),
         toolTrace: toolTraceList(e.toolTrace),
         failureStage: str(e.failureStage).trim().slice(0, FAILURE_FIELD_MAX),
         failureCode: str(e.failureCode).trim().slice(0, FAILURE_FIELD_MAX),

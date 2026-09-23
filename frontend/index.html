@@ -40,6 +40,7 @@
 <link rel="stylesheet" href="css/interface.css">
 <link rel="stylesheet" href="css/refit-kit.css">
 <link rel="stylesheet" href="css/refit-polish.css?v=3">
+<link rel="stylesheet" href="css/workflow-panel.css"><!-- the DOCKED Workflow panel of REFIT (workflowpanel.js) — rides the refit glass tokens -->
 <link rel="stylesheet" href="css/utility-menus.css?v=1">
 <link rel="stylesheet" href="css/glass-demo.css">
 <link rel="stylesheet" href="css/glass-comms.css">
@@ -772,6 +773,7 @@
 <script src="app/propsearch.js"></script><!-- pure REFIT palette search matcher (flat lookup across all 120 props, both tiers) -->
 <script src="app/conveyor.js"></script>
 <script src="app/pipeline.js"></script>
+<script src="app/workflowline.js"></script><!-- pure readings of one conveyor line (run order, how-it-runs sentence, readiness, cost) from the compiled plan — the Workflow panel speaks only through it -->
 <script src="app/ghostline.js"></script><!-- GHOST PROJECTION (guided workflows Phase 3): a dashed projected crate loops an INCOMPLETE line so you watch the workflow before it exists — dedicated engine, never mixes with real telemetry -->
 
 <script src="app/propanchor.js"></script>
@@ -914,6 +916,7 @@
 
 <script src="app/equipmenthelp.js"></script>
 <script src="app/stationtemplates.js"></script>
+<script src="app/workflowpanel.js"></script><!-- the DOCKED Workflow panel (REFIT): one card for the whole line, beside the live floor -->
 <script src="app/build.js"></script>
 <script src="app/save.js"></script>
 <script src="app/cloudsavecore.js"></script><!-- pure retry/health brain (unit-tested); MUST load before cloudsave.js -->
