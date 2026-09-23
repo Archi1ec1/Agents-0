@@ -884,3 +884,8 @@ test/transcript.per-turn-durable.test.js
 test/journal-delta.test.js
 test/torn-final-journal-record-continuable.test.js
 test/continued-journal-retired.test.js
+test/shellbg.kill-verified.test.js
+test/shellbg.wait-and-wake.test.js
+test/shellbg.prune.test.js
+test/shell.fg-ledger.test.js
+test/procledger.orphan-window.test.js

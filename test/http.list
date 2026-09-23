@@ -133,3 +133,4 @@ test/project-workspace.http.test.js
 test/autonomy-confirmation.http.test.js
 test/cli.e2e.test.js
 test/interrupted-run-in-history.test.js
+test/procledger.windows-orphan.test.js

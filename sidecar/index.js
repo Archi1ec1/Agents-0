@@ -290,10 +290,11 @@ const slashActionsMod = require('./slash-actions.js');     // server-side execut
 const Recipes = require('../frontend/app/recipes.js');     // built-in mission recipes, also exposed as slash commands
 const { makeCheckpointStore } = require('./checkpoint-store.js');   // the shadow-git rollback net (ambient edge)
 const { makeShellTool, runCommand: shellRunCommand } = require('./tools/builtin/shell.js');   // the workbench capability: shell.exec (+ the shared spawn primitive the LOOP host-check reuses verbatim)
-const { makeShellBg } = require('./shellbg.js');                    // H2.2: singleton background-process manager
+const { makeShellBg, makeBgExitWaker } = require('./shellbg.js');   // H2.2: singleton background-process manager (+ h2 wake-on-exit)
 const { makeTerminalSessions } = require('./terminal-sessions.js');
 const { makeTerminalTools } = require('./tools/builtin/terminal.js');
 const { makeProcLedger } = require('./procledger.js');              // persistent child-PID ledger — boot sweep reaps force-kill orphans
+const { makeWin32ProcessTable } = require('./proctree.js');         // h2: bounded process-table snapshot (orphan walk + verified kills)
 const { makeInputGuard } = require('./inputguard.js');              // stuck cursor-confinement (ClipCursor) release — 2026-07-12 incident
 const { enforceSyntheticOnly, enforceRunAuthority, enforceEnabledToolsets, makeRunAuthority, runInputContext, impactOfTool, normalizeUnattendedGrants, backgroundOwnsLocalUrl, makeLoopbackListenerProbe } = require('./inputpolicy.js'); // per-run user-control authority + synthetic CDP policy
 const { makeEnvironmentManager, sanitizeChildEnv } = require('./environment.js');     // execution backend boundary (reference-harness-style)
@@ -3907,18 +3908,41 @@ const chanEmit = (name, payload) => { try { return chanEmitValidated(name, redac
 // Persistent PID ledger + input guard (mouse-confinement incident, 2026-07-12): a desktop-shell stop is
 // TerminateProcess (uncatchable — see gracefulShutdown), so children recorded here are swept at the NEXT
 // boot, and a cursor confinement a dead child left stuck on the user's desktop is released.
-const procLedger = makeProcLedger({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'proc-ledger.json'), clock: { now: () => Date.now() }, log: (m) => console.log(m) });
+// h2 process supervision: ONE bounded (15s), fail-safe process-table snapshot shared by the boot sweep's orphan walk
+// and shell.bg.kill's confirmation (Windows; POSIX kills whole process groups and confirms with signal 0).
+const osProcessTable = process.platform === 'win32' ? makeWin32ProcessTable(execFile, { timeoutMs: 15000 }) : null;
+const procLedger = makeProcLedger({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'proc-ledger.json'), clock: { now: () => Date.now() }, log: (m) => console.log(m), processTable: osProcessTable });
 // Lazy: this starts no process at boot. A supported edit with an already-installed server is the first spawn;
 // every child is ledgered so the next boot can reap it after an uncatchable desktop TerminateProcess.
 lspManager = makeLspManager({ spawn: childSpawn, fs, fsp, pathMod: path, env: process.env, ledger: procLedger });
 const inputGuard = makeInputGuard({ log: (m) => console.log(m) });
 if (require.main === module) {
   // real host boot only (unit tests require() this file and must not probe/kill or touch the real cursor state)
-  procLedger.sweep().then(s => { if (s.examined) console.log('[proc-ledger] boot sweep: examined=' + s.examined + ' killed=' + s.killed + ' gone=' + s.gone + ' pid-reused=' + s.reused); }).catch(swallow('procledger.bootsweep'));
+  procLedger.sweep().then(s => {
+    if (!s.examined) return;
+    console.log('[proc-ledger] boot sweep: examined=' + s.examined + ' killed=' + s.killed + ' orphaned=' + s.orphaned + ' orphansKilled=' + s.orphansKilled
+      + ' gone=' + s.gone + ' survived=' + s.survived + (s.survived ? ' (pids ' + s.survivors.map(x => x.pid).join(',') + ')' : '')
+      + ' pid-reused=' + s.reused + ' killFailed=' + s.killFailed + ' unverified=' + s.treeUnverified
+      + (s.probeFailed ? ' PROBE-FAILED (nothing examined; receipts retained)' : '')
+      + (s.treeQueryFailed ? ' TREE-QUERY-FAILED (orphans of exited roots not examined; nothing killed on that basis)' : ''));
+  }).catch(swallow('procledger.bootsweep'));
   inputGuard.observe('boot').catch(() => {});
 }
 const appendDurableProcessOutput = entry => outputArtifacts.append(entry);
-const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput });
+/* WAKE ON EXIT (h2 process supervision, F4). A background process that exits on its own used to produce only a COMMS
+   line — the agent that started it was never told, so a crashed dev server sat silent until the agent happened to
+   look. When its OWNING agent has a live run, the exit note rides that run's steer buffer (the same seam as
+   POST /api/run/steer; the loop folds it in at its next step). No live run, a closed buffer (the loop already
+   ended — an honest 409), or a full one: the COMMS line stays the only signal, exactly as before. The most recently
+   started live run of that agent is the one told, so a note is never duplicated across runs (shellbg.js). */
+const wakeOwnerOnBgExit = makeBgExitWaker({ steer: steerBufs, runs: runs, runsMeta: runsMeta, log: (m) => console.log(m) });
+const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, processTable: osProcessTable });
+if (require.main === module) {
+  // vouch every minute for bg children whose handle is still open, so a crash's orphan window covers children
+  // they start late (procledger.touch). One small ledger write per minute, only while bg processes run.
+  const bgLedgerHeartbeat = setInterval(() => { try { shellBg.touchLedger(); } catch (e) { swallow('shellbg.heartbeat')(e); } }, 60000);
+  if (bgLedgerHeartbeat && typeof bgLedgerHeartbeat.unref === 'function') bgLedgerHeartbeat.unref();
+}
 const EXECUTION_SETTINGS_FILE = path.join(WORKSPACES, 'execution-settings.json');
 const executionIdleDefault = Math.max(0, Math.min(1440, Number(process.env.STARNET_DOCKER_IDLE_MINUTES == null ? 60 : process.env.STARNET_DOCKER_IDLE_MINUTES) || 0));
 let executionSettings = (() => {
@@ -3937,6 +3961,7 @@ function saveExecutionSettings(next) {
 // receives the keys whose unattended grant is flipped ON, the SAME rule resolveForRequest enforces on
 // web_request. Host authority — it comes from the run, never from tool args.
 const executionEnvironmentDeps = { spawn: childSpawn, fs: fs, pathMod: path, root: WORKSPACES, bg: shellBg, redact: redact, clock: { now: () => Date.now() }, env: process.env,
+  ledger: procLedger,   // h2 F2: the LOCAL backend receipts foreground shell children for the boot orphan sweep
   serviceEnv: (surface) => serviceKeysMod.runEnv(serviceKeys, process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
   idleCleanupMs: () => Number(executionSettings.idleCleanupMinutes || 0) * 60000,
   sshConfig: (agentId) => executionSettingsMod.targetFor(executionSettings, agentId) };
