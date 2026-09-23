@@ -73,6 +73,7 @@ const DeliverableTool = require('./tools/builtin/deliverable.js');   // delivera
 const { makeImageTools } = require('./tools/builtin/image.js');           // STUDIO: image_generate / image_analyze (OpenRouter multimodal)
 const { makeConnectorTools } = require('./tools/builtin/connectors.js');  // WEB: connectors.list — what the station HAS wired, and what it could (read-only, no secrets)
 const { makeVoiceTools } = require('./tools/builtin/voice.js');           // STUDIO: voice_generate — speech saved into the workspace as a playable clip
+const { makeResolveTools } = require('./tools/builtin/resolve.js');       // STUDIO: DaVinci Resolve — FCPXML timelines (free) + live Studio control (Hermes-plugin port)
 const { makeSpotifyTools } = require('./tools/builtin/spotify.js');       // JUKEBOX: control/query the user's Spotify
 const { makeSpotifyStore } = require('./spotify/store.js');               // Spotify OAuth (PKCE) token store + auto-refresh
 const spotifyPkce = require('./spotify/pkce.js');                          // pure PKCE helpers (verifier/challenge/urls)
@@ -107,7 +108,7 @@ const edgetts = require('./edgetts.js');   // V-EDGE: free keyless neural TTS fl
 const localVoice = require('./local-voice.js');
 const { makeMediaService } = require('./media-service.js');
 const {
-  selectProvider,
+  selectProvider: selectProviderRaw,
   listProviderProfiles,
   getProviderProfile,
   normalizeProviderId: normalizeProviderIdFromRegistry,
@@ -118,6 +119,22 @@ const {
   providerRequiresBaseUrl,
   attachRateLimits
 } = require('./providers/factory.js');
+/* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
+   builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
+   the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
+   withheld. Built lazily: providers are constructed long after boot, and connector configs are read per request. */
+let googleRelayGuardInstance = null;
+function googleRelayGuard() {
+  if (!googleRelayGuardInstance) googleRelayGuardInstance = require('./mcp/google-relay-guard.js').makeGoogleRelayGuard({
+    googleClient: require('./mcp/google-client.js'), tools: require('./mcp/transport.google.js').TOOLS,
+    mcpToolName: require('./mcp/translate.js').mcpToolName, configs: () => connectorConfigs
+  });
+  return googleRelayGuardInstance;
+}
+function selectProvider(opts) {
+  const built = selectProviderRaw(opts);
+  return opts && normalizeProvider(opts.provider) === 'starnet' ? googleRelayGuard().guardProvider(built) : built;
+}
 /* PROACTIVE QUOTA. One tracker for the whole process, attached to the factory so every provider adapter's
    injected fetch is instrumented at a single seam (see providers/ratelimits.js). Quota used to be learned only
    by hitting a 429; now the *-remaining headers of ordinary successful calls are kept, so the station can say
@@ -4361,11 +4378,17 @@ let connectorOauth = connectorState.oauth;
 /* Publisher-owned Desktop registration wins for new sign-ins. Keep launch configuration out of the
    shared OAuth-client cache; old grants retain their own client for refresh. Legacy Web clients remain readable. */
 const GOOGLE_OAUTH_AS = 'https://accounts.google.com';
-const googleConnectorDeferred = cfg => googleClientConfig.RELEASE_DEFERRED && !!cfg &&
-  !(googleClientConfig.SELECTED_FILES_ENABLED && googleClientConfig.isSelectedFiles(cfg)) &&
-  (cfg.googleApi || cfg.transport !== 'stdio' && googleClientConfig.isWorkspaceUrl(cfg.url));
+// Per-service release: each Google service opens on its own verification tier (mcp/google-client.js SERVICES).
+const googleConnectorDeferred = cfg => googleClientConfig.connectorDeferred(cfg);
+const googleDeferredMessage = cfg => googleClientConfig.deferredMessage(cfg);
 const GOOGLE_DESKTOP_CLIENT = googleClientConfig.loadDesktopClient({ env: process.env,
   readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') });
+// EARLY ACCESS is a publisher build flag carried in the bundled registration (mcp/google-client.js). Only ever
+// turned ON here — a dev or public build has no staged flag and keeps the per-service release map.
+if (googleClientConfig.loadEarlyAccess({ readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') })) {
+  googleClientConfig.EARLY_ACCESS = true;
+  console.log('  · Google early access build: every Google service is open before Google verification (unverified-app warning, 100-user cap)');
+}
 const GOOGLE_OAUTH_ENV_CLIENT = (() => {
   const clientId = String(process.env.STARNET_GOOGLE_OAUTH_CLIENT_ID || '').trim();
   const clientSecret = String(process.env.STARNET_GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
@@ -4489,7 +4512,7 @@ function mcpStdioIsolationError(cfg) {
 const connectors = makeConnectorManager({
   makeTransport: (cfg) => {
     if (connectorStorageError) throw new Error(connectorStorageError);
-    if (googleConnectorDeferred(cfg)) throw new Error(googleClientConfig.DEFERRED);
+    if (googleConnectorDeferred(cfg)) throw new Error(googleDeferredMessage(cfg));
     if (cfg && cfg.transport === 'http' && googleApiTransport.productForUrl(cfg.url)) return googleApiTransport.makeGoogleTransport(cfg);
     if (!cfg || cfg.transport !== 'stdio') return makeHttpTransport(cfg);
     const aid = String(cfg.agentId || '');
@@ -4600,8 +4623,9 @@ function classifyOauthRefreshError(msg) {
   return 'network';   // fetch failed / timed out / DNS / connection reset / private-host refusal — the AS never answered
 }
 async function ensureConnectorOauthToken(id, force) {
-  if (googleConnectorDeferred(connectorConfigs.find(c => c && c.id === id))) {
-    return { token: '', refreshError: { kind: 'unavailable', message: googleClientConfig.DEFERRED } };
+  const deferredCfg = connectorConfigs.find(c => c && c.id === id);
+  if (googleConnectorDeferred(deferredCfg)) {
+    return { token: '', refreshError: { kind: 'unavailable', message: googleDeferredMessage(deferredCfg) } };
   }
   const t = connectorOauth.byId[id];
   if (!t || !t.accessToken) return { token: '', refreshError: null };
@@ -4670,7 +4694,7 @@ async function configureConnectorCfg(cfg, options) {
   if (googleConnectorDeferred(cfg)) {
     // Runtime-only suspension. Never write enabled:false over the owner's saved preference or grant.
     await connectors.configure(cfg.id, Object.assign({}, cfg, { enabled: false, token: '', tokenProvider: null }), options);
-    return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleClientConfig.DEFERRED };
+    return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleDeferredMessage(cfg) };
   }
   if (cfg && cfg.transport === 'stdio' && cfg.enabled !== false &&
       !(Array.isArray(cfg.missingFields) && cfg.missingFields.length) && !(options && options.deferConnect)) {
@@ -11291,7 +11315,7 @@ async function handleToolsetToggle(req, res) {
    protected sibling file, and NEVER echoed back (list/status carry `hasToken` only, never the value). ---- */
 function connectedConnectorSnapshot() {
   return connectors.list().map(c => googleConnectorDeferred(connectorConfigs.find(cfg => cfg.id === c.id) || c)
-    ? Object.assign({}, c, { releaseDeferred: true, signInAvailable: false, detail: googleClientConfig.DEFERRED,
+    ? Object.assign({}, c, { releaseDeferred: true, signInAvailable: false, detail: googleDeferredMessage(connectorConfigs.find(cfg => cfg.id === c.id) || c),
       oauth: !!connectorConfigs.find(cfg => cfg.id === c.id)?.oauth, oauthAuthorized: false,
       credentialSaved: !!connectorOauth.byId[c.id]?.accessToken })
     : c && c.oauth
@@ -11385,9 +11409,13 @@ function handleConnectorCatalog(req, res) {
     if (e.staticOauth) e.needsClient = !connectorOauthClient(e.staticOauth.authorizationServer).clientId;
     if (e.googleApi) {
       e.releaseDeferred = googleConnectorDeferred(e);
+      if (!e.releaseDeferred && googleClientConfig.EARLY_ACCESS === true && !googleClientConfig.isSelectedFiles(e)) {
+        e.earlyAccess = true;
+        e.blurb = 'Early access — not yet verified by Google; Google shows a warning when you sign in. ' + e.blurb;   // catalog entries are fresh clones per request
+      }
       if (e.releaseDeferred) e.blurb = 'Planned for a later update. ' + e.blurb.replace(/^Planned for a later update\. /, '').replace(' Sign in with Google to connect your account.', '');
       e.signInAvailable = !connectorStorageError && !e.releaseDeferred && !e.needsClient && (!googleClientConfig.isSelectedFiles(e) || connectorVault.protected);
-      if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleClientConfig.DEFERRED : googleClientConfig.UNAVAILABLE);
+      if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleDeferredMessage(e) : googleClientConfig.UNAVAILABLE);
     }
   };
   payload.connectors.forEach(markNeedsClient);
@@ -11403,7 +11431,7 @@ async function handleConnectorOauthClient(req, res) {
   let body; try { body = JSON.parse(await readBody(req, 8192)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
   const entry = connectorCatalog.get(String(body.id || '').trim());
   if (!entry || !entry.staticOauth) return json(400, { error: 'not a pre-registered-client connector' });
-  if (googleConnectorDeferred(entry)) return json(503, { error: googleClientConfig.DEFERRED, code: 'google_release_deferred' });
+  if (googleConnectorDeferred(entry)) return json(503, { error: googleDeferredMessage(entry), code: 'google_release_deferred' });
   const as = entry.staticOauth.authorizationServer;
   const clientId = String(body.clientId || '').trim();
   const clientSecret = String(body.clientSecret || '').trim();
@@ -11430,7 +11458,7 @@ async function handleConnectorUpsert(req, res) {
   if (transport === 'http' && !url) return json(400, { error: 'a server URL is required' });
   const selectedFileToggle = googleClientConfig.isSelectedFiles(prev) && transport === 'http' && url === prev.url && oauth &&
     Object.keys(body).every(k => ['id', 'transport', 'enabled'].includes(k));
-  if (!selectedFileToggle && googleConnectorDeferred({ transport, url })) return json(503, { ok: false, saved: false, error: googleClientConfig.DEFERRED, code: 'google_release_deferred' });
+  if (!selectedFileToggle && googleConnectorDeferred({ transport, url })) return json(503, { ok: false, saved: false, error: googleDeferredMessage({ url }), code: 'google_release_deferred' });
   if (transport === 'stdio' && !command) return json(400, { error: 'a stdio command is required' });
   const agentId = String(body.agentId || (transport === 'stdio' ? (prev.agentId || '') : '')).trim();
   const cwd = transport === 'stdio' ? String(Object.prototype.hasOwnProperty.call(body, 'cwd') ? body.cwd : (prev.cwd || '')).trim() : '';
@@ -11609,7 +11637,7 @@ async function handleConnectorOauthStart(req, res) {
   const entry = target.entry;
   if (connectorStorageError) return json(503, { error: connectorStorageError, code: 'connector_storage_locked', signInAvailable: false });
   if (googleClientConfig.isSelectedFiles(entry) && !connectorVault.protected) return json(503, { error: 'Selected Google files requires encrypted credential storage in the StarNet desktop app.', code: 'connector_storage_required' });
-  if (googleConnectorDeferred(entry)) return json(503, { error: googleClientConfig.DEFERRED, code: 'google_release_deferred', signInAvailable: false });
+  if (googleConnectorDeferred(entry)) return json(503, { error: googleDeferredMessage(entry), code: 'google_release_deferred', signInAvailable: false });
   const rawAttempt = String(body.attemptId || '').trim();
   const attemptId = /^[A-Za-z0-9_-]{8,80}$/.test(rawAttempt) ? rawAttempt : crypto.randomBytes(12).toString('hex');
   if (connectorOauthAttempts.has(attemptId)) return json(409, { error: 'this sign-in attempt is already running', attemptId });
@@ -15990,6 +16018,9 @@ async function runOnceCore(o) {
   // workspace. It drives the SAME media-service ladder /api/tts does (keyed neural chain, then the
   // free keyless Edge floor), so it needs no voice-specific credential and a zero-key station can still record.
   makeVoiceTools({ synth: media.synthesizeForAgent, fsp, pathMod: path, root: WORKSPACES }).register(registry);
+  // STUDIO, the edit bay: DaVinci Resolve. Timeline FILES work with free Resolve; live control needs Resolve Studio and
+  // runs a fixed embedded Python bridge (never a shell). Media paths outside the workspace go through this run's path-trust.
+  makeResolveTools({ fsp, pathMod: path, root: WORKSPACES, spawn: childSpawn, pathTrust: runPathTrust, envFor: () => sanitizeChildEnv(process.env), config: { ffprobe: ENV('FFPROBE'), python: ENV('RESOLVE_PYTHON') } }).register(registry);
   // JUKEBOX (Spotify): registered every run, EXPOSED via a 'jukebox' object; no-op (clear error) until the user
   // connects Spotify in TOOLSETS. The OAuth session + auto-refresh live in the station-wide spotifyStore above.
   makeSpotifyTools({ store: spotifyStore }).register(registry);
@@ -16400,7 +16431,10 @@ async function runOnceCore(o) {
   // gate, network classification, and the wire tool-list treat them exactly like a built-in. Never breaks a run.
   try {
     const room = station.rooms && station.agents && station.agents[agentId] && station.rooms[station.agents[agentId].room];
-    for (const def of connectors.toolDefsForObjects((room && room.objects) || [])) {
+    // Restricted-tier Google connectors (Gmail read/compose, whole-Drive) are withheld from StarNet Managed runs.
+    const projectableObjects = ((room && room.objects) || []).filter(ob => !ob || ob.objectType !== 'connector'
+      || googleRelayGuard().projectable(ob.connectorId || (ob.binding && ob.binding.connectorId), providerId));
+    for (const def of connectors.toolDefsForObjects(projectableObjects)) {
       registry.register(def, { provenance: 'connector' });
       if (resolved.tools.indexOf(def.name) < 0) resolved.tools.push(def.name);
       resolved.networkCaps[def.name] = true;

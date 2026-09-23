@@ -34,6 +34,7 @@ test/failreview.e2e.test.js
 test/questrefresh.e2e.test.js
 test/e2e.run.test.js
 test/image-task.e2e.test.js
+test/resolve-task.e2e.test.js
 test/e2e.workspace-lease.test.js
 test/e2e.attachments.test.js
 test/e2e.summon.test.js
@@ -44,6 +45,9 @@ test/e2e.subagent-background.test.js
 test/google-signin.e2e.test.js
 test/google-files.e2e.test.js
 test/google-release-deferred.e2e.test.js
+test/google-per-service-release.e2e.test.js
+test/google-relay-guard.e2e.test.js
+test/google-early-access.e2e.test.js
 test/e2e.mcp-connector.test.js
 test/e2e.mcp-session-expiry.test.js
 test/e2e.idempotency.test.js

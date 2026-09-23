@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "15ce69940ec27b31eebc1e57f49b19367f0e748f",
+    "sourceCommit": "4538e16c61c28b5838e793e9dc88487636a77d2e",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -118,8 +118,8 @@
       },
       {
         "path": "frontend/agent-demo/review-world.js",
-        "bytes": 743660,
-        "sha256": "9cd058c5973542080c70195eaa0751c855adb79b77f7c81d0115f66e6876a1c6"
+        "bytes": 743630,
+        "sha256": "e6be5ef4b329c59d23ed48957df13a8eaa620cd4a98bf7aa80573907b0b5d047"
       },
       {
         "path": "frontend/agent-demo/sprites.js",
@@ -313,8 +313,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 392197,
-        "sha256": "db6009d2ec8d5bc97e885b4743dde0e0a9e5525ad59ce5d35e1305e87370091f"
+        "bytes": 389672,
+        "sha256": "12c0fc01f14c9bdbcb83c2fb7091671e5254bafff5c265b61a0b2d7ee57be881"
       },
       {
         "path": "frontend/app/channels.js",
@@ -323,8 +323,8 @@
       },
       {
         "path": "frontend/app/chat.js",
-        "bytes": 661988,
-        "sha256": "8fc99db7357793f6d64973d3b3df8e9876eb169246d92335ab3ff399ab903256"
+        "bytes": 661173,
+        "sha256": "ca034b3bad7531bf57369c9b54c79e2a7dfa2682a8d624c3a18afa539c15fbca"
       },
       {
         "path": "frontend/app/chatresize.js",
@@ -333,8 +333,8 @@
       },
       {
         "path": "frontend/app/classicons.js",
-        "bytes": 139475,
-        "sha256": "ce58f4d3ab93bf8a9ac7c2ef6669d27bab786e3047e17850c49c82c448f863e4"
+        "bytes": 139583,
+        "sha256": "9cfbe3fbba407f35721c0d79d970d33db6d36219d86cb13706d49d4f2e703e24"
       },
       {
         "path": "frontend/app/classify.js",
@@ -363,8 +363,8 @@
       },
       {
         "path": "frontend/app/conveyor.js",
-        "bytes": 43450,
-        "sha256": "67b119d0f631a58e368b0df031cfaaac38121f54095f553cf7884f564bdeae35"
+        "bytes": 42079,
+        "sha256": "e48b7dd32b29d443a66727f6987586a2f0022fa5f2ccf7b80b3159a084476034"
       },
       {
         "path": "frontend/app/cronhuman.js",
@@ -688,8 +688,8 @@
       },
       {
         "path": "frontend/app/pipeline.js",
-        "bytes": 98192,
-        "sha256": "317238eeb4c5a82381118feb2c7208cb5d672d027d758da1f6500436760a45ed"
+        "bytes": 79219,
+        "sha256": "2cf8ac9a3fc9ae1c3d60896e17df78f3619acf53652b836ddfef9ddce1f2aa3a"
       },
       {
         "path": "frontend/app/pitch.js",
@@ -1103,8 +1103,8 @@
       },
       {
         "path": "frontend/app/toolprops.js",
-        "bytes": 4400,
-        "sha256": "7863c703ec7a546ef1c58fab13f93382185f5366c45b443762c8aeda2132e51a"
+        "bytes": 4604,
+        "sha256": "af6cd0cedef3e03c7749b8e09609c33849bafbd3323822cf21e707ada6cc8334"
       },
       {
         "path": "frontend/app/tooltip.js",
@@ -1238,8 +1238,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 56820,
-        "sha256": "e1b3783a4bab5392a607ae224e00968e1527d7e43d6b6309dee04b377768c0e9"
+        "bytes": 56773,
+        "sha256": "31d49ce7ec3f69ba97d956f8285be9c5a3c5098d5f4685abc6ea6c8290f2f924"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1248,13 +1248,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 27765,
-        "sha256": "a3b28141937646ff68b3453c4ed01423770caaadcefdecd05d13141a8747e77d"
+        "bytes": 26492,
+        "sha256": "e9c0be0b64619bda9a716c7794cc60ad553a05160ac936bc26d2acbeb02e0ba5"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 85513,
-        "sha256": "7c89ecadae83f9df8bde1f06ca0fa52fac78f3778e2eaab30050cd1ec58ac705"
+        "bytes": 83916,
+        "sha256": "9593c80a8e51fbe7f284319a7509050c701764e6028b65e7246dca23d622bc70"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1303,8 +1303,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 778724,
-        "sha256": "bccef3d42788a14022184c4d79926ce80f7bb76c4038bcee6c71850bbe6a31e0"
+        "bytes": 772721,
+        "sha256": "3e4901fe3272c0a831d06479c2edd4a87faece604f76e93e2bb30e4f5669f009"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1318,8 +1318,8 @@
       },
       {
         "path": "frontend/app/worldmodel.js",
-        "bytes": 177857,
-        "sha256": "df01468e428d58a96dcaf6cae42349da034199eb21d787f5691cfc2f310241b7"
+        "bytes": 176972,
+        "sha256": "8e007d6086051cfcbcf106259f25afb7502f6c2e27d41dd684e25af08ae2dc63"
       },
       {
         "path": "frontend/app/worldrenderer.js",
