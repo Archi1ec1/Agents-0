@@ -84,6 +84,7 @@ const { makeAutonomyLedger } = require('./autonomy-ledger.js');   // NS-0: durab
 const { makeArtifactCollector } = require('./artifacts.js');   // work-visibility: per-run "what did it produce" ledger
 const { makeCompletionEvidence } = require('./completion-evidence.js'); // structured effect proof; never guesses task completion
 const { makeRunExecutionState, toolBytesCapFor } = require('./run-execution-state.js'); // one lifecycle for per-run latches/counters/artifacts
+const { _internals: ProgressGuardInternals } = require('./tool-progress-guard.js');   // trackable(): which calls the evidence-progress guard owns (loop breaker hand-off)
 const { recoverToolResult } = require('./tool-recovery.js'); // bounded retry for host-trusted transient reads only
 const transcriptStoreModule = require('./transcriptstore.js');
 const { makeTranscriptStore } = transcriptStoreModule;
@@ -655,6 +656,12 @@ const MAX_CONCURRENT_AGENTS = resolveKnob('MAX_CONCURRENT_AGENTS', 'maxConcurren
 const ORCH_PER_WORKER = num(ENV('BUDGET_PER_WORKER'), 0);
 // Optional per-worker tool-turn ceiling. 0 inherits the unlimited station policy.
 const ORCH_WORKER_MAX_ITERS = num(ENV('WORKER_MAX_ITERS'), 0);
+// Background-worker LIVENESS (Step 2 F3, subagents.js checkStalls): a worker that emits no progress (tokens, tool
+// calls/results, cost) for this long is stopped and marked stale. A no-progress check, NOT a duration cap — a worker
+// that keeps producing runs as long as it needs. While one of its tool calls is in flight the longer IN_TOOL window
+// applies (a build/test can be silent for minutes). 0 disables. Hermes parity: 450s idle / 1200s in-tool.
+const WORKER_STALL_MS = num(ENV('WORKER_STALL_MS'), 450000);
+const WORKER_STALL_IN_TOOL_MS = num(ENV('WORKER_STALL_IN_TOOL_MS'), 1200000);
 // ---- MANAGED CREDITS (opt-in, config-gated). The whole managed-credit path is INERT unless STARNET_CREDITS_URL
 // points at a credits backend: no payment client is built, admission stays pure BYOK, no STORE UI renders, and
 // /api/credits 404s (the honesty law — a control that does nothing is a bug). When wired, a managed account can
@@ -4093,7 +4100,18 @@ async function executeCronScript(job, signal) {
   return { output: lines.join('\n').slice(0, 32000), wakeAgent };
 }
 try { console.log('[exec-env]', JSON.stringify(executionEnvironment.describe())); } catch (_) {}
-const subagents = makeSubagentManager({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'subagents.json'), clock: { now: () => Date.now() }, emit: chanEmit, newId: () => crypto.randomUUID(), keep: 200, hooks: hookSpine });
+const subagents = makeSubagentManager({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'subagents.json'), clock: { now: () => Date.now() }, emit: chanEmit, newId: () => crypto.randomUUID(), keep: 200, hooks: hookSpine,
+  stallMs: WORKER_STALL_MS, inToolStallMs: WORKER_STALL_IN_TOOL_MS });
+// The liveness sweep: a hung background worker is stopped and marked stale (see subagents.js checkStalls) instead of
+// sitting `running` forever. Sampled at a quarter of the idle threshold (1s..30s); unref'd — it never holds the process.
+if (WORKER_STALL_MS > 0) {
+  const subagentStallSweep = setInterval(() => {
+    try {
+      for (const w of subagents.checkStalls()) console.warn('[subagents] worker ' + w.id + ' (' + w.agentId + ') ' + w.reason);
+    } catch (e) { failNote('subagents.checkStalls', e); }
+  }, Math.max(1000, Math.min(30000, Math.floor(WORKER_STALL_MS / 4))));
+  subagentStallSweep.unref();
+}
 const overseer = require('./overseer.js').makeOverseer({ fs, path, writeDurable: writeFileDurable,
   file: path.join(WORKSPACES, 'overseer.json'), now: () => Date.now(),
   newId: () => 'ws_' + crypto.randomUUID().replace(/-/g, ''),
@@ -15365,6 +15383,24 @@ function recentUserText(list) {
   return joined.length > 2000 ? joined.slice(joined.length - 2000) : joined;
 }
 
+/* STOP REACHES BACKGROUND WORKERS (Step 2 F2, subagents.js cancelChildren). While a run's LOOP is live, an abort of
+   its signal — Stop in COMMS (/api/cancel), /stop in a channel, a superseding channel message, a closed COMMS stream,
+   a reclaimed hung cron beat — also cancels the background workers that run started (team.dispatch/team.spawn
+   background:true, team.resume), and theirs. The listener lives exactly as long as the loop: a lead that ENDS
+   normally (done/error/budget/max_iters) detaches first and never touches its workers, which is the whole point of
+   background:true. There is no per-worker "detach" option and none is invented; E-STOP still stops everything. */
+function cascadeCancelToWorkers(signal, runId) {
+  if (!runId || !signal || typeof signal.addEventListener !== 'function' || signal.aborted) return () => {};
+  const onAbort = () => {
+    try {
+      const n = subagents.cancelChildren(runId, 'its lead run ' + runId + ' was cancelled');
+      if (n) console.warn('[subagents] run ' + runId + ' was cancelled — stopped ' + n + ' background worker(s) it started');
+    } catch (e) { failNote('subagents.cancelChildren', e); }
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  return () => signal.removeEventListener('abort', onAbort);
+}
+
 /* runOnce — the reusable RUN HOST. Assembles the proven seams (fresh tool registry + the office-workstation
    capability projection + the consent broker + the OpenRouter provider + cost engine), does the tool-capable
    pre-check, injects the Cortex memory-recall fence, and drives the unchanged agentic loop. Extracted verbatim
@@ -16945,6 +16981,9 @@ async function runOnceCore(o) {
       } catch (_) { /* a checkpoint failure must never break a run */ }
     }
     let dctx = (ctx && ctx.callId !== c.id) ? Object.assign({}, ctx, { callId: c.id }) : ctx;   // per-call id for shell.exec telemetry
+    // A name no registered tool answers to: the registry's "unknown tool" reply names the closest tools THIS run can
+    // call (advertised + deferred wire names), never an ungranted one (loop-breaker.js counts these as strikes).
+    if (!liveTool) dctx = Object.assign({}, dctx, { toolNames: Array.from(fromWire.keys()) });
     if (postTaintConfirmed) {
       const baseAuthorize = dctx && dctx.authorize;
       dctx = Object.assign({}, dctx, {
@@ -17699,7 +17738,10 @@ async function runOnceCore(o) {
       loopEmit('agent.token', {agentId, runId, delta:text});
       loopEmit('agent.run.end', {agentId, runId, reason:'done', turns:0, usd:0});
       result = {reason:'done', turns:0, usd:0, messages:msgs.concat([{role:'assistant', content:text}])};
-    } else result = await runAgentLoop({
+    } else {
+      const detachWorkerCascade = cascadeCancelToWorkers(signal, runId);   // live only while the loop runs (see its note)
+      try {
+      result = await runAgentLoop({
       messages: msgs, provider, emit: loopEmit, cost, tools: o.outputOnly ? [] : toolDefs, dispatch, capCtx,
       isTask: internal ? undefined : isTask,
       cacheSystemPrefix: !internal && !o.recovery ? cacheSystemPrefix : '',
@@ -17785,10 +17827,24 @@ async function runOnceCore(o) {
         runTranscript.checkpoint({ phase, messages: checkpointMessages });
       } : null,
       agentId, runId, model, trigger: trigger,
+      /* LOOP BREAKER (loop-breaker.js). Hard stops for a varying-argument failure streak or an identical successful
+         poll apply only when no Commander is watching. `surface` is 'interactive' ONLY on the watched /api/run COMMS
+         path (and a channel chat that opted into /approvals); every other trigger is UNATTENDED: cron, Run Now and
+         workshop shifts ('schedule'), night shift ('nightshift'), loop jobs ('loop'), channel chats and the /v1 API
+         ('event'), and delegated/spawned workers, overseer reviews and implement builds ('directive' on surface
+         'autonomous'). The same host-minted bit the consent broker uses — never derived from prompt or model text. */
+      unattended: surface !== 'interactive',
+      // the evidence-progress guard (dispatch above) already owns reads/browser/tool.search repeats
+      progressTracked: (wireName) => {
+        const real = fromWire.get(wireName) || allWire.get(wireName) || wireName;
+        return ProgressGuardInternals.trackable({ name: real }, registry.get(real));
+      },
       // rough initial estimate for the error classifier's context-overflow ratio; contextLimit is 0 until the
       // /models catalog warms, which (by design) disables the ratio so a bare 400 is never mislabelled.
       approxTokens: Math.ceil(JSON.stringify(msgs).length / 4), contextLimit: provider.contextLimit(model)
     });
+      } finally { detachWorkerCascade(); }
+    }
     if (result && result.failureStage) execution.recordFailure(result.failureStage, result.failureCode || 'run_failure');
     if (imageTask && result && result.reason === 'done') {
       let clarifying = false;

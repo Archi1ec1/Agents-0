@@ -50,6 +50,19 @@ function preStreamSpend(err) {
   return { rungs, waitedMs };
 }
 
+/* A STALLED PROVIDER (Step 2 F4, Hermes audit 2026-09-22). The idle watchdog (providers/provider.js timeoutError)
+   stamps its error { code: 'PROVIDER_STREAM_TIMEOUT', phase: 'idle' }: the stream connected and then sent NOTHING
+   for the whole idle window (300s by default). That classifies as an ordinary retryable `timeout`, so the ladder
+   below used to spend every rung on it — up to 7 attempts x 300s, ~37 minutes of silence on one turn. One stall
+   can be a slow deep-reasoning turn; two in a row on the same provider/model is a provider that has stopped
+   answering. MAX_IDLE_STALLS consecutive stalls (counted by the caller, reset by any other failure class or a
+   fallback switch) end the ladder: a configured fallback is taken, otherwise the turn fails 'provider_stalled'.
+   A CONNECT-phase timeout (30s, no headers) is deliberately NOT a stall — it is cheap and stays on the ladder. */
+const MAX_IDLE_STALLS = 2;
+function isIdleStall(err) {
+  return !!(err && typeof err === 'object' && err.code === 'PROVIDER_STREAM_TIMEOUT' && err.phase === 'idle');
+}
+
 function providerFailure(input) {
   const i = input || {};
   const cls = i.classification || {};
@@ -61,6 +74,14 @@ function providerFailure(input) {
     const allowed = Math.floor(finite(cls.allowedMaxTokens, 0));
     if (allowed > 0 && !i.outputCapRetried) return { action: 'lower_output', reason: 'output_cap', retryable: true, delayMs: 0, maxTokens: allowed };
     return { action: 'fail', reason: 'output_cap', retryable: false, delayMs: 0 };
+  }
+  // STALLED PROVIDER — see isIdleStall. Callers that do not count stalls (idleStalls absent) are unaffected.
+  const maxIdle = Math.max(0, Math.floor(finite(i.maxIdleStalls, MAX_IDLE_STALLS)));
+  if (maxIdle > 0 && Math.floor(finite(i.idleStalls, 0)) >= maxIdle) {
+    if (i.hasFallback && finite(i.recoveriesUsed, 0) < finite(i.maxRecoveries, 0)) {
+      return { action: 'fallback', reason: 'provider_stalled', retryable: true, delayMs: 0, rotate: false };
+    }
+    return { action: 'fail', reason: 'provider_stalled', retryable: true, delayMs: 0 };
   }
   if (cls.shouldCompress && i.canCompress && finite(i.recoveriesUsed, 0) < finite(i.maxRecoveries, 0)) {
     return { action: 'compress', reason: String(cls.reason || 'context_overflow'), retryable: true, delayMs: 0 };
@@ -126,6 +147,6 @@ function toolFailure(input) {
 }
 
 module.exports = {
-  providerFailure, preStreamSpend, jitteredDelay, toolFailure, transientToolReason,
-  RETRY_DELAYS_MS, RETRY_PATIENCE_MS, RETRY_JITTER, PRESTREAM_CONTINUABLE
+  providerFailure, preStreamSpend, jitteredDelay, toolFailure, transientToolReason, isIdleStall,
+  RETRY_DELAYS_MS, RETRY_PATIENCE_MS, RETRY_JITTER, PRESTREAM_CONTINUABLE, MAX_IDLE_STALLS
 };
