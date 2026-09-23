@@ -613,12 +613,15 @@ test/plan-poster.test.js
 test/chain.test.js
 test/chain.join-loop.test.js
 test/chain.limits.test.js
+test/routing.steptest.test.js
 test/refit-card-stack.test.js
 test/refit-flow-polish.test.js
 test/refit-junction-cards.test.js
 test/refit-footprint.test.js
 test/refit-run-gate.test.js
 test/step-brief.test.js
+test/workflow-line.test.js
+test/workflow-panel-source.test.js
 test/propanchor.test.js
 test/prop-mount.test.js
 test/prop-flat-decal.test.js
@@ -680,6 +683,7 @@ test/mcp.manager-race.test.js
 test/mcp.manager-auth-race.test.js
 test/mcp.orphan-recovery.test.js
 test/google-connector.test.js
+test/google-relay-guard.test.js
 test/connector-vault.test.js
 test/mcp.catalog.test.js
 test/mcp.oauth.test.js

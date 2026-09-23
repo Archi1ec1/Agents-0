@@ -1,0 +1,71 @@
+/* test/workflow-panel-source.test.js — the docked Workflow panel's wiring laws, held against the SOURCE
+   (workflowpanel.js is a browser module over live DOM + build.js's host, like build.js itself; its truth
+   layer is node-tested in workflow-line.test.js). Each assertion is a law the panel must not drift from:
+     · station UI law: no native tooltip, no native dialog;
+     · the step test is FEATURE-DETECTED (an older sidecar keeps the whole-line sample button);
+     · "Try this step" is the SAME mechanism with single:true + startAt (STEPTEST contract);
+     · a schedule made here is the line's own trigger (runsLine:true) and grants nothing unattended;
+     · a rerun after a brief rewrite flushes the plan first (the sidecar reads the CURRENT plan);
+     · the doors: every INBOX / BAY / gate click reaches the ONE panel, never a modal. */
+'use strict';
+const A = require('./_assert.js');
+const fs = require('fs');
+const path = require('path');
+const rd = f => fs.readFileSync(path.join(__dirname, '..', 'frontend', f), 'utf8');
+const panel = rd('app/workflowpanel.js'), build = rd('app/build.js'), html = rd('index.html');
+const code = panel.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*/g, ' ');
+
+A.ok(!/\stitle="/.test(code) && !/\.title\s*=/.test(code), 'no native title tooltips (data-tip only)');
+A.ok(!/\b(confirm|alert|prompt)\(/.test(code), 'no window.confirm/alert/prompt');
+A.ok(!/<select/.test(code), 'no bare <select> (the OS arrow cannot be themed)');
+
+// feature detection + the fallback
+A.ok(/api\('\/api\/routing\/steptest'\)\.then\(r => \{\s*S\.seam = !!\(r && r\.status !== 404 && r\.status !== 405/.test(panel), 'the step-test route is probed; a 404/405 means an older sidecar');
+A.ok(/S\.seam === false[\s\S]{0,1400}H\.runSample\(c,/.test(panel) && /H\.sampleHTML\(mine\.view\)/.test(panel), 'without the route the footer keeps the whole-line sample job');
+A.ok(/if \(!c \|\| !p\.agentId \|\| S\.seam !== true\) return none;/.test(panel), 'Try this step is hidden unless the route answered');
+
+// the contract
+A.ok(/api\('\/api\/routing\/steptest', 'POST', \{ line: c\.key, text, startAt: agentId, single: true \}\)/.test(panel), 'Try this step = POST {line, text, startAt, single:true}');
+A.ok(/api\('\/api\/routing\/steptest', 'POST', \{ line: c\.key, text, pause \}\)/.test(panel), 'the full step test posts the pause rule');
+for (const v of ['continue', 'rerun', 'rewind', 'stop', 'pause']) A.ok(new RegExp("sessionCall\\('" + v + "'").test(panel), 'the pause UI drives /' + v);
+A.ok(/, 700\);/.test(panel), 'running sessions are polled every ~700 ms');
+A.ok(/H\.planGate\(comp\(\)\)\.then\(gate => \{[\s\S]{0,300}sessionCall\('rerun'\)/.test(panel), 'rewrite-brief-and-rerun flushes the plan post before the rerun');
+A.ok(/H\.planGate\(c\)\.then/.test(panel), 'every test run posts THIS floor first (the same gate the sample uses)');
+
+// the trigger
+A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId: S\.trgDock, provider: H\.provider\(\), tz, runsLine: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine) and carries no unattended grants');
+A.ok(/SchedPicker\.mount\(/.test(panel) && /api\('\/api\/cron\/preview'/.test(panel), 'the same WHEN picker + server preview as AUTOMATION');
+A.ok(/H\.openTerm\('messaging'\)/.test(panel), 'one click to the Channels panel to connect a channel');
+
+// hands off is saved through the model
+A.ok(/H\.station\(\)\.setPropHands\(p\.id, hands\.value\)/.test(panel), 'HANDS OFF saves through worldmodel.setPropHands');
+
+// the doors
+A.ok(/if \(t === 'bay'\) return openStepCard\(p\.id, ev\);/.test(build), 'a BAY configures through openStepCard');
+A.ok(/t === 'intake' \|\| t === 'outbox' \|\| t === 'merger' \|\| t === 'splitter' \|\| t === 'joiner' \|\| t === 'loop'\) return openFlowCard\(p\.id\)/.test(build), 'INBOX / OUTBOX / gates configure through openFlowCard');
+A.ok(/if\(WF_PART\[p\.t\]\)\{finFocusLine\(p\.id\);openWorkflowPanel\(p\.id,true\);\}/.test(build), 'a floor click on a line machine selects it in the panel');
+A.ok(!/refit-step-card|refit-flow-card/.test(build.replace(/\/\*[\s\S]*?\*\//g, ' ')), 'the modal step/flow cards are gone');
+
+// two panels must not squeeze the floor: the Workflow panel minimizes the Build Library through its own
+// MINIMIZE state and gives it back on close — unless the Commander reopened it meanwhile
+A.ok(/H\.panelShown\(true\)/.test(panel) && /H\.panelShown\(false\)/.test(panel), 'the panel reports open/close to build mode');
+A.ok(/if \(dock && !dock\.classList\.contains\('is-collapsed'\)\) \{ toggleKit\(true\); wfKitAuto = true; \}/.test(build), 'opening minimizes the library via toggleKit, remembering it did');
+A.ok(/if \(restore && dock && dock\.classList\.contains\('is-collapsed'\)\) toggleKit\(false\);/.test(build), 'closing restores it only if the panel minimized it');
+A.ok(/if \(!hide\) wfKitAuto = false;/.test(build), 'a reopen by the Commander cancels the owed restore');
+A.ok(/if \(id !== 'select' \|\| !wasSelect\) toggleKit\(false\);/.test(build), 'a bare deselect (ESC) does not pop the minimized library back open');
+
+// the real step-test backend's shape (2026-09-23 live run): an `ended` session did NOT reach the OUTBOX; the
+// total includes rewound spend (droppedUsd); a blocked next hop, a hop's error and its exact turn are shown
+A.ok(/const shipped = done && !s\.ended && typeof s\.final === 'string';/.test(panel), 'only a server `final` (no `ended`) is called Reached the OUTBOX');
+A.ok(/The line ended before the OUTBOX/.test(panel), 'an ended session says it stopped short, and why');
+A.ok(/s\.droppedUsd/.test(panel) && /from rewound steps/.test(panel), 'rewound spend is named inside the total');
+A.ok(/s\.paused\.next\.blocked/.test(panel) && /h\.turn/.test(panel) && /h\.error/.test(panel), 'blocked next hop, the exact turn and a hop error are shown');
+// a draft is only what was TYPED (an input painted empty before the INBOX had a test job must not clobber it)
+A.ok(/if \(n\.dataset\.typed === '1'\) S\.drafts\[n\.dataset\.keep\] = n\.value;/.test(panel), 'drafts keep typed text only');
+
+// load order: the truth layer, then the panel, then build.js
+const iL = html.indexOf('app/workflowline.js'), iP = html.indexOf('app/workflowpanel.js'), iB = html.indexOf('app/build.js');
+A.ok(iL > 0 && iP > iL && iB > iP, 'index.html loads workflowline.js, then workflowpanel.js, then build.js');
+A.ok(html.indexOf('css/workflow-panel.css') > 0, 'the panel stylesheet is linked');
+
+A.report('workflow-panel-source');

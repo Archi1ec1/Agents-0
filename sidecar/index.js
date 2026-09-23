@@ -109,7 +109,7 @@ const edgetts = require('./edgetts.js');   // V-EDGE: free keyless neural TTS fl
 const localVoice = require('./local-voice.js');
 const { makeMediaService } = require('./media-service.js');
 const {
-  selectProvider,
+  selectProvider: selectProviderRaw,
   listProviderProfiles,
   getProviderProfile,
   normalizeProviderId: normalizeProviderIdFromRegistry,
@@ -120,6 +120,22 @@ const {
   providerRequiresBaseUrl,
   attachRateLimits
 } = require('./providers/factory.js');
+/* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
+   builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
+   the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
+   withheld. Built lazily: providers are constructed long after boot, and connector configs are read per request. */
+let googleRelayGuardInstance = null;
+function googleRelayGuard() {
+  if (!googleRelayGuardInstance) googleRelayGuardInstance = require('./mcp/google-relay-guard.js').makeGoogleRelayGuard({
+    googleClient: require('./mcp/google-client.js'), tools: require('./mcp/transport.google.js').TOOLS,
+    mcpToolName: require('./mcp/translate.js').mcpToolName, configs: () => connectorConfigs
+  });
+  return googleRelayGuardInstance;
+}
+function selectProvider(opts) {
+  const built = selectProviderRaw(opts);
+  return opts && normalizeProvider(opts.provider) === 'starnet' ? googleRelayGuard().guardProvider(built) : built;
+}
 /* PROACTIVE QUOTA. One tracker for the whole process, attached to the factory so every provider adapter's
    injected fetch is instrumented at a single seam (see providers/ratelimits.js). Quota used to be learned only
    by hitting a 429; now the *-remaining headers of ordinary successful calls are kept, so the station can say
@@ -172,7 +188,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { makePromptRegistry } = require('./channels/prompts.js');   // C6: the bounded token→meaning map behind inline keyboards
 const { makeOpenAiCompat } = require('./openai-compat.js');   // /v1/* OpenAI-compatible surface (external harness ingress)
@@ -185,6 +201,7 @@ const { makeSseHub, runTeeView } = require('./channels/sse.js');
 // its replay-nonce inbox is a durable JSONL sibling of the other ledgers.
 const { makeRouter } = require('./routing/router.js');
 const { makeChainRunner, effectiveLimits: chainEffectiveLimits } = require('./routing/chain.js');
+const { makeStepTest } = require('./routing/steptest.js');   // the conveyor STEP-THROUGH TEST engine (/api/routing/steptest)
 const { makeLineSpend } = require('./routing/line-spend.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
 const { makeConnectorManager } = require('./mcp/manager.js');
 const { makeHttpTransport } = require('./mcp/transport.http.js');
@@ -4415,11 +4432,17 @@ let connectorOauth = connectorState.oauth;
 /* Publisher-owned Desktop registration wins for new sign-ins. Keep launch configuration out of the
    shared OAuth-client cache; old grants retain their own client for refresh. Legacy Web clients remain readable. */
 const GOOGLE_OAUTH_AS = 'https://accounts.google.com';
-const googleConnectorDeferred = cfg => googleClientConfig.RELEASE_DEFERRED && !!cfg &&
-  !(googleClientConfig.SELECTED_FILES_ENABLED && googleClientConfig.isSelectedFiles(cfg)) &&
-  (cfg.googleApi || cfg.transport !== 'stdio' && googleClientConfig.isWorkspaceUrl(cfg.url));
+// Per-service release: each Google service opens on its own verification tier (mcp/google-client.js SERVICES).
+const googleConnectorDeferred = cfg => googleClientConfig.connectorDeferred(cfg);
+const googleDeferredMessage = cfg => googleClientConfig.deferredMessage(cfg);
 const GOOGLE_DESKTOP_CLIENT = googleClientConfig.loadDesktopClient({ env: process.env,
   readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') });
+// EARLY ACCESS is a publisher build flag carried in the bundled registration (mcp/google-client.js). Only ever
+// turned ON here — a dev or public build has no staged flag and keeps the per-service release map.
+if (googleClientConfig.loadEarlyAccess({ readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') })) {
+  googleClientConfig.EARLY_ACCESS = true;
+  console.log('  · Google early access build: every Google service is open before Google verification (unverified-app warning, 100-user cap)');
+}
 const GOOGLE_OAUTH_ENV_CLIENT = (() => {
   const clientId = String(process.env.STARNET_GOOGLE_OAUTH_CLIENT_ID || '').trim();
   const clientSecret = String(process.env.STARNET_GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
@@ -4543,7 +4566,7 @@ function mcpStdioIsolationError(cfg) {
 const connectors = makeConnectorManager({
   makeTransport: (cfg) => {
     if (connectorStorageError) throw new Error(connectorStorageError);
-    if (googleConnectorDeferred(cfg)) throw new Error(googleClientConfig.DEFERRED);
+    if (googleConnectorDeferred(cfg)) throw new Error(googleDeferredMessage(cfg));
     if (cfg && cfg.transport === 'http' && googleApiTransport.productForUrl(cfg.url)) return googleApiTransport.makeGoogleTransport(cfg);
     if (!cfg || cfg.transport !== 'stdio') return makeHttpTransport(cfg);
     const aid = String(cfg.agentId || '');
@@ -4654,8 +4677,9 @@ function classifyOauthRefreshError(msg) {
   return 'network';   // fetch failed / timed out / DNS / connection reset / private-host refusal — the AS never answered
 }
 async function ensureConnectorOauthToken(id, force) {
-  if (googleConnectorDeferred(connectorConfigs.find(c => c && c.id === id))) {
-    return { token: '', refreshError: { kind: 'unavailable', message: googleClientConfig.DEFERRED } };
+  const deferredCfg = connectorConfigs.find(c => c && c.id === id);
+  if (googleConnectorDeferred(deferredCfg)) {
+    return { token: '', refreshError: { kind: 'unavailable', message: googleDeferredMessage(deferredCfg) } };
   }
   const t = connectorOauth.byId[id];
   if (!t || !t.accessToken) return { token: '', refreshError: null };
@@ -4724,7 +4748,7 @@ async function configureConnectorCfg(cfg, options) {
   if (googleConnectorDeferred(cfg)) {
     // Runtime-only suspension. Never write enabled:false over the owner's saved preference or grant.
     await connectors.configure(cfg.id, Object.assign({}, cfg, { enabled: false, token: '', tokenProvider: null }), options);
-    return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleClientConfig.DEFERRED };
+    return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleDeferredMessage(cfg) };
   }
   if (cfg && cfg.transport === 'stdio' && cfg.enabled !== false &&
       !(Array.isArray(cfg.missingFields) && cfg.missingFields.length) && !(options && options.deferConnect)) {
@@ -9259,6 +9283,10 @@ const GENERIC_CHANNEL_RX = {
   status: /^\/api\/channels\/(slack|matrix|signal)\/status$/
 };
 // multi-bot telegram: add a new agent-bound bot (token probe via getMe), and per-bot resume/disconnect.
+// STEP-THROUGH TEST (declared ahead of ROUTES and the E-STOP quiesce, which both read them): the /:id[/verb]
+// route family, and the lazy engine singleton (one per station, built on first use — a restart reloads its file).
+const STEPTEST_RX = /^\/api\/routing\/steptest\/([A-Za-z0-9_-]{1,80})(?:\/(continue|rerun|rewind|stop|pause))?(?:\?.*)?$/;
+let stepTest = null;
 const TG_BOT_RX = {
   act: /^\/api\/channels\/telegram\/bots\/(\d+)\/(connect|disconnect)$/,
   owner: /^\/api\/channels\/telegram\/bots\/(\d+)\/owner\/(pair|revoke)$/
@@ -9517,6 +9545,11 @@ const ROUTES = [
   // job through the armed line. Keeping discovery separate means probing can never spend or dispatch.
   { m: 'GET', exact: '/api/routing/sample', h: handleRoutingSampleStatus },
   { m: 'POST', exact: '/api/routing/sample', h: handleRoutingSample },
+  // STEP-THROUGH TEST (2026-09-22): GET is the active-or-latest session (the panel's feature probe + poll);
+  // POST starts one; /:id answers one session and /:id/<verb> drives it. Every refusal 409, never 404.
+  { m: 'GET', qsplit: '/api/routing/steptest', h: handleStepTestLatest },
+  { m: 'POST', exact: '/api/routing/steptest', h: handleStepTestStart },
+  { m: ['GET', 'POST'], rx: STEPTEST_RX, h: handleStepTestId },
   { m: 'GET', exact: '/api/budget/status', h: handleBudgetStatus },
   { m: 'GET', qsplit: '/api/credits', h: handleCredits },   // 404s (no surface) unless managed credits are configured
   { m: 'GET', qsplit: '/api/credits/linkable', h: handleCreditsLinkable },   // {available} — is device linking offered (STARNET_CLOUD_URL set + not already configured)?
@@ -10037,7 +10070,7 @@ function quiesceForProcessFault() {
     });
     const tgBotInflights = [...telegramBots.values()].map((w) => (w && w.hub && w.hub._internals) ? w.hub._internals.inflight : null);
     const devInflight = (devHub && devHub._internals) ? devHub._internals.inflight : null;
-    killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight);
+    killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null);
   });
   contain('groups', () => groupSessions && groupSessions.halt && groupSessions.halt());
   contain('subagents', () => subagents && subagents.interruptAll && subagents.interruptAll());
@@ -10402,6 +10435,129 @@ async function handleRoutingSample(req, res) {
     sampleInFlight = null;
     sampleLineScope = null;
   }
+}
+
+/* ---- THE STEP-THROUGH TEST (conveyor, Andrew's ruling 2026-09-22) — /api/routing/steptest[/:id[/verb]].
+
+   Run your OWN job through a real work line and PAUSE after each dock: see the exact handoff the next dock
+   would get, edit it, re-run the step, rewind, change where it stops, or stop. "Try this step" is the same
+   engine with {single:true}. The engine (routing/steptest.js) holds only the pause and its bookkeeping; every
+   hop decision is the chain runner's own (hopTurn / loopDecision / preHopRefusal / effectiveLimits) and every
+   routing read is the router's. Each dock runs exactly like a chain hop of the SAMPLE hub: the dock's roster
+   run config (sampleRunConfigFor), its bay's isolated station (router.stationFor), its standing brief (entry:
+   system context via hub.dockSystem; later docks: the handoff turn), surface:'autonomous' with NO
+   unattendedGrants (the chain-grants law — the body cannot smuggle authority), recorded under the session's
+   own streamId so the runs are scoped and real cost lands in the ledger like any run. Contract: every refusal
+   409 {ok:false,error}; 400 only for unparseable JSON; never 404 for a known route. The frontend POLLS GET
+   while a session runs — no new event names (agent.run.* still fire from runOnce, so agents walk to their
+   desks). Sessions persist to steptest.sessions.json (last 10) through the durable single-file helpers. ---- */
+const STEPTEST_FILE = path.join(WORKSPACES, 'steptest.sessions.json');
+const STEPTEST_PERSONA = 'You are an agent aboard the STARNET station. The Commander is STEP-TESTING a work line: they sent their own '
+  + 'job through it and are watching each stage\'s output before it moves on. Do your stage of the work directly and '
+  + 'report the result clearly.';
+function stepTestLabel(agentId) { const r = agentRoster.get(String(agentId || '')); return (r && r.name) || null; }
+async function stepTestRunDock(h) {
+  let cfg = null;
+  try { cfg = sampleRunConfigFor(h.agentId); } catch (e) { return { text: '', usd: 0, error: 'target agent configuration failed: ' + ((e && e.message) || e) }; }
+  if (!cfg || cfg.ok === false) return { text: '', usd: 0, error: (cfg && cfg.error) || ('target agent ' + h.agentId + ' is not configured') };
+  if (!cfg.model || (!cfg.configured && !cfg.key)) return { text: '', usd: 0, error: 'no provider/model is configured for ' + h.agentId + ' — connect a provider and set a model first' };
+  const persona = cfg.system || STEPTEST_PERSONA;
+  let brief = null;
+  if (h.entry) { try { brief = router.stageBrief(h.agentId); } catch (e) { failNote('steptest.brief', e); brief = null; } }
+  const system = h.entry ? dockSystem(persona, brief, true) : persona;
+  const runId = crypto.randomUUID();
+  const st = { buf: '', err: null, usd: 0, tools: 0 };
+  const sink = (name, payload) => {
+    let p; try { p = redact(payload); } catch (_) { p = payload; }
+    if (name === 'agent.token') st.buf += (p && p.delta) || '';
+    else if (name === 'agent.tool_call') { st.buf = ''; st.tools++; }
+    else if (name === 'agent.run.error') st.err = (p && p.message) || 'run error';
+    else if (name === 'capdenied') st.err = st.err || ('no ' + ((p && p.need) || 'capability') + ' — ' + ((p && p.reason) || ''));
+    else if (name === 'agent.run.end') { if (p && typeof p.usd === 'number' && isFinite(p.usd)) st.usd = Math.max(st.usd, p.usd); }
+  };
+  let station = null;
+  try { station = router.stationFor(h.agentId); } catch (e) { failNote('steptest.station', e); station = null; }
+  const t0 = Date.now();
+  try {
+    await runOnce({
+      key: cfg.key, model: cfg.model, provider: cfg.provider, baseUrl: cfg.baseUrl || cfg.base_url || '',
+      reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
+      messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
+      runId, trigger: 'event', streamId: h.streamId,
+      initialTaint: h.entry ? null : 'upstream agent output',
+      surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
+      station: station || undefined,
+      taskKey: 'steptest:' + h.sessionId + ':' + h.agentId, taskSource: 'sample',
+      handoffEdited: h.edited === true   // the run row says the owner edited what this dock was handed
+    });
+  } catch (e) { st.err = st.err || ('run failed: ' + ((e && e.message) || e)); }
+  return { text: st.buf, usd: st.usd, tools: st.tools, runId, ms: Date.now() - t0, error: st.err };
+}
+function getStepTest() {
+  if (stepTest) return stepTest;
+  stepTest = makeStepTest({
+    runDock: stepTestRunDock,
+    plan: {
+      get: () => router.getPlan(),
+      step: (a, ctx) => router.chainStep(a, ctx),      // CONTINUE: the executor's own counter-advancing read
+      peek: (a, ctx) => router.chainPeek(a, ctx),      // PREVIEW: the same read, no splitter moves
+      // the entry dock: the SAME line-scoped unaddressed dispatch the sample route takes (one-resolver law), and
+      // only a dock the line's own INBOX feeds counts as having ridden in through its door
+      entryDock: (line, text) => {
+        const a = router.resolveTarget({ tag: Classify.getTag ? Classify.getTag(text) : undefined, text, lineId: line });
+        return (a && router.lineOriginFor(a) === line) ? a : null;
+      },
+      lineOf: (a) => router.lineOfAgent(a),
+      stageBrief: (a) => router.stageBrief(a),
+      loopGateAfter: (a, l) => router.loopGateAfter(a, l),
+      lineLimits: (l) => router.lineLimits(l),
+      shipsToOutbox: (a) => router.chainShipsToOutbox(a)
+    },
+    preflight: (agentId) => {
+      const c = sampleRunConfigFor(agentId);
+      if (!c || c.ok === false) return (c && c.error) || ('target agent ' + agentId + ' is not configured');
+      if (!c.model || (!c.configured && !c.key)) return 'no provider/model is configured for headless runs — connect a provider and set a default model first.';
+      return null;
+    },
+    poolCap: () => (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null,
+    daySpend: lineSpend,   // test spend is real line spend: it lands in the same per-line day ledger the executor reads
+    store: {
+      load: () => loadResilient(STEPTEST_FILE, 'steptest'),
+      save: (v) => saveResilient(STEPTEST_FILE, v)
+    },
+    getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),   // the SAME classifier a FILTER routes by
+    label: stepTestLabel,
+    now: () => Date.now(),
+    newId: () => 'st_' + crypto.randomUUID().slice(0, 12)
+  });
+  return stepTest;
+}
+function stepTestJson(res, r) {
+  res.writeHead(r && r.ok ? 200 : 409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(r && r.ok ? { ok: true, session: r.session } : { ok: false, error: String((r && r.error) || 'refused') }));
+}
+async function stepTestBody(req, res) {
+  let raw = '';
+  try { raw = await readBody(req, 1 << 20); } catch (_) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'bad body' })); return null; }
+  if (!raw || !raw.trim()) return {};
+  let body = null;
+  try { body = JSON.parse(raw); } catch (_) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'bad json' })); return null; }
+  return (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+}
+function handleStepTestLatest(_req, res) { stepTestJson(res, getStepTest().get(null)); }
+async function handleStepTestStart(req, res) {
+  const body = await stepTestBody(req, res); if (!body) return;
+  stepTestJson(res, getStepTest().start(body));
+}
+async function handleStepTestId(req, res, gm) {
+  const id = gm[1], verb = gm[2] || '';
+  const st = getStepTest();
+  if (req.method === 'GET') return stepTestJson(res, verb ? { ok: false, error: 'use POST for ' + verb } : st.get(id));
+  if (!verb) return stepTestJson(res, { ok: false, error: 'POST needs a verb: continue, rerun, rewind, stop or pause' });
+  const body = await stepTestBody(req, res); if (!body) return;
+  const r = verb === 'continue' ? st.continue(id, body) : verb === 'rerun' ? st.rerun(id)
+    : verb === 'rewind' ? st.rewind(id, body) : verb === 'stop' ? st.stop(id) : st.pause(id, body);
+  stepTestJson(res, r);
 }
 
 /* ---- GET /api/budget/status — the live spend pools (day + global) vs their caps, plus session resume headroom.
@@ -11201,7 +11357,7 @@ async function handleToolsetToggle(req, res) {
    protected sibling file, and NEVER echoed back (list/status carry `hasToken` only, never the value). ---- */
 function connectedConnectorSnapshot() {
   return connectors.list().map(c => googleConnectorDeferred(connectorConfigs.find(cfg => cfg.id === c.id) || c)
-    ? Object.assign({}, c, { releaseDeferred: true, signInAvailable: false, detail: googleClientConfig.DEFERRED,
+    ? Object.assign({}, c, { releaseDeferred: true, signInAvailable: false, detail: googleDeferredMessage(connectorConfigs.find(cfg => cfg.id === c.id) || c),
       oauth: !!connectorConfigs.find(cfg => cfg.id === c.id)?.oauth, oauthAuthorized: false,
       credentialSaved: !!connectorOauth.byId[c.id]?.accessToken })
     : c && c.oauth
@@ -11295,9 +11451,13 @@ function handleConnectorCatalog(req, res) {
     if (e.staticOauth) e.needsClient = !connectorOauthClient(e.staticOauth.authorizationServer).clientId;
     if (e.googleApi) {
       e.releaseDeferred = googleConnectorDeferred(e);
+      if (!e.releaseDeferred && googleClientConfig.EARLY_ACCESS === true && !googleClientConfig.isSelectedFiles(e)) {
+        e.earlyAccess = true;
+        e.blurb = 'Early access — not yet verified by Google; Google shows a warning when you sign in. ' + e.blurb;   // catalog entries are fresh clones per request
+      }
       if (e.releaseDeferred) e.blurb = 'Planned for a later update. ' + e.blurb.replace(/^Planned for a later update\. /, '').replace(' Sign in with Google to connect your account.', '');
       e.signInAvailable = !connectorStorageError && !e.releaseDeferred && !e.needsClient && (!googleClientConfig.isSelectedFiles(e) || connectorVault.protected);
-      if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleClientConfig.DEFERRED : googleClientConfig.UNAVAILABLE);
+      if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleDeferredMessage(e) : googleClientConfig.UNAVAILABLE);
     }
   };
   payload.connectors.forEach(markNeedsClient);
@@ -11313,7 +11473,7 @@ async function handleConnectorOauthClient(req, res) {
   let body; try { body = JSON.parse(await readBody(req, 8192)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
   const entry = connectorCatalog.get(String(body.id || '').trim());
   if (!entry || !entry.staticOauth) return json(400, { error: 'not a pre-registered-client connector' });
-  if (googleConnectorDeferred(entry)) return json(503, { error: googleClientConfig.DEFERRED, code: 'google_release_deferred' });
+  if (googleConnectorDeferred(entry)) return json(503, { error: googleDeferredMessage(entry), code: 'google_release_deferred' });
   const as = entry.staticOauth.authorizationServer;
   const clientId = String(body.clientId || '').trim();
   const clientSecret = String(body.clientSecret || '').trim();
@@ -11340,7 +11500,7 @@ async function handleConnectorUpsert(req, res) {
   if (transport === 'http' && !url) return json(400, { error: 'a server URL is required' });
   const selectedFileToggle = googleClientConfig.isSelectedFiles(prev) && transport === 'http' && url === prev.url && oauth &&
     Object.keys(body).every(k => ['id', 'transport', 'enabled'].includes(k));
-  if (!selectedFileToggle && googleConnectorDeferred({ transport, url })) return json(503, { ok: false, saved: false, error: googleClientConfig.DEFERRED, code: 'google_release_deferred' });
+  if (!selectedFileToggle && googleConnectorDeferred({ transport, url })) return json(503, { ok: false, saved: false, error: googleDeferredMessage({ url }), code: 'google_release_deferred' });
   if (transport === 'stdio' && !command) return json(400, { error: 'a stdio command is required' });
   const agentId = String(body.agentId || (transport === 'stdio' ? (prev.agentId || '') : '')).trim();
   const cwd = transport === 'stdio' ? String(Object.prototype.hasOwnProperty.call(body, 'cwd') ? body.cwd : (prev.cwd || '')).trim() : '';
@@ -11519,7 +11679,7 @@ async function handleConnectorOauthStart(req, res) {
   const entry = target.entry;
   if (connectorStorageError) return json(503, { error: connectorStorageError, code: 'connector_storage_locked', signInAvailable: false });
   if (googleClientConfig.isSelectedFiles(entry) && !connectorVault.protected) return json(503, { error: 'Selected Google files requires encrypted credential storage in the StarNet desktop app.', code: 'connector_storage_required' });
-  if (googleConnectorDeferred(entry)) return json(503, { error: googleClientConfig.DEFERRED, code: 'google_release_deferred', signInAvailable: false });
+  if (googleConnectorDeferred(entry)) return json(503, { error: googleDeferredMessage(entry), code: 'google_release_deferred', signInAvailable: false });
   const rawAttempt = String(body.attemptId || '').trim();
   const attemptId = /^[A-Za-z0-9_-]{8,80}$/.test(rawAttempt) ? rawAttempt : crypto.randomBytes(12).toString('hex');
   if (connectorOauthAttempts.has(attemptId)) return json(409, { error: 'this sign-in attempt is already running', attemptId });
@@ -16340,7 +16500,10 @@ async function runOnceCore(o) {
   // gate, network classification, and the wire tool-list treat them exactly like a built-in. Never breaks a run.
   try {
     const room = station.rooms && station.agents && station.agents[agentId] && station.rooms[station.agents[agentId].room];
-    for (const def of connectors.toolDefsForObjects((room && room.objects) || [])) {
+    // Restricted-tier Google connectors (Gmail read/compose, whole-Drive) are withheld from StarNet Managed runs.
+    const projectableObjects = ((room && room.objects) || []).filter(ob => !ob || ob.objectType !== 'connector'
+      || googleRelayGuard().projectable(ob.connectorId || (ob.binding && ob.binding.connectorId), providerId));
+    for (const def of connectors.toolDefsForObjects(projectableObjects)) {
       registry.register(def, { provenance: 'connector' });
       if (resolved.tools.indexOf(def.name) < 0) resolved.tools.push(def.name);
       resolved.networkCaps[def.name] = true;
@@ -17955,7 +18118,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -19291,7 +19454,7 @@ function handleHalt(req, res) {
   // the DEV injector's hub too (SKYNET_DEV only, and null until something has used it). Its runs are REAL runs
   // that really spend, so an E-STOP that skipped them would leave live work the panel says it stopped.
   const devInflight = (devHub && devHub._internals) ? devHub._internals.inflight : null;
-  const halted = killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight);   // browser runs + ALL channel hub runs, in one kill (see sidecar/halt.js)
+  const halted = killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null);   // browser runs + ALL channel hub runs, in one kill (see sidecar/halt.js)
   let cronAborted = 0;
   try { cronAborted = cronDriver.abortAllLeases(); } catch (_) {}   // Phase 0: E-STOP also aborts in-flight cron runs (unattended spend)
   let beatAborted = 0;

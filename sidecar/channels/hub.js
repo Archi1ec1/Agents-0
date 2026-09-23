@@ -31,6 +31,14 @@
   const { note: failNote, swallow } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); }, swallow: function (tag) { return function (e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); }; } };
 
   const TASK_SUFFIX = ' The Commander has just messaged you a task — carry it out as best you can and report the result clearly.';
+  /* dockSystem(persona, brief, isTask) — the system context an ENTRY dock runs under: its persona, the dock's
+     standing brief (step editor — the SAME section header the chain handoff turn uses), and the task suffix.
+     Pure + exported so the conveyor step-through test composes the identical entry run (2026-09-22). */
+  function dockSystem(persona, brief, isTask) {
+    return persona
+      + (brief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(brief).slice(0, 2000) : '')
+      + (isTask ? TASK_SUFFIX : '');
+  }
   const DEFAULT_PERSONA = 'You are the Commander\'s AI agent, reachable over a messaging app. Address the user as "Commander", '
     + 'keep a spark of personality, and keep replies concise and chat-friendly. When given a task you have REAL tools '
     + '(web search/read, files, memory) — use them and report what you actually found.';
@@ -1595,9 +1603,7 @@
       // no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
       if (stageBriefFor) { try { dockBrief = stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
-      const system = persona
-        + (dockBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(dockBrief).slice(0, 2000) : '')
-        + (isTask ? TASK_SUFFIX : '');
+      const system = dockSystem(persona, dockBrief, isTask);
 
       // B5: if this agent runs at a bound BAY, its tools are that bay room's objects (resolveStation), not the
       // default office — so a routed agent's reach is exactly what the floor granted it. null -> office default.
@@ -2007,5 +2013,5 @@
     };
   }
 
-  return { makeChannelHub, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });
