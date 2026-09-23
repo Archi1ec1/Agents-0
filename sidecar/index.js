@@ -17810,7 +17810,12 @@ async function runOnceCore(o) {
   // the explicit Claude boundary precedes changing context, while runtime identity remains last
   // for generic providers that automatically reuse matching prefixes.
   const cacheSystemPrefix = (system || '') + toolNote + teamNote + manualBlock
-    + summarizeCapabilities(resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow() }) + skillBlock;
+    // A tool deferred as CERTAINLY unavailable (resolved.unavailable: no image connection, no Spotify token, no PTY...)
+    // is not a power this run has, even though it stays searchable. The ground-truth block must not claim it while the
+    // unavailable line above says it can't work. Connector tools deferred only for SIZE still work via tool_search.
+    + summarizeCapabilities((resolved.unavailable && Object.keys(resolved.unavailable).length)
+        ? Object.assign({}, resolved, { tools: resolved.tools.filter(n => !Object.prototype.hasOwnProperty.call(resolved.unavailable, n)) })
+        : resolved, { surface, ownerTrusted, unrestrictedHost: unrestrictedHostNow() }) + skillBlock;
   const taskSystem = FinishLine.append(cacheSystemPrefix + runtimeSkillBlock
     + preloadedSkillBlock + serviceKeysBlock + taskIntentNote + directDomainBlock + journeyBlock
     + deliverableNote + runtimeBlock, { isTask, internal, tools: resolved.tools });
