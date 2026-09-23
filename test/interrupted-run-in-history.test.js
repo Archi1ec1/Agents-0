@@ -154,7 +154,10 @@ function seedJournals(ws) {
     A.eq([served(rows, 'torn-int')[0].recoveryStatus, served(rows, 'torn-int')[0].turns], ['recoverable', 3], 'a torn-tail interrupted run is listed as recoverable from its valid prefix');
     A.eq(served(rows, 'forensic-int')[0].recoveryStatus, 'forensic', 'a damaged journal is listed as forensic');
     A.eq(served(rows, 'finished-run').length, 0, 'a transcript-acknowledged finished run is never listed as interrupted');
-    A.ok(!fs.existsSync(path.join(journalDir, _internals.runFileName('finished-run'))), 'the boot scan finished that run\'s interrupted retirement');
+    // The boot scan retires journals in the background, one per tick, in its own order — the interrupted rows above can
+    // be served before it reaches this one. Wait (same bound) for the retirement instead of racing it.
+    const finishedRetired = await until(async () => !fs.existsSync(path.join(journalDir, _internals.runFileName('finished-run'))), 8000, 'finished-run retirement').then(() => true, () => false);
+    A.ok(finishedRetired, 'the boot scan finished that run\'s interrupted retirement');
     A.eq(served(rows, 'ended-run').map(r => r.reason), ['done'], 'a run whose outcome was already recorded keeps its one real row');
     const recoveries = (await request('GET', '/api/run-recoveries')).body.recoveries;
     const tornRow = recoveries.find(r => r.runId === 'torn-int');
