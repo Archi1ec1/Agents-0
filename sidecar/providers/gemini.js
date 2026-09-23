@@ -170,7 +170,9 @@
       // on EVERY turn, so one zod-authored connector would take out every Gemini run. Prune to the
       // documented field set here, at the wire seam that owns the constraint.
       const decl = { name, description: fn.description || '' };
-      const params = toolschema.forGemini(fn.parameters || {});
+      // sanitizeKeys first: property names every wire accepts; the model's args are mapped back to the declared
+      // names on the way in (see stream()).
+      const params = toolschema.forGemini(toolschema.sanitizeKeys(fn.parameters || {}));
       if (!toolschema.isEmptyObjectSchema(params)) decl.parameters = params;
       declarations.push(decl);
     }
@@ -315,7 +317,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const body = buildBody(req);

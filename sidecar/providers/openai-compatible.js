@@ -3,9 +3,9 @@
    It implements the same LLMProvider seam as OpenRouter and Codex. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./prices.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openaiCompatible = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.prices); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, prices) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./prices.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openaiCompatible = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.prices, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, prices, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -203,12 +203,17 @@
       Promise.resolve().then(() => loadCatalog()).catch(() => {});
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const dropped = droppedParams.get(String(req.model || ''));
       const skip = p => !!(dropped && dropped.has(p));
-      const body = { model: req.model, messages: provider.preserveClaudeContinuations(provider.repairToolPairs(req.messages || []), req.model), stream: true };
+      // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
+      const body = { model: req.model, messages: provider.preserveClaudeContinuations(provider.prepareWireMessages(req.messages || [], 'chat'), req.model), stream: true };
       if (includeUsage && !skip('stream_options')) body.stream_options = { include_usage: true };
       const explicitMax = Math.floor(Number(req.max_tokens || req.maxTokens || 0)) || 0;
       // Only the host's explicit casual-turn classification selects this cap. No-tool auxiliary
@@ -218,7 +223,9 @@
       const outputCap = Number.isFinite(explicitMax) && explicitMax > 0 ? explicitMax : defaultCap;
       if (outputCap > 0 && !skip('max_tokens')) body.max_tokens = outputCap;
       if (req.tools && req.tools.length) {
-        body.tools = req.tools;
+        // Grammar-safe property keys on every tool, and the Moonshot dialect on a Kimi route (a strict 400 on the
+        // whole request otherwise). A well-formed catalog on any other route is req.tools itself, byte-identical.
+        body.tools = toolschema.wireTools(req.tools, { moonshot: toolschema.isMoonshotRoute(req.model, baseUrl) });
         if (!skip('tool_choice')) body.tool_choice = 'auto';
         /* parallel_tool_calls is deliberately OMITTED (endpoint default: enabled). Forcing `false` predates the
            loop's concurrent dispatch path and cost one full round trip per tool on every multi-read turn; the

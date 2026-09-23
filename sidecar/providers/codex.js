@@ -23,9 +23,9 @@
    before the error is surfaced. No renewToken injected = byte-identical to the old behavior. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.codex = factory(root.SK.providers.provider, root.SK.providers.errorClass); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.codex = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -161,7 +161,8 @@
       const fn = (item && item.function) || {};
       const name = fn.name;
       if (typeof name !== 'string' || !name.trim()) continue;
-      out.push({ type: 'function', name: name, description: fn.description || '', strict: false, parameters: fn.parameters || { type: 'object', properties: {} } });
+      // sanitizeKeys: property names every wire accepts; the model's args are mapped back on the way in (stream()).
+      out.push({ type: 'function', name: name, description: fn.description || '', strict: false, parameters: toolschema.sanitizeKeys(fn.parameters) || { type: 'object', properties: {} } });
     }
     return out.length ? out : null;
   }
@@ -208,7 +209,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       const body = buildBody(req);
       let res;
       try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }

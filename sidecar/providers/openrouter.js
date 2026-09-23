@@ -11,9 +11,9 @@
    price catalog. With it, the final chunk carries the authoritative billed cost cost.js prefers. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openrouter = factory(root.SK.providers.provider, root.SK.providers.errorClass); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openrouter = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -211,7 +211,11 @@
       Promise.resolve().then(() => loadCatalog()).catch(() => {});
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       maybeRewarmCatalog();
       // usage.include asks OpenRouter to return the real billed `cost` in the final usage chunk (opt-in for
       // streaming). Without it tokens still tally but usd stays 0 unless priceOf(model) resolves — so SPEND
@@ -219,10 +223,14 @@
       const meta = findModel(req.model);
       const allowed = reasoningEffortsForModel(req.model, meta);
       const effort = clampReasoningEffortForModel(req.model, req.reasoningEffort || reasoningEffort, meta);
-      const body = { model: req.model, messages: applyCacheControl(preserveClaudeContinuations(repairToolPairs(req.messages), req.model), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
+      // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
+      const body = { model: req.model, messages: applyCacheControl(preserveClaudeContinuations(provider.prepareWireMessages(req.messages, 'chat'), req.model), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
       if (effort !== 'none' || allowed.length > 1) body.reasoning = { effort };
       if (req.tools && req.tools.length) {
-        body.tools = req.tools;
+        // Grammar-safe property keys on every tool (OpenRouter fronts Anthropic/Bedrock, which 400 the whole request
+        // on one bad key), and the Moonshot dialect for a moonshotai/* model. A well-formed catalog on any other
+        // model is req.tools itself, byte-identical.
+        body.tools = toolschema.wireTools(req.tools, { moonshot: toolschema.isMoonshotRoute(req.model) });
         body.tool_choice = 'auto';
         /* parallel_tool_calls is deliberately OMITTED (provider default: enabled). It was forced `false` in the
            MVP "to keep the visualization linear" — a decision made BEFORE the loop grew its concurrent dispatch

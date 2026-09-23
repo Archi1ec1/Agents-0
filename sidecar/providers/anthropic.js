@@ -291,7 +291,9 @@
       out.push({
         name,
         description: fn.description || '',
-        input_schema: toolschema.normalize(fn.parameters || { type: 'object', properties: {} })
+        // sanitizeKeys first: a property key outside ^[a-zA-Z0-9_.-]{1,64}$ 400s the WHOLE request here (the
+        // model's args are mapped back to the declared names on the way in — see stream()).
+        input_schema: toolschema.normalize(toolschema.sanitizeKeys(fn.parameters || { type: 'object', properties: {} }))
       });
     }
     return out.length ? out : null;
@@ -486,7 +488,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const body = buildBody(req);
