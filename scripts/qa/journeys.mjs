@@ -112,6 +112,14 @@ const WIN = process.env.SKYNET_SHOT_SIZE || '1440,900';
 const KEEP = process.argv.includes('--keep');
 const SCRATCH = join(OUT_DIR, '_seed-workspace');
 const PROFILE = join(OUT_DIR, '_profile');
+// A FRESH BROWSER PER RUN (2026-09-23): the end-of-run wipe below fails silently while Chrome still holds
+// the profile, and a surviving profile carries a dirty `starnet.save` that cloudsave.reconcile() pushes over
+// the fresh seed (the audit gate inherited a placed prop every Guardian hour). Wipe before launch; fail loud.
+function freshProfile(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 const ONLY = (() => {
   const i = process.argv.indexOf('--only');
   return i >= 0 && process.argv[i + 1] ? new Set(process.argv[i + 1].split(',').map(s => s.trim().toUpperCase())) : null;
@@ -1052,7 +1060,7 @@ async function main() {
     JOURNEY_API_TOKEN = token;
   } catch (_) {}
 
-  const { proc: chromeProc, chrome } = launchChrome({ cdpPort: CDP_PORT, win: WIN, profileDir: PROFILE });
+  const { proc: chromeProc, chrome } = launchChrome({ cdpPort: CDP_PORT, win: WIN, profileDir: freshProfile(PROFILE) });
   proc = chromeProc;
   proc.on('error', (e) => { console.error('chrome spawn error', e); });
   console.log(`chrome: ${chrome}\ntarget: ${APP_URL}`);
