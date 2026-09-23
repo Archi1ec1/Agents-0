@@ -77,6 +77,27 @@
     return '';
   }
 
+  /* WHY THE HOST STOPPED A REGISTRY WORKER (Step 2 F2/F3). subagents.js aborts a worker's own controller with a
+     coded reason: 'parent_cancelled' (the run that started it was cancelled) or 'worker_stalled' (the liveness
+     check saw no progress). The run itself only knows it was cancelled; the row the lead receives must say which,
+     so a stalled worker never reads as a Commander stop and neither reads as finished work. '' = not a host stop. */
+  function hostStopCode(signal) {
+    const r = signal && signal.aborted ? signal.reason : null;
+    const code = r && typeof r === 'object' ? String(r.code || '') : '';
+    return (code === 'parent_cancelled' || code === 'worker_stalled') ? code : '';
+  }
+  function hostStopRow(code, partial) {
+    return {
+      reason: code === 'worker_stalled' ? 'stalled' : 'cancelled',
+      result: (partial ? partial + '\n\n' : '')
+        + (code === 'worker_stalled'
+          ? '[STOPPED — this worker made no progress (no tokens, tool activity or cost) for longer than the liveness threshold, so the host stopped it'
+          : '[STOPPED — the run that started this worker was cancelled, so the host stopped the worker too')
+        + (partial ? '; the text above is its PARTIAL work' : ' before it returned any text')
+        + '. Do not present it as complete.]'
+    };
+  }
+
   function resultSchemaOf(raw) {
     if (raw == null) return {ok:true,schema:null};
     if (!schemaLib) return {ok:false,error:'Result contract validator is unavailable'};
@@ -573,7 +594,9 @@
           if (!subagents || typeof subagents.start !== 'function') return { content: 'background subagents unavailable (no subagent manager)', summary: 'error' };
           const started = jobs.map(job => {
             if (job.error) return { agentId: job.agentId, reason: 'error', result: job.error };
-            return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema }, async (h) => {
+            // parentRunId: a CANCELLED lead run cancels this worker too (subagents.cancelChildren); a lead that ends
+            // normally leaves it running — outliving the call is what background:true is for.
+            return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema }, async (h) => {
               const r = await runWorker(job, { runId: h.runId, signal: h.signal, emit: h.emit, steer: h.steer });
               return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd || 0,
                 structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts };
@@ -736,8 +759,17 @@
                 steer: h.steer
               });
             } catch (e) {
-              const r = { label, agentId: ephemeralId, reason: 'error', result: 'subagent run failed: ' + ((e && e.message) || e), usd: 0 };
-              settle(r); return { status: 'error', reason: 'error', result: r.result, usd: 0 };
+              const stopped = hostStopCode(h.signal);
+              const r = stopped ? Object.assign({ label, agentId: ephemeralId, usd: 0 }, hostStopRow(stopped, ''))
+                : { label, agentId: ephemeralId, reason: 'error', result: 'subagent run failed: ' + ((e && e.message) || e), usd: 0 };
+              settle(r); return { status: 'error', reason: r.reason, result: r.result, usd: 0 };
+            }
+            // Stopped by the HOST (its parent run was cancelled, or the liveness check found it hung): say which,
+            // with whatever partial text it produced — never a clean-looking 'cancelled'/'done' row.
+            const hostStopped = hostStopCode(h.signal);
+            if (hostStopped) {
+              const r = Object.assign({ label, agentId: ephemeralId, usd: (result && result.usd) || 0 }, hostStopRow(hostStopped, result ? lastAssistant(result.messages) : ''));
+              settle(r); return { status: 'error', reason: r.reason, result: r.result, usd: r.usd };
             }
             if (!result) {
               const r = { label, agentId: ephemeralId, reason: 'refused', result: 'subagent could not start — the concurrency cap (STARNET_MAX_CONCURRENT_AGENTS) is full or a sign-in is needed. Try fewer at once.', usd: 0 };
@@ -781,7 +813,7 @@
             return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd,
               structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts };
           };
-          const view = subagents.start({ ...projectOptions(ctx), leadId, parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema }, runner);
+          const view = subagents.start({ ...projectOptions(ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema }, runner);
           return { label, view, done, started: true };
         };
 
@@ -987,7 +1019,8 @@
           error.precondition = { code: 'inspect_before_resume', requiredTool: 'team.subagents', requiredState: 'owned_subagent_identified' };
           throw error;
         }
-        const r = subagents.resume(rec.id, resumeRunnerFor(ctx));
+        // the resumed generation follows THIS run: cancelling it cancels the worker it restarted
+        const r = subagents.resume(rec.id, resumeRunnerFor(ctx), { parentRunId: (ctx && ctx.runId) || '' });
         if (!r.ok) {
           const error = new Error(String(r.error || 'background subagent is not resumable'));
           error.precondition = { code: 'subagent_not_resumable', requiredTool: 'team.subagents', requiredState: 'stale_or_interrupted_or_failed' };

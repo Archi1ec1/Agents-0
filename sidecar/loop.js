@@ -16,9 +16,9 @@
    typed error rather than a crash. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./providers/sanitize.js'), require('./providers/errorClass.js'), require('./output-continuation.js'), require('./recovery-policy.js'));
-  else { root.SK = root.SK || {}; root.SK.loop = factory(root.SK.providers && root.SK.providers.sanitize, root.SK.providers && root.SK.providers.errorClass, root.SK.outputContinuation, root.SK.recoveryPolicy); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (sanitize, errorClass, outputContinuation, recoveryPolicy) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./providers/sanitize.js'), require('./providers/errorClass.js'), require('./output-continuation.js'), require('./recovery-policy.js'), require('./loop-breaker.js'));
+  else { root.SK = root.SK || {}; root.SK.loop = factory(root.SK.providers && root.SK.providers.sanitize, root.SK.providers && root.SK.providers.errorClass, root.SK.outputContinuation, root.SK.recoveryPolicy, root.SK.loopBreaker); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (sanitize, errorClass, outputContinuation, recoveryPolicy, loopBreaker) {
   'use strict';
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('./failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
@@ -41,6 +41,9 @@
   const preStreamSpend = recoveryPolicy && typeof recoveryPolicy.preStreamSpend === 'function'
     ? recoveryPolicy.preStreamSpend
     : (() => ({ rungs: 0, waitedMs: 0 }));
+  const isIdleStall = recoveryPolicy && typeof recoveryPolicy.isIdleStall === 'function'
+    ? recoveryPolicy.isIdleStall
+    : (() => false);
 
   function summarize(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) : s; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) + '…' : s; }
@@ -714,6 +717,21 @@
     const lgFails = new Map();    // signature (name\0args) -> failure count
     const lgWarned = new Set();   // signatures already nudged (the warn fires once)
     let lastDeterministicCheck = '';   // immediately-prior successful check turn; any other tool turn clears it
+    /* NO-PROGRESS LOOP BREAKER (Step 2, 2026-09-22 Hermes audit) — sidecar/loop-breaker.js. Three stuck shapes the
+       guard above cannot see because no two calls are byte-identical: calls to tools that do not exist, one tool
+       failing over and over with varying arguments, and a non-read call returning the identical result turn after
+       turn. Warnings on every surface; hard stops only where nobody is watching:
+         · o.unattended === true is the HOST's declaration that no Commander is watching this run live (index.js
+           derives it from the run surface). Absent/false = interactive = warn-only for (b)/(c), so a caller that
+           does not pass it can never be hard-stopped by them.
+         · unknown-tool strikes (3 turns whose every call named a tool that does not exist) stop on every surface.
+         · o.progressTracked(wireName) — the host's evidence-progress guard already owns those calls (reads,
+           browser, tool.search); the no-progress detector leaves them to it.
+       limits.failureBreaker === false disables all three; an object overrides the thresholds (loop-breaker DEFAULTS).
+       This is loop DETECTION, not a quota: nothing counts spend, turns or calls in aggregate. */
+    const breaker = (loopBreaker && typeof loopBreaker.makeLoopBreaker === 'function')
+      ? loopBreaker.makeLoopBreaker({ unattended: o.unattended === true, limits: limits.failureBreaker, isTracked: (typeof o.progressTracked === 'function') ? o.progressTracked : null })
+      : null;
 
     // CONTINUATION GUARD (default ON): some models (Kimi K3, live-caught 2026-07-17) end a turn by ANNOUNCING
     // the next action ("Reading the full main.js now — then fixing immediately.") with finish_reason 'stop' and
@@ -1291,6 +1309,12 @@
       // deliberately tighter, because a truncation costs a FULL generation to re-run.
       let truncRetries = 0;
       const MAX_TRUNC_RETRIES = 1;
+      /* A STALLED PROVIDER IS NOT A BLIP (Step 2 F4). The idle watchdog (providers/provider.js, 300s by default)
+         turns a byte-silent stream into a retryable `timeout`, and the ladder retried it on every rung: up to 7
+         attempts x 300s = ~37 minutes of silence before the run said anything. Two CONSECUTIVE idle stalls on the
+         same provider/model now end the ladder (recovery-policy: fallback when one is configured, otherwise fail
+         'provider_stalled'). Any other failure class resets the count, and so does a fallback switch. */
+      let idleStalls = 0;
       while (true) {
         bookUsage(usage, usageModel);   // a re-entry after retry/compress/fallback: book the partial attempt BEFORE the reset
         acc.text = ''; acc.toolCalls = {}; acc.reasoning = []; streamedTextChunks = []; usage = null; lastFinishReason = null;
@@ -1348,12 +1372,14 @@
         const spent = preStreamSpend(streamErr);
         retriesUsed += spent.rungs;
         ladderWaitMs += spent.waitedMs;
+        idleStalls = isIdleStall(streamErr) ? idleStalls + 1 : 0;
         const sample = jitterSample();
         const decide = (canCompress, hasFallback) => providerRecovery({
           classification: cls, canCompress, hasFallback,
           recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
           preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted,
-          outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample
+          outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample,
+          idleStalls
         });
         let decision = decide(!!(context && summarize), fbIndex < fallbacks.length);
         if (decision.action === 'lower_output') {
@@ -1393,7 +1419,7 @@
                 if (m && m.role === 'assistant' && m.reasoning != null) { delete m.reasoning; reasoningDropped++; }
               }
             }
-            const fbPayload = { agentId, runId, fromModel: model, toModel: (fb.model || model), reason: cls.reason, rotate: !!cls.shouldRotateCredential };
+            const fbPayload = { agentId, runId, fromModel: model, toModel: (fb.model || model), reason: decision.reason === 'provider_stalled' ? 'provider_stalled' : cls.reason, rotate: !!cls.shouldRotateCredential };
             if (reasoningDropped) fbPayload.reasoningDropped = reasoningDropped;   // additive; schema declares no additionalProperties
             emit('provider.fallback', fbPayload);
             if (fb.credKey != null) activeCredKey = fb.credKey;   // the entry we switch TO becomes the live credential
@@ -1419,6 +1445,7 @@
             }
             armRetryDedupe(acc);
             recoveries++;
+            idleStalls = 0;   // a different provider/model starts its own stall count
             noteRecovery({ stage: 'provider_stream', action: 'fallback', reason: decision.reason, attempt: recoveries, model, delayMs: 0, rotate: decision.rotate });
             continue;
           }
@@ -1449,13 +1476,44 @@
           if (signal.aborted) break;   // a cancel during the backoff ends cleanly below
           continue;
         }
-        fatal = cls;                                 // unrecoverable / chain exhausted / retries spent
+        if (decision.reason === 'provider_stalled') {
+          // Name the stall honestly — which model, how many silent attempts, what the watchdog saw — so the
+          // Commander reads "the model stopped responding", not a generic timeout after half an hour.
+          fatal = Object.assign({}, cls, {
+            reason: 'provider_stalled', retryable: true,
+            message: 'model stalled: ' + idleStalls + ' consecutive attempts on ' + model + ' received no response bytes ('
+              + String((streamErr && streamErr.message) || 'idle timeout') + ') — stopped instead of waiting out the rest of the retry ladder. The provider may be down or overloaded; try again later or switch models.'
+          });
+        } else fatal = cls;                          // unrecoverable / chain exhausted / retries spent
         break;
       }
       if (fatal) {
         // A2 reconcile-on-fatal: if usage arrived before the stream failed, RECORD it before ending 'error' so the
         // ledger/spend reflect tokens the provider will bill — a fatal path must not silently drop billed usage.
         bookUsage(usage, usageModel);
+        /* STREAMED TEXT OUTLIVES A FATAL STREAM ERROR (H2, reference-harness parity). The Commander already read these
+           words live (agent.token), but the turn was never appended, so the durable transcript, result.messages and a
+           resumed run all acted as if the model had said nothing (E2E: a mid-stream 401 after streamed text left no
+           assistant row). Only on this FINAL fatal end — a retry/compress/fallback re-runs the turn and never lands
+           here, so a recovered stream leaves no fragment behind. The kept text is what was SHOWN: an earlier
+           attempt's text when a retry armed the dedupe and then produced nothing, else this attempt's (its novel
+           suffix is flushed first so COMMS and the record agree). The turn is provider-valid (text, no tool calls —
+           a half-streamed call is never kept) and says it is incomplete in its own content, in the bracketed
+           "[interrupted — …]" style the provider layer's pairing repair uses, because a transcript row has no other
+           place for that flag. A length-continuation already in flight is folded into one turn first. The live
+           surfaces keep their own error conventions (COMMS ⚠ row, openai-compat partial:true + failed): the marker is
+           not streamed as a token. */
+        const shownBefore = (dedupeAgainst != null && dedupeKeepFull) ? String(dedupeAgainst) : '';
+        emitContinuationText(acc, streamedTextChunks);
+        const partialText = String(acc.text || '').trim() ? String(acc.text) : shownBefore;
+        if (partialText.trim() || continuationParts.length) {
+          let tailPart = null;
+          if (partialText.trim()) { tailPart = assistantTurn(partialText, [], null); messages.push(tailPart); }
+          if (continuationParts.length) collapseContinuation(tailPart);
+          const kept = continuationParts.length ? continuationParts[0] : tailPart;
+          kept.content = String(kept.content == null ? '' : kept.content)
+            + '\n\n[response interrupted — ' + (fatal.reason ? 'provider error: ' + String(fatal.reason).slice(0, 60) : 'provider stream failed') + '; this answer is incomplete]';
+        }
         emit('agent.run.error', { agentId, runId, message: fatal.message || 'model call failed', transient: !!fatal.retryable });
         return end('error', { failureStage: 'provider_stream', failureCode: fatal.reason || 'provider_failure' });
       }
@@ -1909,6 +1967,7 @@
       else if (results.some(r => r && r.ok && !r.isError)) failureRecoveryPending = null;
 
       // (8) LOOP GUARD — break out of a run that keeps making the SAME failing tool call. Warn once, then stop.
+      const lgWarnedNow = new Set();   // wire names nudged this turn (the breaker's same-tool nudge stays quiet for them)
       if (LG_WARN || LG_STOP) {
         const sigOf = {};
         for (const c of calls) sigOf[c.id] = (c.name || '') + '\u0000' + (c.argsRaw || '');
@@ -1920,13 +1979,25 @@
           const nm = sig.split('\u0000')[0] || 'a tool';
           if (LG_STOP && n >= LG_STOP) {
             emit('agent.run.error', { agentId, runId, message: 'loop guard: ' + nm + ' failed ' + n + ' times with identical arguments — stopping a stuck loop', transient: false });
-            return end('error');
+            return end('error', { failureStage: 'tool_loop', failureCode: 'repeated_identical_failure' });
           }
           if (LG_WARN && n === LG_WARN && !lgWarned.has(sig)) {
             lgWarned.add(sig);
+            lgWarnedNow.add(vosKey(nm));
             messages.push({ role: 'system', content: '<loop_guard>You have called ' + nm + ' with the same arguments ' + n + ' times and it keeps failing. Do not repeat the identical call — change the arguments, try another approach, or stop and report the problem.</loop_guard>' });
           }
         }
+      }
+
+      // (9) NO-PROGRESS LOOP BREAKER — unknown tools, varying-argument failure streaks, identical successful polls.
+      // Runs after every result is appended and paired, so a stop leaves a provider-valid transcript behind.
+      if (breaker) {
+        const verdict = breaker.observe(calls, results, { loopGuardWarned: lgWarnedNow });
+        if (verdict.stop) {
+          emit('agent.run.error', { agentId, runId, message: verdict.stop.message, transient: false });
+          return end('error', { failureStage: verdict.stop.failureStage, failureCode: verdict.stop.failureCode });
+        }
+        for (const note of verdict.notes) messages.push({ role: 'system', content: note });
       }
     }
   }

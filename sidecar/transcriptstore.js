@@ -317,6 +317,57 @@
       return n;
     }
 
+    /* H2 RECOVERY RECONCILIATION — which recovered turns does the transcript ALREADY hold?
+       A recovery continuation starts from the run journal's provider-valid checkpoint of an interrupted run. The
+       interrupted run wrote its turns to this transcript as it went (per-turn persistence), but not necessarily
+       ALL of them: a hard kill can land between the journal checkpoint and the transcript write, a parallel tool
+       batch's results can be journaled but not yet checkpointed, and the recovery planner adds its own pairing
+       results for calls that never returned. Marking the whole recovered prompt persisted (the old rule) dropped
+       those rows forever; appending it all again would duplicate everything the source run did write.
+       markRecorded() marks exactly the recovered messages that `rows` (the source run's own transcript rows)
+       already prove durable, by IDENTITY rather than position — the source may have compacted, so the recovered
+       working set is not a positional copy of what it wrote: a tool result by its tool_call_id, an assistant
+       tool-call turn by its call ids, any other turn by role + stored (redacted, capped) content. Multiset:
+       each recorded row vouches for ONE message. Everything left unmarked is genuinely missing and is appended
+       by the next appendNewStrict — in order, strictly. System fences are marked (they are never dialogue). */
+    function callIdsKey(ids) { return ids.map(id => str(id).slice(0, 200)).join('\u0001'); }
+    function rowIdentity(r) {
+      if (!r || typeof r !== 'object') return '';
+      if (r.role === 'tool') return 'tool\u0000' + str(r.toolCallId);
+      if (r.role === 'assistant' && r.toolCalls) {
+        let ids = null;
+        try { const tc = JSON.parse(r.toolCalls); if (Array.isArray(tc) && tc.length) ids = tc.map(c => c && c.id); }
+        catch (e) { failNote('transcript.rowIdentity', e); }   // a capped/unparsable call list falls back to content
+        if (ids) return 'calls\u0000' + callIdsKey(ids);
+      }
+      return str(r.role) + '\u0000' + str(r.content);
+    }
+    function messageIdentity(m) {
+      if (m.role === 'tool') return 'tool\u0000' + str(m.tool_call_id).slice(0, 200);
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) return 'calls\u0000' + callIdsKey(m.tool_calls.map(c => c && c.id));
+      return str(m.role) + '\u0000' + buildEntry({ content: flattenContent(m.content) }).content;
+    }
+    function markRecorded(messages, recordedRows) {
+      if (!Array.isArray(messages)) return 0;
+      const vouch = new Map();
+      for (const r of (Array.isArray(recordedRows) ? recordedRows : [])) {
+        const k = rowIdentity(r);
+        if (k) vouch.set(k, (vouch.get(k) || 0) + 1);
+      }
+      let n = 0;
+      for (const m of messages) {
+        if (!m || typeof m !== 'object' || m[PERSISTED]) continue;
+        if (!ROLES.has(m.role) || m.role === 'system') { markPersisted([m]); continue; }
+        const k = messageIdentity(m);
+        const left = vouch.get(k) || 0;
+        if (!left) continue;
+        vouch.set(k, left - 1);
+        markPersisted([m]);
+        n++;
+      }
+      return n;
+    }
+
     // the recent dialogue for ONE workstream, oldest-first (ready to replay back into COMMS). We keep the LAST
     // `limit` turns of that stream (the most recent), then return them in chronological order.
     function history(streamId, o) {
@@ -364,7 +415,7 @@
     }
 
     return {
-      append, appendStrict, appendTurns, appendNew, appendNewStrict, markPersisted, history, reconstruct, search, streams, around,
+      append, appendStrict, appendTurns, appendNew, appendNewStrict, markPersisted, markRecorded, history, reconstruct, search, streams, around,
       all() { return rows.map(r => Object.assign({}, r)); },
       count() { return rows.length; },
       _internals: { normStream, SID_RE }

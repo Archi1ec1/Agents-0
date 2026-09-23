@@ -170,7 +170,9 @@
       // on EVERY turn, so one zod-authored connector would take out every Gemini run. Prune to the
       // documented field set here, at the wire seam that owns the constraint.
       const decl = { name, description: fn.description || '' };
-      const params = toolschema.forGemini(fn.parameters || {});
+      // sanitizeKeys first: property names every wire accepts; the model's args are mapped back to the declared
+      // names on the way in (see stream()).
+      const params = toolschema.forGemini(toolschema.sanitizeKeys(fn.parameters || {}));
       if (!toolschema.isEmptyObjectSchema(params)) decl.parameters = params;
       declarations.push(decl);
     }
@@ -303,7 +305,10 @@
       body.generationConfig = Object.assign({}, body.generationConfig, { thinkingConfig: cfg });
     }
     function buildBody(req) {
-      const converted = messagesToGemini(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages): a functionCall left unanswered mid-history (a
+      // run that died at the tool boundary) gets its functionResponse before the next turn, instead of being
+      // followed straight by user text. Gemini's wire carries no call ids (it pairs by position), so no id rewrite.
+      const converted = messagesToGemini(provider.prepareWireMessages(req.messages || [], 'gemini'));
       const body = { contents: converted.contents };
       if (converted.systemInstruction) body.systemInstruction = converted.systemInstruction;
       const tools = toGeminiTools(req.tools);
@@ -312,7 +317,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const body = buildBody(req);
@@ -339,7 +348,12 @@
       }
       function* emitFrom(j) {
         if (!j || typeof j !== 'object') return;
-        if (j.error) throw new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+        if (j.error) {
+          const err = new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+          err.body = j;   // {error:{code, status:'RESOURCE_EXHAUSTED'|…}} — errorClass reads the status code
+          err.ownMessage = true;
+          throw err;
+        }
         const candidates = Array.isArray(j.candidates) ? j.candidates : [];
         let usageEmittedForFrame = false;   // usage rides the done-carrying frame; emit it exactly once, BEFORE done
         for (let ci = 0; ci < candidates.length; ci++) {
@@ -464,12 +478,17 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
         catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('gemini http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js). The message above keeps only error.message, but the
+           classifier's decisive signal can be the canonical status ({error:{status:'RESOURCE_EXHAUSTED'}}); dropping
+           the body left errorClass reading prose. The message stays the adapter's own sentence (label + status —
+           what the UI routes on; err.ownMessage tells errorClass so); the body rides alongside for its code. */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

@@ -85,6 +85,7 @@ const { makeAutonomyLedger } = require('./autonomy-ledger.js');   // NS-0: durab
 const { makeArtifactCollector } = require('./artifacts.js');   // work-visibility: per-run "what did it produce" ledger
 const { makeCompletionEvidence } = require('./completion-evidence.js'); // structured effect proof; never guesses task completion
 const { makeRunExecutionState, toolBytesCapFor } = require('./run-execution-state.js'); // one lifecycle for per-run latches/counters/artifacts
+const { _internals: ProgressGuardInternals } = require('./tool-progress-guard.js');   // trackable(): which calls the evidence-progress guard owns (loop breaker hand-off)
 const { recoverToolResult } = require('./tool-recovery.js'); // bounded retry for host-trusted transient reads only
 const transcriptStoreModule = require('./transcriptstore.js');
 const { makeTranscriptStore } = transcriptStoreModule;
@@ -92,6 +93,7 @@ const { makeRunJournal, DISPATCH_BOUNDARY_MODEL } = require('./run-journal.js');
 const { makeAffinityIndex } = require('./agent-affinity.js');   // idle-life social graph: which agents the run log proves work together
 const RunRecovery = require('./run-recovery.js');
 const { makeSegmentedTranscriptIo } = require('./transcript-history.js');
+const { makeRunTranscript, recoveryBase } = require('./transcript-run.js');   // H2: a run's transcript rows land at the loop's durable boundaries, not only at run end
 const { makeSkillStore } = require('./skillstore.js');             // H4: per-agent owned skill library (singleton)
 const { makeCredPool } = require('./credpool.js');
 const { resolveTools } = require('./capability/resolve.js');
@@ -307,10 +309,11 @@ const slashActionsMod = require('./slash-actions.js');     // server-side execut
 const Recipes = require('../frontend/app/recipes.js');     // built-in mission recipes, also exposed as slash commands
 const { makeCheckpointStore } = require('./checkpoint-store.js');   // the shadow-git rollback net (ambient edge)
 const { makeShellTool, runCommand: shellRunCommand } = require('./tools/builtin/shell.js');   // the workbench capability: shell.exec (+ the shared spawn primitive the LOOP host-check reuses verbatim)
-const { makeShellBg } = require('./shellbg.js');                    // H2.2: singleton background-process manager
+const { makeShellBg, makeBgExitWaker } = require('./shellbg.js');   // H2.2: singleton background-process manager (+ h2 wake-on-exit)
 const { makeTerminalSessions } = require('./terminal-sessions.js');
 const { makeTerminalTools } = require('./tools/builtin/terminal.js');
 const { makeProcLedger } = require('./procledger.js');              // persistent child-PID ledger — boot sweep reaps force-kill orphans
+const { makeWin32ProcessTable } = require('./proctree.js');         // h2: bounded process-table snapshot (orphan walk + verified kills)
 const { makeInputGuard } = require('./inputguard.js');              // stuck cursor-confinement (ClipCursor) release — 2026-07-12 incident
 const { enforceSyntheticOnly, enforceRunAuthority, enforceEnabledToolsets, makeRunAuthority, runInputContext, impactOfTool, normalizeUnattendedGrants, backgroundOwnsLocalUrl, makeLoopbackListenerProbe } = require('./inputpolicy.js'); // per-run user-control authority + synthetic CDP policy
 const { makeEnvironmentManager, sanitizeChildEnv } = require('./environment.js');     // execution backend boundary (reference-harness-style)
@@ -671,6 +674,12 @@ const MAX_CONCURRENT_AGENTS = resolveKnob('MAX_CONCURRENT_AGENTS', 'maxConcurren
 const ORCH_PER_WORKER = num(ENV('BUDGET_PER_WORKER'), 0);
 // Optional per-worker tool-turn ceiling. 0 inherits the unlimited station policy.
 const ORCH_WORKER_MAX_ITERS = num(ENV('WORKER_MAX_ITERS'), 0);
+// Background-worker LIVENESS (Step 2 F3, subagents.js checkStalls): a worker that emits no progress (tokens, tool
+// calls/results, cost) for this long is stopped and marked stale. A no-progress check, NOT a duration cap — a worker
+// that keeps producing runs as long as it needs. While one of its tool calls is in flight the longer IN_TOOL window
+// applies (a build/test can be silent for minutes). 0 disables. Hermes parity: 450s idle / 1200s in-tool.
+const WORKER_STALL_MS = num(ENV('WORKER_STALL_MS'), 450000);
+const WORKER_STALL_IN_TOOL_MS = num(ENV('WORKER_STALL_IN_TOOL_MS'), 1200000);
 // ---- MANAGED CREDITS (opt-in, config-gated). The whole managed-credit path is INERT unless STARNET_CREDITS_URL
 // points at a credits backend: no payment client is built, admission stays pure BYOK, no STORE UI renders, and
 // /api/credits 404s (the honesty law — a control that does nothing is a bug). When wired, a managed account can
@@ -1311,6 +1320,12 @@ const transcriptIo = makeSegmentedTranscriptIo({
   onWarning: (message) => console.warn('[transcript] ' + message)
 });
 const transcriptStore = makeTranscriptStore({ io: transcriptIo, clock: { now: () => Date.now() }, redact });
+/* H2: runs whose transcript rows are being written per turn RIGHT NOW (runTranscript start → run-end drain). The rows
+   are durable the moment they land (a crash keeps them), but GET /api/transcript keeps the browser's pre-H2 view — a
+   run's rows appear when it ends — because COMMS already renders the live run from its own stream, and its canonical
+   merge would otherwise insert the in-flight intermediate turns next to the reply it pushes at run end (and a cron
+   session would take an intermediate note for the routine's output). A request for one run (?runId=) sees them. */
+const transcriptLiveRuns = new Set();
 // Active runs journal their provider-valid message and tool side-effect boundaries outside the agent fs jail.
 // Finished journals remain until the segmented transcript store acknowledges their final durable checkpoint;
 // this avoids deleting the only recovery copy after the legacy transcript writer's fail-open append.
@@ -1319,6 +1334,16 @@ const runJournal = makeRunJournal({ dir: RUN_JOURNAL_DIR, fs, path, clock: { now
 // Recovery is intentionally lazy. Thousands of unresolved/failed journals are audit evidence and
 // must not be discarded, but parsing all of them synchronously before server.listen made startup
 // proportional to lifetime failures. GET /api/run-recoveries pages through the durable files.
+// INTERRUPTED-RUN HISTORY (2026-09-22): the journal files present NOW — before this process can begin any run —
+// all belong to an earlier process (one sidecar per workspace). They are only LISTED here (a readdir, no parse);
+// scanInterruptedRuns() walks them in the background after listen and gives every unfinished one its single
+// 'interrupted' run-history row. See syncInterruptedRunHistory.
+let bootRunJournalFiles = [];
+try { bootRunJournalFiles = runJournal.listFiles(); }
+catch (e) { failNote('run-journal.boot-list', e); }
+// Continuations whose OWN journal durably recorded its transcript acknowledgement (runOnceCore -> finishAndRetire)
+// in this process. settleRunRecoveryContinuation consumes the proof: only then may the SOURCE journal retire.
+const continuationTranscriptAcks = new Set();
 
 // H4: the agent's OWNED skill library — per-agent named procedure documents, append-only + fsync'd, a SIBLING of
 // the fs jail (the agent's fs.* tools can't reach it). Singleton (persists across runs); redacted on write.
@@ -3908,18 +3933,41 @@ const chanEmit = (name, payload) => { try { return chanEmitValidated(name, redac
 // Persistent PID ledger + input guard (mouse-confinement incident, 2026-07-12): a desktop-shell stop is
 // TerminateProcess (uncatchable — see gracefulShutdown), so children recorded here are swept at the NEXT
 // boot, and a cursor confinement a dead child left stuck on the user's desktop is released.
-const procLedger = makeProcLedger({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'proc-ledger.json'), clock: { now: () => Date.now() }, log: (m) => console.log(m) });
+// h2 process supervision: ONE bounded (15s), fail-safe process-table snapshot shared by the boot sweep's orphan walk
+// and shell.bg.kill's confirmation (Windows; POSIX kills whole process groups and confirms with signal 0).
+const osProcessTable = process.platform === 'win32' ? makeWin32ProcessTable(execFile, { timeoutMs: 15000 }) : null;
+const procLedger = makeProcLedger({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'proc-ledger.json'), clock: { now: () => Date.now() }, log: (m) => console.log(m), processTable: osProcessTable });
 // Lazy: this starts no process at boot. A supported edit with an already-installed server is the first spawn;
 // every child is ledgered so the next boot can reap it after an uncatchable desktop TerminateProcess.
 lspManager = makeLspManager({ spawn: childSpawn, fs, fsp, pathMod: path, env: process.env, ledger: procLedger });
 const inputGuard = makeInputGuard({ log: (m) => console.log(m) });
 if (require.main === module) {
   // real host boot only (unit tests require() this file and must not probe/kill or touch the real cursor state)
-  procLedger.sweep().then(s => { if (s.examined) console.log('[proc-ledger] boot sweep: examined=' + s.examined + ' killed=' + s.killed + ' gone=' + s.gone + ' pid-reused=' + s.reused); }).catch(swallow('procledger.bootsweep'));
+  procLedger.sweep().then(s => {
+    if (!s.examined) return;
+    console.log('[proc-ledger] boot sweep: examined=' + s.examined + ' killed=' + s.killed + ' orphaned=' + s.orphaned + ' orphansKilled=' + s.orphansKilled
+      + ' gone=' + s.gone + ' survived=' + s.survived + (s.survived ? ' (pids ' + s.survivors.map(x => x.pid).join(',') + ')' : '')
+      + ' pid-reused=' + s.reused + ' killFailed=' + s.killFailed + ' unverified=' + s.treeUnverified
+      + (s.probeFailed ? ' PROBE-FAILED (nothing examined; receipts retained)' : '')
+      + (s.treeQueryFailed ? ' TREE-QUERY-FAILED (orphans of exited roots not examined; nothing killed on that basis)' : ''));
+  }).catch(swallow('procledger.bootsweep'));
   inputGuard.observe('boot').catch(() => {});
 }
 const appendDurableProcessOutput = entry => outputArtifacts.append(entry);
-const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput });
+/* WAKE ON EXIT (h2 process supervision, F4). A background process that exits on its own used to produce only a COMMS
+   line — the agent that started it was never told, so a crashed dev server sat silent until the agent happened to
+   look. When its OWNING agent has a live run, the exit note rides that run's steer buffer (the same seam as
+   POST /api/run/steer; the loop folds it in at its next step). No live run, a closed buffer (the loop already
+   ended — an honest 409), or a full one: the COMMS line stays the only signal, exactly as before. The most recently
+   started live run of that agent is the one told, so a note is never duplicated across runs (shellbg.js). */
+const wakeOwnerOnBgExit = makeBgExitWaker({ steer: steerBufs, runs: runs, runsMeta: runsMeta, log: (m) => console.log(m) });
+const shellBg = makeShellBg({ spawn: childSpawn, redact: redact, clock: { now: () => Date.now() }, newId: () => crypto.randomUUID(), onExit: (e) => chanEmit('shell.bg.exit', e), onExitNotice: wakeOwnerOnBgExit, maxPerAgent: 5, ledger: procLedger, spill: appendDurableProcessOutput, processTable: osProcessTable });
+if (require.main === module) {
+  // vouch every minute for bg children whose handle is still open, so a crash's orphan window covers children
+  // they start late (procledger.touch). One small ledger write per minute, only while bg processes run.
+  const bgLedgerHeartbeat = setInterval(() => { try { shellBg.touchLedger(); } catch (e) { swallow('shellbg.heartbeat')(e); } }, 60000);
+  if (bgLedgerHeartbeat && typeof bgLedgerHeartbeat.unref === 'function') bgLedgerHeartbeat.unref();
+}
 const EXECUTION_SETTINGS_FILE = path.join(WORKSPACES, 'execution-settings.json');
 const executionIdleDefault = Math.max(0, Math.min(1440, Number(process.env.STARNET_DOCKER_IDLE_MINUTES == null ? 60 : process.env.STARNET_DOCKER_IDLE_MINUTES) || 0));
 let executionSettings = (() => {
@@ -3938,6 +3986,7 @@ function saveExecutionSettings(next) {
 // receives the keys whose unattended grant is flipped ON, the SAME rule resolveForRequest enforces on
 // web_request. Host authority — it comes from the run, never from tool args.
 const executionEnvironmentDeps = { spawn: childSpawn, fs: fs, pathMod: path, root: WORKSPACES, bg: shellBg, redact: redact, clock: { now: () => Date.now() }, env: process.env,
+  ledger: procLedger,   // h2 F2: the LOCAL backend receipts foreground shell children for the boot orphan sweep
   serviceEnv: (surface) => serviceKeysMod.runEnv(serviceKeys, process.env, { reservedEnv: SERVICEKEYS_RESERVED_ENV, surface: surface }),
   idleCleanupMs: () => Number(executionSettings.idleCleanupMinutes || 0) * 60000,
   sshConfig: (agentId) => executionSettingsMod.targetFor(executionSettings, agentId) };
@@ -4069,7 +4118,18 @@ async function executeCronScript(job, signal) {
   return { output: lines.join('\n').slice(0, 32000), wakeAgent };
 }
 try { console.log('[exec-env]', JSON.stringify(executionEnvironment.describe())); } catch (_) {}
-const subagents = makeSubagentManager({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'subagents.json'), clock: { now: () => Date.now() }, emit: chanEmit, newId: () => crypto.randomUUID(), keep: 200, hooks: hookSpine });
+const subagents = makeSubagentManager({ fs: fs, pathMod: path, file: path.join(WORKSPACES, 'subagents.json'), clock: { now: () => Date.now() }, emit: chanEmit, newId: () => crypto.randomUUID(), keep: 200, hooks: hookSpine,
+  stallMs: WORKER_STALL_MS, inToolStallMs: WORKER_STALL_IN_TOOL_MS });
+// The liveness sweep: a hung background worker is stopped and marked stale (see subagents.js checkStalls) instead of
+// sitting `running` forever. Sampled at a quarter of the idle threshold (1s..30s); unref'd — it never holds the process.
+if (WORKER_STALL_MS > 0) {
+  const subagentStallSweep = setInterval(() => {
+    try {
+      for (const w of subagents.checkStalls()) console.warn('[subagents] worker ' + w.id + ' (' + w.agentId + ') ' + w.reason);
+    } catch (e) { failNote('subagents.checkStalls', e); }
+  }, Math.max(1000, Math.min(30000, Math.floor(WORKER_STALL_MS / 4))));
+  subagentStallSweep.unref();
+}
 const overseer = require('./overseer.js').makeOverseer({ fs, path, writeDurable: writeFileDurable,
   file: path.join(WORKSPACES, 'overseer.json'), now: () => Date.now(),
   newId: () => 'ws_' + crypto.randomUUID().replace(/-/g, ''),
@@ -9863,6 +9923,10 @@ server.listen(PORT, '127.0.0.1', () => {
   if (DEV_MODE) console.log('     ⚡ DEV SEED MODE — onboarding auto-skipped; the page resumes the seeded agent.');
   console.log(bar + '\n');
   try { openaiCompat.announce(); } catch (_) {}   // one honest boot line: is the /v1 external-harness API live?
+  // Interrupted runs -> run history (background, chunked; see scanInterruptedRuns). The list was captured at
+  // module load, before this process could begin a run, so every file in it belongs to a process that is gone.
+  scanInterruptedRuns(bootRunJournalFiles);
+  bootRunJournalFiles = [];
   // warm the key-independent /models catalog once so priceOf / contextLimit are live for every run. A boot-time
   // failure no longer disables channel /model validation for the session — maybeRewarmModelCatalog re-warms on
   // demand (throttled) the next time a /model command asks (see the channel-hub modelCatalog accessor).
@@ -15462,6 +15526,23 @@ function userMsgText(m) {
   }
   return parts.join('');                          // '' for an image-only turn: honest, and it IS a real turn
 }
+/* H2 durable transcript — a recovery continuation's view of what its SOURCE run already recorded. The continuation's
+   prompt is the source's journal checkpoint: the source's initial prompt (its base checkpoint — system, restored
+   history, the directive) followed by the turns the source made and the planner's pairing results. Returns the base
+   length plus the source run's own transcript rows, so runTranscript.adoptRecovery can mark exactly the recovered
+   turns those rows prove and append the rest. null = unknown (journal unreadable, or a plan that does not begin with
+   the journal's base): the caller keeps the conservative mark-everything rule. */
+function transcriptRecoveryTail(recovery, msgs, streamId) {
+  const src = recovery && recovery.sourceRunId ? String(recovery.sourceRunId) : '';
+  if (!src || !Array.isArray(msgs)) return null;
+  try {
+    const state = runJournal.inspect(src);
+    const base = recoveryBase(state, msgs);
+    if (!base) return null;
+    const rows = transcriptStore.history(streamId, { sourceRunId: src, limit: 5000 });
+    return { base, rows, sourceWasContinuation: !!(state.meta && state.meta.recoveryOf) };
+  } catch (e) { failNote('transcript.recovery.inspect', e); return null; }
+}
 function latestUserText(list) {
   const msgs = Array.isArray(list) ? list : [];
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -15487,6 +15568,24 @@ function recentUserText(list) {
   }
   const joined = texts.join('\n');
   return joined.length > 2000 ? joined.slice(joined.length - 2000) : joined;
+}
+
+/* STOP REACHES BACKGROUND WORKERS (Step 2 F2, subagents.js cancelChildren). While a run's LOOP is live, an abort of
+   its signal — Stop in COMMS (/api/cancel), /stop in a channel, a superseding channel message, a closed COMMS stream,
+   a reclaimed hung cron beat — also cancels the background workers that run started (team.dispatch/team.spawn
+   background:true, team.resume), and theirs. The listener lives exactly as long as the loop: a lead that ENDS
+   normally (done/error/budget/max_iters) detaches first and never touches its workers, which is the whole point of
+   background:true. There is no per-worker "detach" option and none is invented; E-STOP still stops everything. */
+function cascadeCancelToWorkers(signal, runId) {
+  if (!runId || !signal || typeof signal.addEventListener !== 'function' || signal.aborted) return () => {};
+  const onAbort = () => {
+    try {
+      const n = subagents.cancelChildren(runId, 'its lead run ' + runId + ' was cancelled');
+      if (n) console.warn('[subagents] run ' + runId + ' was cancelled — stopped ' + n + ' background worker(s) it started');
+    } catch (e) { failNote('subagents.cancelChildren', e); }
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  return () => signal.removeEventListener('abort', onAbort);
 }
 
 /* runOnce — the reusable RUN HOST. Assembles the proven seams (fresh tool registry + the office-workstation
@@ -16808,24 +16907,25 @@ async function runOnceCore(o) {
   // The summarizer body lives in compaction-summarizer.js (chunked full-slice fold; no 16k input truncation).
   // This is thin wiring: the run's provider/model/cost fallbacks, the aux tier, the STRICT transcript drain and
   // the durable-memory prepend are injected; `live` still overrides provider/model/cost per call (fallback-safe).
-  /* THE DIRECTIVE GOES FIRST. The triggering user turn is in the prompt (so it carries the persisted marker) and is
-     written to the transcript explicitly at run end. A MID-RUN drain (every compaction tier saves the slice it is
-     about to fold or elide) used to land the run's early assistant/tool rows BEFORE that run-end directive row, so
-     a restart replayed the agent answering a question it had not been asked yet. The first mid-run drain writes the
-     directive (text captured pre-loop, see transcriptDirective.text below) and run end then skips it. */
-  const transcriptDirective = { text: '', written: false };
+  /* THE DIRECTIVE GOES FIRST, AND THE DIALOGUE LANDS AS IT HAPPENS (H2). The triggering user turn is in the prompt
+     (so it carries the persisted marker) and is written to the transcript as its own row BEFORE any of this run's
+     assistant/tool rows — otherwise a restart replays the agent answering a question it had not been asked yet.
+     runTranscript (transcript-run.js) owns that order for every writer: the pre-loop start (directive before the
+     first model call), each loop durable boundary (onCheckpoint below: the assistant tool-call turn before tools
+     dispatch, the results after), the compaction tiers' strict drain, and run end — which then appends only what
+     is left. Directive text is captured pre-loop (runTranscript.setDirective below). */
+  const runTranscript = makeRunTranscript({
+    store: transcriptStore, streamId: o.streamId, agentId, runId,
+    // mid-run write failures never kill the run or reorder dialogue: the rows stay pending (and in the run journal)
+    // and retry at the next boundary / strict run end. Counted + warned, so a failing disk is never invisible.
+    onFailure: (stage, e) => failNote('transcript.run.' + stage, e)
+  });
   const summarize = makeSummarizer({
     provider, model, cost, signal, emit, agentId, runId,
     auxModelFor: resolveAuxModel,
     auxEffortFor: auxReasoningEffort,
     summaryPrompt: compactionSummaryPrompt,
-    transcriptDrain: (older) => {
-      if (!transcriptDirective.written && transcriptDirective.text) {
-        transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: transcriptDirective.text, sourceRunId: runId });
-        transcriptDirective.written = true;
-      }
-      return transcriptStore.appendNewStrict(o.streamId, agentId, older, { sourceRunId: runId });
-    },
+    transcriptDrain: (older) => runTranscript.drain(older),
     memoryBlockFor: (transcript) => {
       // on_pre_compress (MEMORY-CORTEX): rank durable memory against the slice being folded and PREPEND it.
       // '' when nothing to preserve. Fail-open: a memory hiccup must never block the summary.
@@ -17074,6 +17174,9 @@ async function runOnceCore(o) {
       } catch (_) { /* a checkpoint failure must never break a run */ }
     }
     let dctx = (ctx && ctx.callId !== c.id) ? Object.assign({}, ctx, { callId: c.id }) : ctx;   // per-call id for shell.exec telemetry
+    // A name no registered tool answers to: the registry's "unknown tool" reply names the closest tools THIS run can
+    // call (advertised + deferred wire names), never an ungranted one (loop-breaker.js counts these as strikes).
+    if (!liveTool) dctx = Object.assign({}, dctx, { toolNames: Array.from(fromWire.keys()) });
     if (postTaintConfirmed) {
       const baseAuthorize = dctx && dctx.authorize;
       dctx = Object.assign({}, dctx, {
@@ -17692,19 +17795,26 @@ async function runOnceCore(o) {
   // the LOOP adds. This used to be a positional `msgs.length`, which a compaction silently invalidated — it
   // rebuilds the same array in place and SHORTER, leaving the index past the end and dropping the entire run's
   // dialogue with no error. See the PERSISTED marker in transcriptstore.js.
-  transcriptStore.markPersisted(msgs);
+  // H2 RECOVERY: a continuation's prompt is the SOURCE run's journal checkpoint — its initial prompt, the turns it
+  // made, and the recovery planner's pairing results. Only that initial prompt is recorded by definition; a later
+  // turn is recorded exactly when the source run's own transcript rows prove it (markRecorded, by identity), and
+  // runTranscript.start() below appends the rest. Unknown base -> the old conservative rule (mark all).
+  const recoveredTranscript = transcriptRecoveryTail(o.recovery, msgs, o.streamId);
+  if (recoveredTranscript) runTranscript.adoptRecovery(msgs, recoveredTranscript);
+  else transcriptStore.markPersisted(msgs);
   // The run journal's delta checkpoints exclude exactly THESE objects (the base checkpoint below already holds
   // them). Identity, not the persisted marker: a mid-run compaction drain also marks messages persisted while they
   // stay in the working set (the micro tier keeps elided copies, a refused fold keeps the whole slice), and those
   // must still reach the provider-resumable checkpoint.
   const initialPromptSet = new WeakSet(msgs.filter(m => m && typeof m === 'object'));
-  // the directive a mid-run drain writes first (same rule as the run-end title write; captured before the loop can
-  // append its own user-role messages, e.g. a screen-capture turn)
-  if (!retryDirective && !o.syntheticTrigger) transcriptDirective.text = latestUserText(msgs);
+  // the directive every transcript writer puts first (same rule as the run-end title write; captured before the loop
+  // can append its own user-role messages, e.g. a screen-capture turn). A continuation's is its SOURCE's directive.
+  if (!retryDirective && !o.syntheticTrigger) runTranscript.setDirective(latestUserText(recoveredTranscript ? msgs.slice(0, recoveredTranscript.base) : msgs));
   if (!internal) {
     try {
       runJournal.begin({
         runId, agentId, streamId: o.streamId || 'global', trigger, model,
+        provider: activeProviderId, surface, parentRunId: o.parentRunId || '',   // additive: lets an interrupted-run history row name them truthfully
         recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '',
         userTitle: o.syntheticTrigger ? '' : latestUserText(msgs), startedAt: Date.now(),
         cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '',
@@ -17719,6 +17829,9 @@ async function runOnceCore(o) {
       return;
     }
   }
+  // H2: the user's directive (and a continuation's still-missing recovered turns) are durable BEFORE the first model
+  // call. Never throws; a failure retries at the first loop boundary, ahead of any assistant row.
+  if (execution.journalStarted()) { transcriptLiveRuns.add(runId); runTranscript.start(msgs); }
   let bufferedTaskEnd = null;
   // Hold a successful user-facing Task Brief end until the final text is known; a question maps to the
   // contract's additive `clarifying` terminal (neither product nor slag — every success path keys on 'done').
@@ -17818,7 +17931,10 @@ async function runOnceCore(o) {
       loopEmit('agent.token', {agentId, runId, delta:text});
       loopEmit('agent.run.end', {agentId, runId, reason:'done', turns:0, usd:0});
       result = {reason:'done', turns:0, usd:0, messages:msgs.concat([{role:'assistant', content:text}])};
-    } else result = await runAgentLoop({
+    } else {
+      const detachWorkerCascade = cascadeCancelToWorkers(signal, runId);   // live only while the loop runs (see its note)
+      try {
+      result = await runAgentLoop({
       messages: msgs, provider, emit: loopEmit, cost, tools: o.outputOnly ? [] : toolDefs, dispatch, capCtx,
       isTask: internal ? undefined : isTask,
       cacheSystemPrefix: !internal && !o.recovery ? cacheSystemPrefix : '',
@@ -17896,13 +18012,32 @@ async function runOnceCore(o) {
         const fresh = Array.isArray(checkpointMessages)
           ? checkpointMessages.filter(m => m && typeof m === 'object' && !initialPromptSet.has(m))
           : [];
-        runJournal.checkpoint(runId, { phase, turn, messages: fresh });
+        // DELTA journal (journal-linear-growth): only messages not yet journaled are written; a rewritten working
+        // array (fold/elision/collapse/in-place edit) re-anchors with a full snapshot. See run-journal.js header.
+        runJournal.checkpointMessages(runId, { phase, turn, messages: fresh });
+        // H2 per-turn transcript: AFTER the journal (the recovery copy is written first), the new dialogue rows —
+        // the assistant tool-call turn before any tool runs, the results after. Never throws (see transcript-run.js).
+        runTranscript.checkpoint({ phase, messages: checkpointMessages });
       } : null,
       agentId, runId, model, trigger: trigger,
+      /* LOOP BREAKER (loop-breaker.js). Hard stops for a varying-argument failure streak or an identical successful
+         poll apply only when no Commander is watching. `surface` is 'interactive' ONLY on the watched /api/run COMMS
+         path (and a channel chat that opted into /approvals); every other trigger is UNATTENDED: cron, Run Now and
+         workshop shifts ('schedule'), night shift ('nightshift'), loop jobs ('loop'), channel chats and the /v1 API
+         ('event'), and delegated/spawned workers, overseer reviews and implement builds ('directive' on surface
+         'autonomous'). The same host-minted bit the consent broker uses — never derived from prompt or model text. */
+      unattended: surface !== 'interactive',
+      // the evidence-progress guard (dispatch above) already owns reads/browser/tool.search repeats
+      progressTracked: (wireName) => {
+        const real = fromWire.get(wireName) || allWire.get(wireName) || wireName;
+        return ProgressGuardInternals.trackable({ name: real }, registry.get(real));
+      },
       // rough initial estimate for the error classifier's context-overflow ratio; contextLimit is 0 until the
       // /models catalog warms, which (by design) disables the ratio so a bare 400 is never mislabelled.
       approxTokens: Math.ceil(JSON.stringify(msgs).length / 4), contextLimit: provider.contextLimit(model)
     });
+      } finally { detachWorkerCascade(); }
+    }
     if (result && result.failureStage) execution.recordFailure(result.failureStage, result.failureCode || 'run_failure');
     if (imageTask && result && result.reason === 'done') {
       let clarifying = false;
@@ -18013,7 +18148,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, handoffEdited: o.handoffEdited === true });   // execution terminal stays separate from the neutral Task Brief outcome used by progression
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -18021,20 +18156,29 @@ async function runOnceCore(o) {
       if (execution.journalStarted()) {
         // Retirement is ordered strictly: each transcript row is fsync/read-back proven, then the journal records
         // that acknowledgement, then (and only then) is the recovery copy removed. A throw leaves it discoverable.
-        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: title, sourceRunId: runId });
-        if (result && Array.isArray(result.messages)) transcriptStore.appendNewStrict(o.streamId, agentId, result.messages, { sourceRunId: runId });
+        // H2: most rows already landed at the loop's durable boundaries; this appends only what is left (the final
+        // answer, a pending retry) — the persisted marker makes it exactly-once, the directive still goes first.
+        if (title && !retryDirective && !o.syntheticTrigger) runTranscript.fallbackDirective(title);
+        try { runTranscript.drain(result && result.messages); }
+        catch (e) { failNote('transcript.run.end', e); throw e; }   // visible, and the journal stays un-retired
         const retirement = runJournal.finishAndRetire(runId, {
           reason: (result && result.reason) || 'error', turns: finalTurns, tokens: finalTokens, usd: finalUsd,
           transcriptAck: true
         });
+        // The finish record carrying transcriptAck is durable now (retired or retained for its own review). For a
+        // continuation that is the proof its SOURCE journal waits on (consumed by settleRunRecoveryContinuation).
+        if (o.recovery && retirement.state && retirement.state.finish && retirement.state.finish.transcriptAck === true) {
+          continuationTranscriptAcks.add(runId);
+        }
         if (!retirement.retired) {
           console.warn('[run-journal] retained unsettled run for review:', runId, retirement.state && retirement.state.status);
         }
       } else {
-        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
+        if (title && !retryDirective && !o.syntheticTrigger && !runTranscript.directiveWritten()) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
         if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages);
       }
     } catch (_) {}
+    transcriptLiveRuns.delete(runId);   // H2: settled (or retained in the journal) — its rows are ordinary history now
     // QUEST V2 §A — the run-lifecycle sweeps at the settle point: a run ending 'done' completes every OPEN quest
     // whose run-contract is bound to this runId (bound at the injection seam / the quest.update progress tick);
     // a non-'done' end (error/budget/max_iters/refusal) STALLS them instead (stamp reason, release the binding)
@@ -20713,7 +20857,9 @@ function runContinuationToken(r) {
 }
 function markRunRecoveryForensic(r) {
   if (!r) return r;
-  r.forensicOnly = !!r.corrupt;
+  // analyze() separates a lone torn final record (damage 'torn_tail': actionable, its `.torn-*` copy kept) from
+  // real corruption (`forensic`). Only the latter — or a `.corrupt*` sibling from any earlier repair — is forensic.
+  r.forensicOnly = !!r.forensic;
   try {
     const file = r.file || path.join(RUN_JOURNAL_DIR, runJournal._internals.runFileName(r.runId));
     const base = path.basename(file);
@@ -20725,6 +20871,97 @@ function markRunRecoveryForensic(r) {
 }
 function inspectRunRecovery(runId) {
   return markRunRecoveryForensic(runJournal.inspect(String(runId || '')));
+}
+
+// ---- INTERRUPTED RUNS IN RUN HISTORY (2026-09-22) -------------------------------------------------------------
+// A run killed mid-flight never reaches runOnceCore's run-end runStore.record, so /api/runs never listed it. Its
+// journal is the proof it existed: every unfinished journal whose process is gone gets ONE history row with reason
+// 'interrupted', and that row is kept current as recovery proceeds (append-only; runstore collapses the chain —
+// see the INTERRUPTED RUNS note in runstore.js). A continuation keeps its own row, linked by recoveryOf.
+const activeRunContinuations = new Set();   // continuedRunIds between consume and settle in THIS process
+function interruptedRecoveryState(r) {
+  const c = r.continuation || null;
+  if (r.forensicOnly || r.forensic) return { status: 'forensic' };
+  if (c && c.state === 'finished') return { status: 'continued', continuedRunId: String(c.continuedRunId || ''), continuedReason: String(c.reason || '') };
+  if (c && c.state === 'started') {
+    const id = String(c.continuedRunId || '');
+    // A continuation still running here is recovering; one whose process is gone was itself interrupted (its own
+    // journal now carries the recovery and gets its own interrupted row).
+    return (activeRunContinuations.has(id) || runJournal.isOwned(id))
+      ? { status: 'recovering', continuedRunId: id }
+      : { status: 'continued', continuedRunId: id, continuedReason: 'interrupted' };
+  }
+  if (r.status === 'needs_review') return { status: 'needs_review' };
+  if (r.status === 'resolved') return { status: 'resolved' };
+  return { status: 'recoverable' };
+}
+const INTERRUPTED_HISTORY_LINES = {
+  recoverable: 'interrupted: StarNet stopped before this run finished; it can continue from its last durable step',
+  needs_review: 'interrupted: StarNet stopped mid-action; an action may already have happened and needs review before continuing',
+  resolved: 'interrupted: StarNet stopped mid-action; the outcome was reviewed',
+  recovering: 'interrupted: StarNet stopped before this run finished; a continuation is running',
+  continued: 'interrupted: StarNet stopped before this run finished; it was continued as another run',
+  forensic: 'interrupted: StarNet stopped before this run finished; its recovery journal is damaged and kept for inspection only'
+};
+// Idempotent: appends only when the run has no row yet, or its served interrupted row's recovery state differs.
+// Never for a run that reached run end (a finish record, or a real outcome row) or one still live in this process.
+function syncInterruptedRunHistory(r) {
+  if (!r || !r.runId || r.terminal || r.quarantinedTo || !r.records) return null;
+  if (runJournal.isOwned(r.runId)) return null;
+  const existing = runStore.latest(r.runId);
+  if (existing && existing.reason !== 'interrupted') return null;
+  const meta = r.meta || {};
+  const next = interruptedRecoveryState(r);
+  const continuedRunId = String(next.continuedRunId || '');
+  const continuedReason = String(next.continuedReason || '');
+  if (existing && existing.recoveryStatus === next.status && String(existing.continuedRunId || '') === continuedRunId
+    && String(existing.continuedReason || '') === continuedReason) return null;
+  const startedAt = Number(meta.startedAt || r.firstTs || 0) || 0;
+  const endedAt = Math.max(startedAt, Number(r.lastTs || 0) || 0);   // the last durable journal record = last proof of life
+  return runStore.record({
+    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''),
+    reason: 'interrupted', turns: Number((r.checkpoint && r.checkpoint.turn) || 0) || 0, tokens: 0, usd: 0, spendUnknown: true,
+    title: String(meta.userTitle || ''), streamId: String(meta.streamId || ''), model: String(meta.model || ''),
+    surface: meta.surface, recoveryOf: String(meta.recoveryOf || ''), parentRunId: String(meta.parentRunId || ''),
+    startedAt, endedAt, durationMs: endedAt - startedAt,
+    recoveryStatus: next.status, continuedRunId, continuedReason,
+    // `error` is the plain line consumers already surface for a run that did not complete (e.g. a cron session's
+    // "routine failed"). A continuation that finished the task clears it; the continuation's own row is the outcome.
+    error: (next.status === 'continued' && continuedReason === 'done') ? ''
+      : INTERRUPTED_HISTORY_LINES[next.status] + (continuedRunId ? ' (run ' + continuedRunId + (continuedReason ? ', ' + continuedReason : '') + ')' : '')
+  });
+}
+// Background, chunked walk of the journals that existed at boot: each unfinished one gets (or converges) its
+// interrupted row, and a settled one (finished, or a continuation source whose continuation durably finished) is
+// retired exactly as the recovery listing would. It yields between chunks, so thousands of retained journals never
+// block startup or a request. Forensic evidence never changes state, so already-recorded forensic runs are skipped.
+function scanInterruptedRuns(files) {
+  const settledForensic = new Set();
+  try {
+    for (const row of runStore.all()) {
+      if (row && row.reason === 'interrupted' && row.recoveryStatus === 'forensic') settledForensic.add(runJournal._internals.runFileName(row.runId));
+    }
+  } catch (e) { failNote('run-history.interrupted-index', e); }
+  const list = Array.isArray(files) ? files.slice() : [];
+  let at = 0, recorded = 0, retired = 0;
+  const step = () => {
+    // ONE journal per tick: a legacy (pre-delta) journal can be 100+ MB, and a parse must never hold the event
+    // loop for more than that single file.
+    const end = Math.min(list.length, at + 1);
+    for (; at < end; at++) {
+      if (settledForensic.has(path.basename(list[at]))) continue;
+      try {
+        if (!fs.existsSync(list[at])) continue;   // settled/retired since boot by a route of this process
+        const r = markRunRecoveryForensic(runJournal.recoverFile(list[at]));
+        if (!r || !r.runId) continue;   // quarantined: no identity to record
+        if (syncInterruptedRunHistory(r)) recorded++;
+        if (r.retirable && !r.forensicOnly && runJournal.remove(r.runId)) retired++;
+      } catch (e) { failNote('run-history.interrupted-scan', e); }
+    }
+    if (at < list.length) setImmediate(step);
+    else if (recorded || retired) console.log('  · run journal: ' + recorded + ' interrupted run history row(s) written, ' + retired + ' settled journal(s) retired');
+  };
+  setImmediate(step);
 }
 function canContinueRunRecovery(r) {
   if (!r || r.status !== 'resolved' || (r.continuation && r.continuation.state !== 'ready')) return false;
@@ -20765,11 +21002,13 @@ function runRecoveryDto(r) {
     status: r.status,
     corrupt: !!r.corrupt,
     repaired: !!r.repairedFrom,
+    // additive: 'none' | 'torn_tail' (only the final record was cut off by a crash; still actionable) | 'corrupt'
+    damage: String(r.damage || (r.corrupt ? 'corrupt' : 'none')),
     repairError: r.repairError ? String(r.repairError).slice(0, 500) : '',
     uncertain: (r.uncertain || []).map(x => ({ callId: String(x.callId || ''), name: String(x.name || '') })),
     recoveryToken: runRecoveryToken(r),
     forensicOnly: !!r.forensicOnly,
-    canResolve: r.status === 'needs_review' && !r.corrupt && !r.repairError && !r.forensicOnly,
+    canResolve: r.status === 'needs_review' && !r.forensic && !r.repairError && !r.forensicOnly,
     canContinue: canContinueRunRecovery(r),
     canAutoContinue: canAutoContinueRunRecovery(r),
     operationalState: runRecoveryOperationalState(r),
@@ -20804,13 +21043,16 @@ function serveRunRecoveries(req, res) {
   let page;
   try { page = runJournal.recoverPage({ offset, limit }); }
   catch (e) { return respondJson(res, 500, { error: 'could not read run recoveries' }); }
-  const rows = page.rows.filter(r => {
+  const rows = page.rows.map(markRunRecoveryForensic).filter(r => {
     if (!r) return false;
+    // Converge this run's interrupted-history row with its journal (idempotent; skips live and finished runs).
+    try { syncInterruptedRunHistory(r); } catch (e) { failNote('run-history.interrupted-sync', e); }
     // A durable transcript acknowledgement is the commit record. If the process died between that record and
-    // unlink, finish the idempotent retirement when its page is inspected; all other states remain visible.
-    if (r.status === 'finished') { try { runJournal.remove(r.runId); } catch (_) {} return false; }
+    // unlink, finish the idempotent retirement when its page is inspected; all other states remain visible. A
+    // continuation source whose continuation finished with its transcript acknowledgement retires the same way.
+    if (r.retirable && !r.forensicOnly) { try { runJournal.remove(r.runId); } catch (_) {} return false; }
     return true;
-  }).map(markRunRecoveryForensic).map(runRecoveryDto);
+  }).map(runRecoveryDto);
   respondJson(res, 200, { recoveries: rows, total: page.total, offset: page.offset, limit: page.limit, nextOffset: page.offset + page.limit < page.total ? page.offset + page.limit : null });
 }
 
@@ -20846,7 +21088,7 @@ async function handleRunRecoveryResolve(req, res) {
     } catch (e) { return json(409, { error: String((e && e.message) || e) }); }
   }
   if (body.confirmedNoReplay !== true) return json(400, { error: 'explicit no-replay confirmation is required' });
-  if (current.status !== 'needs_review' || current.corrupt || current.repairError || current.forensicOnly) {
+  if (current.status !== 'needs_review' || current.forensic || current.repairError || current.forensicOnly) {
     return json(409, { error: 'this recovery is not safely resolvable' });
   }
   if (!constantTimeTextEqual(body.recoveryToken, runRecoveryToken(current))) {
@@ -20863,6 +21105,7 @@ async function handleRunRecoveryResolve(req, res) {
     const next = markRunRecoveryForensic(runJournal.resolve(runId, {
       resolutionId, operator: 'local', resolvedAt: Date.now(), outcomes, note
     }));
+    try { syncInterruptedRunHistory(next); } catch (e) { failNote('run-history.interrupted-sync', e); }   // history: needs_review -> resolved
     return json(200, { ok: true, idempotent: false, replayed: false, recovery: runRecoveryDto(next) });
   } catch (e) {
     const code = e && e.code === 'RUN_RESOLUTION_CONFLICT' ? 409 : 500;
@@ -20933,7 +21176,15 @@ function consumeRunRecoveryContinuation(request, agentId, continuedRunId) {
   if (!sourceRunId || !continuationId || !isAgentId(String(agentId || ''))) return { ok: false, code: 400, error: 'invalid continuation identity' };
   let current;
   try { current = inspectRunRecovery(sourceRunId); }
-  catch (_) { return { ok: false, code: 404, error: 'recovery not found' }; }
+  catch (_) {
+    // A settled continuation retires its source journal; a retry of that consumed continuation is a conflict,
+    // not an unknown recovery (the source's history row records which run continued it).
+    const settled = runStore.latest(sourceRunId);
+    if (settled && settled.reason === 'interrupted' && settled.agentId === String(agentId) && settled.recoveryStatus === 'continued') {
+      return { ok: false, code: 409, error: 'continuation is not ready or was already consumed' };
+    }
+    return { ok: false, code: 404, error: 'recovery not found' };
+  }
   if (String((current.meta && current.meta.agentId) || '') !== String(agentId)) return { ok: false, code: 403, error: 'forbidden' };
   const c = current.continuation;
   if (!c || c.state !== 'ready' || c.continuationId !== continuationId) return { ok: false, code: 409, error: 'continuation is not ready or was already consumed' };
@@ -20949,20 +21200,38 @@ function consumeRunRecoveryContinuation(request, agentId, continuedRunId) {
     || String(plan.context || '') !== String(c.context || '')) {
     return { ok: false, code: 409, error: 'durable continuation plan no longer matches the recovery' };
   }
+  let started;
   try {
-    runJournal.startContinuation(sourceRunId, { continuationId, continuedRunId, startedAt: Date.now() });
+    started = runJournal.startContinuation(sourceRunId, { continuationId, continuedRunId, startedAt: Date.now() });
   } catch (e) { return { ok: false, code: 409, error: String((e && e.message) || e) }; }
+  activeRunContinuations.add(String(continuedRunId));
+  try { syncInterruptedRunHistory(markRunRecoveryForensic(started)); } catch (e) { failNote('run-history.interrupted-sync', e); }   // -> recovering
   return { ok: true, plan: Object.assign({}, plan, { sourceRunId, continuationId }) };
 }
 
+// Settles the SOURCE journal after its continuation run returned. Ordering mirrors finishAndRetire: the continued
+// run's transcript rows were fsync/read-back proven and its journal recorded that acknowledgement (proof consumed
+// from continuationTranscriptAcks) -> the source records continuation_finish with transcriptAck -> its history row
+// converges to 'continued' -> only then is the source journal removed. A crash anywhere leaves it discoverable and
+// the next listing/boot scan finishes the same idempotent retirement.
 function settleRunRecoveryContinuation(recovery, continuedRunId, reason) {
   const sourceRunId = String((recovery && recovery.sourceRunId) || '');
   const continuationId = String((recovery && recovery.continuationId) || '');
+  const transcriptAck = continuationTranscriptAcks.delete(String(continuedRunId || ''));
+  activeRunContinuations.delete(String(continuedRunId || ''));
+  let settled = null;
   try {
-    runJournal.finishContinuation(sourceRunId, { continuationId, continuedRunId, reason });
+    settled = runJournal.finishContinuation(sourceRunId, { continuationId, continuedRunId, reason, transcriptAck });
   } catch (e) {
     console.warn('[run-journal] could not settle continuation:', String((e && e.message) || e));
   }
+  if (!settled) return;
+  settled = markRunRecoveryForensic(settled);
+  try { syncInterruptedRunHistory(settled); } catch (e) { failNote('run-history.interrupted-sync', e); }
+  if (!settled.retirable || settled.forensicOnly) return;
+  try {
+    if (!runJournal.remove(sourceRunId)) console.warn('[run-journal] continued source retained:', sourceRunId);
+  } catch (e) { failNote('run-journal.continuation-retire', e); }
 }
 
 // GET /api/autonomy/ledger?limit=N&source=&kind= — NS-0: the recent AUTONOMY DECISION LEDGER (cron fire/skip/
@@ -21014,7 +21283,11 @@ function serveTranscript(req, res) {
     const stream = u.searchParams.get('stream') || 'global';
     const limit = Math.max(1, Math.min(500, Number(u.searchParams.get('limit')) || 200));
     const sourceRunId = u.searchParams.get('runId') || '';
-    json(200, { stream, turns: transcriptStore.history(stream, { limit, sourceRunId }) });
+    // H2: a run still writing per turn stays out of the stream view until it ends (see transcriptLiveRuns).
+    const turns = sourceRunId || !transcriptLiveRuns.size
+      ? transcriptStore.history(stream, { limit, sourceRunId })
+      : transcriptStore.history(stream, { limit: limit + 500 }).filter(r => !transcriptLiveRuns.has(String(r.sourceRunId || ''))).slice(-limit);
+    json(200, { stream, turns });
   } catch (e) { json(500, readRouteFailure('transcript', e)); }   // broken ≠ empty: every reader gates on r.ok (autosessions/chat/returnstore)
 }
 

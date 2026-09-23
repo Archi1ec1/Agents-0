@@ -23,9 +23,9 @@
    before the error is surfaced. No renewToken injected = byte-identical to the old behavior. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.codex = factory(root.SK.providers.provider, root.SK.providers.errorClass); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.codex = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -161,7 +161,8 @@
       const fn = (item && item.function) || {};
       const name = fn.name;
       if (typeof name !== 'string' || !name.trim()) continue;
-      out.push({ type: 'function', name: name, description: fn.description || '', strict: false, parameters: fn.parameters || { type: 'object', properties: {} } });
+      // sanitizeKeys: property names every wire accepts; the model's args are mapped back on the way in (stream()).
+      out.push({ type: 'function', name: name, description: fn.description || '', strict: false, parameters: toolschema.sanitizeKeys(fn.parameters) || { type: 'object', properties: {} } });
     }
     return out.length ? out : null;
   }
@@ -189,7 +190,9 @@
     const reasoningEffort = normalizeCodexReasoningEffort(opts.reasoningEffort || DEFAULT_REASONING_EFFORT);
 
     function buildBody(req) {
-      const { instructions, rest } = extractInstructions(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages) ahead of this wire's own pairing pass below
+      // (messagesToInput): a well-formed transcript is untouched; a malformed one arrives already paired.
+      const { instructions, rest } = extractInstructions(provider.prepareWireMessages(req.messages || [], 'codex'));
       const effort = normalizeCodexReasoningEffort(req.reasoningEffort || reasoningEffort);
       const body = {
         model: req.model || DEFAULT_MODEL,
@@ -206,7 +209,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       const body = buildBody(req);
       let res;
       try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }
@@ -300,7 +307,10 @@
           }
           case 'response.failed': {
             const err = (ev.response && ev.response.error) || ev.error || {};
-            throw new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            const failed = new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            failed.body = { error: err };   // its code (e.g. usage_limit_reached) is what errorClass decides on
+            failed.ownMessage = true;
+            throw failed;
           }
           case 'error':
             throw new Error('codex stream error: ' + ((ev.error && ev.error.message) || ev.message || 'unknown'));
@@ -402,7 +412,8 @@
            of waiting fixes — while its message can read like any rate limit ('Codex quota exceeded'). Dropping the
            body classed it rate_limit, and once the loop's pre-stream ladder rode out transient 429s a spent plan was
            retried for ~100 s before failing. With the body, errorClass reads the code and fails fast (or falls over). */
-        if (errBody && typeof errBody === 'object') err.body = errBody;
+        // ownMessage: the sentence above (label + status) stays the reported message; the body is read for its code.
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         if (res.status === 401 && renew && !renewed) {
           renewed = true;
           try {

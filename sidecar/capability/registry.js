@@ -213,6 +213,7 @@
       // command, so it carries shell.exec's gate, not shell.bg.status's.
       { capId: 'workbench', tool: 'shell.bg.write', scope: 'execute', requiresConsent: true, network: true },
       { capId: 'workbench', tool: 'shell.bg.kill', scope: 'write', requiresConsent: false, network: false },     // H2.2: stop a background process you started
+      { capId: 'workbench', tool: 'shell.bg.wait', scope: 'read', requiresConsent: false, network: false },     // h2: block (bounded) until your background process exits
       // A real PTY/ConPTY rail for interactive programs. Start + input carry the same execution/consent posture
       // as shell.exec; observation, resize, Ctrl-C and stop remain agent-owned control operations.
       { capId: 'workbench', tool: 'terminal.start', scope: 'execute', requiresConsent: true, network: true },

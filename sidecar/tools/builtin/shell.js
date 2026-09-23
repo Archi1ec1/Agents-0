@@ -25,6 +25,8 @@
   'use strict';
 
   const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+  // foreground receipts for the boot orphan sweep (procledger.js trackChild); inert when no ledger is injected
+  const trackChild = (typeof require === 'function') ? require('../../procledger.js').trackChild : function () { return { exited: function () {}, done: function () {} }; };
   function safeAgentId(id) { if (!AID_RE.test(id || '')) throw new Error('bad agentId'); return id; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 200; return s.length > n ? s.slice(0, n) + '…' : s; }
   function clamp(n, lo, hi) { n = Number(n); if (!isFinite(n)) return lo; return Math.max(lo, Math.min(hi, n)); }
@@ -675,8 +677,11 @@
   /* runCommand — the shared execution primitive: spawn `cmd` in `cwd` (shell:true), capture combined stdout/stderr
      up to maxBytes, enforce the per-call timeout + abort signal by KILLING the child tree, and resolve a plain
      result. Never rejects on a non-zero exit (that is a RESULT); rejects ONLY if the process can't be started.
-     opts = { spawn, cmd, cwd, timeoutMs, maxBytes, signal?, clock?, isWin? }
-       -> Promise<{ exitCode:int, out:string, ms:int, truncated:bool, timedOut:bool, aborted:bool }> */
+     opts = { spawn, cmd, cwd, timeoutMs, maxBytes, signal?, clock?, isWin?, ledger?, ledgerCmd? }
+       -> Promise<{ exitCode:int, out:string, ms:int, truncated:bool, timedOut:bool, aborted:bool }>
+     opts.ledger (procledger.js): the child is recorded for the NEXT boot's orphan sweep while it runs and released
+     when it is over — a sidecar crash mid-command no longer leaves an orphan nothing knows about. ledgerCmd is the
+     REDACTED command line to store (the plaintext may carry a secret). */
   function runCommand(opts) {
     const spawn = opts.spawn, cmd = opts.cmd, cwd = opts.cwd;
     const timeoutMs = opts.timeoutMs, maxBytes = opts.maxBytes || 64000;
@@ -692,6 +697,8 @@
       if (opts.env) spawnOpts.env = opts.env;
       try { child = spawn(cmd, spawnOpts); }
       catch (e) { return reject(new Error('could not start shell: ' + ((e && e.message) || e))); }
+      const receipt = trackChild(opts.ledger || null, child && child.pid, { cmd: opts.ledgerCmd != null ? opts.ledgerCmd : '', kind: 'shell.fg', pinAfterMs: opts.ledgerPinAfterMs, exitStampMs: opts.ledgerExitStampMs });
+      if (typeof child.on === 'function') child.on('exit', function () { receipt.exited(); });
       const t0 = now();
       let out = '', fullOut = '', total = 0, truncated = false, settled = false, timedOut = false, aborted = false;
       const append = function (text) {
@@ -718,11 +725,13 @@
         if (settled) return; settled = true;
         clearTimeout(timer);
         if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} }
+        receipt.done();
         // Stripped HERE, at the single exit of the shared primitive, so shell.exec and the background tail
         // (shellbg.js reads r.out) are both covered by one strip that cannot drift into two.
         resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: stripAnsi(fullOut), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
       }
-      child.on('error', function (e) { if (settled) return; settled = true; clearTimeout(timer); if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} } reject(new Error('shell error: ' + ((e && e.message) || e))); });
+      // a spawn failure (no PID) is the only 'error' that ends the command; it has no receipt to keep either way
+      child.on('error', function (e) { if (settled) return; settled = true; clearTimeout(timer); if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} } receipt.done(); reject(new Error('shell error: ' + ((e && e.message) || e))); });
       child.on('close', function (code) { finish(timedOut || aborted ? null : code); });
     });
   }
@@ -738,6 +747,9 @@
     const environment = deps.environment || null;
     const spawn = deps.spawn, fs = deps.fs || null, P = deps.pathMod || (typeof require === 'function' ? require('node:path') : null), ROOT = deps.root || '';
     const bg = deps.bg || null;   // H2.2: the singleton background-process manager (shellbg.js); null -> bg disabled
+    // procledger.js: foreground children are receipted while they run (the environment path does the same in
+    // environment.js runProcess — that is the production route; this covers the direct runCommand route)
+    const ledger = (deps.ledger && typeof deps.ledger.record === 'function') ? deps.ledger : null;
     if (!environment && (typeof spawn !== 'function' || !fs || !P || !ROOT)) throw new Error('shell.js requires { spawn, fs, pathMod, root } or { environment }');
     const redact = typeof deps.redact === 'function' ? deps.redact : (s) => s;
     const now = (deps.clock && typeof deps.clock.now === 'function') ? deps.clock.now : () => 0;
@@ -842,8 +854,8 @@
         const markerIsWin = environment && environmentBackendId !== 'local' ? false : isWin;
         const run = checkpoint.then(function () {
           return environment && typeof environment.execute === 'function'
-            ? environment.execute({ agentId: aid, cmd: buildMarkedCmd(cmd, markerIsWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface })
-            : runCommand({ spawn: spawn, cmd: buildMarkedCmd(cmd, isWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin });
+            ? environment.execute({ agentId: aid, cmd: buildMarkedCmd(cmd, markerIsWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface, ledgerCmd: redact(cmd) })
+            : runCommand({ spawn: spawn, cmd: buildMarkedCmd(cmd, isWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin, ledger: ledger, ledgerCmd: ledger ? redact(cmd) : '' });
         });
         return run.then(function (res) {
           // recover the final cwd + the REAL exit code from the marker; persist the cwd only if it stayed in-jail.
@@ -905,12 +917,73 @@
           const v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           if (!v) return { content: 'No background process "' + id + '".', summary: 'not found' };
           const saved = v.outputSpillVerified ? '\n[full output: ' + v.outputBytes + ' bytes durably appended to ' + v.outputPath + ']' : (v.outputSpillError ? '\n[full-output spill failed: ' + v.outputSpillError + ']' : '');
-          const state = v.running ? 'RUNNING' : v.lost ? 'LOST — ' + (v.remoteBoundary || 'remote process identity is unconfirmed') : 'exited ' + v.exitCode + (v.killed ? ' (killed)' : '');
+          const state = v.running ? 'RUNNING' + killNote(v) : v.lost ? 'LOST — ' + (v.remoteBoundary || 'remote process identity is unconfirmed') : 'exited ' + v.exitCode + (v.killed ? ' (killed)' : '') + killNote(v);
           return { content: '[' + v.bgId + '] ' + state + ' · ' + v.ms + 'ms · ' + v.cmd + saved + '\n--- output tail ---\n' + redact(v.tail || '(none)'), summary: v.running ? 'running' : v.lost ? 'lost' : 'exited ' + v.exitCode };
         }
         const list = await Promise.resolve(source ? source.statusBackground(aid) : bg.status(aid)) || [];
         if (!list.length) return { content: 'No background processes.', summary: '0' };
-        return { content: list.map(function (v) { return '[' + v.bgId + '] ' + (v.running ? 'RUNNING' : v.lost ? 'LOST (identity mismatch)' : 'exited ' + v.exitCode) + ' · ' + v.cmd; }).join('\n'), summary: list.length + ' process(es)' };
+        return { content: list.map(function (v) { return '[' + v.bgId + '] ' + (v.running ? 'RUNNING' : v.lost ? 'LOST (identity mismatch)' : 'exited ' + v.exitCode) + killNote(v) + ' · ' + v.cmd; }).join('\n'), summary: list.length + ' process(es)' };
+      }
+    };
+    // A kill is reported only as far as it was proven (shellbg.js killState): never "(killed)" for a tree that
+    // may still be running.
+    function killNote(v) {
+      if (!v || !v.killState || v.killState === 'verified') return '';
+      if (v.killState === 'pending') return ' (kill in progress — not yet confirmed)';
+      if (v.killState === 'incomplete') return ' (kill INCOMPLETE — still running: PID ' + (v.survivors || []).join(', ') + ')';
+      return ' (kill sent but NOT confirmed)';
+    }
+
+    /* F4 — WAIT. Learning that a background job finished used to mean polling shell.bg.status turn after paid turn.
+       This blocks (bounded) until the process exits. A timeout is an ANSWER — "still running" — not an error: the
+       process keeps going and the agent decides what to do next. */
+    const MAX_WAIT_MS = 600000;
+    const bgWaitTool = {
+      // impact 'none': it only observes a process this agent already owns (like shell.bg.status/kill), so the
+      // run-authority layer must not fail it closed as an unknown external effect
+      name: 'shell.bg.wait', capability: 'workbench', impact: 'none', scope: 'read', requiresConsent: false,
+      timeoutMs: MAX_WAIT_MS + 10000,   // registry backstop above our own bounded wait
+      description: 'Wait for one of your background processes to exit, up to timeoutMs (default 30s, max 10 min). '
+        + 'Returns as soon as it exits, with its exit code and output tail. If it is still running when the timeout '
+        + 'passes it says so — that is not an error, the process keeps running.',
+      schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, timeoutMs: { type: 'number' }, timeout_ms: { type: 'number' } } },
+      run: async function (args, ctx) {
+        ctx = ctx || {};
+        const aid = safeAgentId(ctx.agentId || 'agent');
+        const id = args && args.id ? String(args.id) : '';
+        const requested = args && (args.timeoutMs != null ? args.timeoutMs : args.timeout_ms);
+        const timeoutMs = clamp(requested == null ? 30000 : requested, 0, MAX_WAIT_MS);
+        const opts = { timeoutMs: timeoutMs, signal: ctx.signal };
+        let r = null;
+        if (environment && typeof environment.waitBackground === 'function') r = await Promise.resolve(environment.waitBackground(aid, id, opts));
+        else if (!environment && bg && typeof bg.wait === 'function') r = await Promise.resolve(bg.wait(aid, id, opts));
+        if (r == null) {
+          // a backend without an event-driven wait (ssh): poll its status on a slow, bounded cadence
+          const source = environment && typeof environment.statusBackground === 'function' ? environment : null;
+          if (!source && !bg) return { content: 'Background processes are not available in this build.', summary: 'unavailable' };
+          const t0 = now();
+          const step = 1000, rounds = Math.max(1, Math.ceil(timeoutMs / step));
+          let v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
+          for (let i = 0; v && v.running && i < rounds && !(ctx.signal && ctx.signal.aborted); i++) {
+            await new Promise(function (res) { setTimeout(res, step); });
+            v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
+          }
+          r = v ? Object.assign({ ok: true, state: v.running ? ((ctx.signal && ctx.signal.aborted) ? 'cancelled' : 'running') : 'exited', waitedMs: Math.max(0, now() - t0) }, v) : { ok: false, error: 'no such background process' };
+        }
+        if (!r.ok) return { content: 'Could not wait: ' + (r.error || 'no such background process') + (id ? ' ("' + id + '")' : ''), summary: 'not found' };
+        const waited = Number(r.waitedMs) || 0;
+        const tail = '\n--- output tail ---\n' + redact(r.tail || '(none)');
+        if (r.state === 'exited') {
+          return { content: '[' + r.bgId + '] exited ' + r.exitCode + (r.killed ? ' (killed)' : '') + killNote(r) + ' · after waiting ' + waited + 'ms · ' + r.cmd + tail, summary: 'exited ' + r.exitCode };
+        }
+        if (r.state === 'cancelled') {
+          return { content: '[' + r.bgId + '] still RUNNING — the wait was cancelled after ' + waited + 'ms · ' + r.cmd + tail, summary: 'wait cancelled' };
+        }
+        return {
+          content: '[' + r.bgId + '] still RUNNING after waiting ' + waited + 'ms (the ' + timeoutMs + 'ms wait timed out — not an error; the process keeps running). '
+            + 'Wait again, read its log with shell.bg.read, or stop it with shell.bg.kill. · ' + r.cmd + tail,
+          summary: 'still running'
+        };
       }
     };
     /* H2.3 — READ PAST THE TAIL. shell.bg.status returns the last ~2000 characters, which is fine for "is it
@@ -999,7 +1072,7 @@
 
     const bgKillTool = {
       name: 'shell.bg.kill', capability: 'workbench', scope: 'write', requiresConsent: false,
-      description: 'Stop one of your background processes by id (from shell.bg.status). Kills the whole process tree.',
+      description: 'Stop one of your background processes by id (from shell.bg.status). Kills the whole process tree and confirms it is gone.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       run: async function (args, ctx) {
         const aid = safeAgentId((ctx && ctx.agentId) || 'agent');
@@ -1007,14 +1080,28 @@
         if (!source && !bg) return { content: 'Background processes are not available in this build.', summary: 'unavailable' };
         const id = args && args.id ? String(args.id) : '';
         const r = await Promise.resolve(source ? source.killBackground(aid, id) : bg.kill(aid, id));
-        return { content: r.ok ? (r.alreadyExited ? 'Process ' + id + ' had already exited.' : 'Killed background process ' + id + '.') : ('Could not kill: ' + r.error), summary: r.ok ? 'killed' : 'not killed' };
+        /* F3 — a kill is reported only as far as it was PROVEN. A tree that is confirmed still running is a failed
+           action (thrown -> an error result naming the survivors); a kill whose outcome could not be read back says
+           exactly that instead of "Killed". Remote backends that report plain ok keep their old wording. */
+        if (r && r.incomplete) {
+          const err = new Error('Kill INCOMPLETE for background process ' + id + ': ' + (r.error || 'processes are still running')
+            + '. Surviving PID(s): ' + (r.survivors || []).join(', ') + '. Its receipt is kept so the next StarNet start reaps them.');
+          err.toolSummary = 'kill incomplete';
+          throw err;
+        }
+        if (r && r.unverified) {
+          return { content: 'Kill sent to background process ' + id + ' but NOT confirmed: ' + (r.error || 'the process tree could not be read back')
+            + (r.rootExited ? ' (its main process did exit).' : '.'), summary: 'kill unconfirmed' };
+        }
+        const proven = r && r.verified ? ' — the whole process tree (' + (r.killedPids || []).length + ' process(es)) is confirmed gone.' : '.';
+        return { content: r.ok ? (r.alreadyExited ? 'Process ' + id + ' had already exited.' : 'Killed background process ' + id + proven) : ('Could not kill: ' + r.error), summary: r.ok ? 'killed' : 'not killed' };
       }
     };
 
     return {
-      execTool: execTool, bgStatusTool: bgStatusTool, bgReadTool: bgReadTool, bgWriteTool: bgWriteTool, bgKillTool: bgKillTool,
+      execTool: execTool, bgStatusTool: bgStatusTool, bgReadTool: bgReadTool, bgWriteTool: bgWriteTool, bgKillTool: bgKillTool, bgWaitTool: bgWaitTool,
       _internals: { escapesWorkspace: escapesWorkspace, opensVisibleWindow: opensVisibleWindow, inputIsolationRisk: inputIsolationRisk, commandSafetyRisk: commandSafetyRisk, workspaceCapturesInput: workspaceCapturesInput, projectScanRoot: projectScanRoot, breaksMachineState: breaksMachineState, exposesNetwork: exposesNetwork, killTree: killTree, safeAgentId: safeAgentId, normalizeWinCwd: normalizeWinCwd, resolveShellCwd: resolveShellCwd, unrestrictedHost: unrestrictedHost },
-      register: function (reg) { reg.register(execTool); reg.register(bgStatusTool); reg.register(bgReadTool); reg.register(bgWriteTool); reg.register(bgKillTool); return reg; }
+      register: function (reg) { reg.register(execTool); reg.register(bgStatusTool); reg.register(bgReadTool); reg.register(bgWriteTool); reg.register(bgKillTool); reg.register(bgWaitTool); return reg; }
     };
   }
 
