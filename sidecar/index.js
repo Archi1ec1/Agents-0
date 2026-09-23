@@ -20630,7 +20630,9 @@ function scanInterruptedRuns(files) {
   const list = Array.isArray(files) ? files.slice() : [];
   let at = 0, recorded = 0, retired = 0;
   const step = () => {
-    const end = Math.min(list.length, at + 16);
+    // ONE journal per tick: a legacy (pre-delta) journal can be 100+ MB, and a parse must never hold the event
+    // loop for more than that single file.
+    const end = Math.min(list.length, at + 1);
     for (; at < end; at++) {
       if (settledForensic.has(path.basename(list[at]))) continue;
       try {
