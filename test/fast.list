@@ -873,3 +873,8 @@ test/summarizer.guards.test.js
 test/micro.durability.test.js
 test/checkpoint-restore-undoable.test.js
 test/provider.codex-quota-body.test.js
+test/shellbg.kill-verified.test.js
+test/shellbg.wait-and-wake.test.js
+test/shellbg.prune.test.js
+test/shell.fg-ledger.test.js
+test/procledger.orphan-window.test.js

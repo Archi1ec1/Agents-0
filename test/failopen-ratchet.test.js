@@ -36,7 +36,6 @@ const BASELINE = {
   'providers/openai-compatible.js': 1,// catalog warm; a later call retries
   'providers/openrouter.js': 1,       // catalog warm; a later call retries
   'providers/provider.js': 2,         // reader.cancel() on timeout/abort teardown
-  'shellbg.js': 1,                    // opportunistic pid identity pin (fail-closed to cmd matching)
   'spotify/store.js': 1,              // r.json() value default on an error body
   'terminal-sessions.js': 1,          // opportunistic pid identity pin
   'tools/builtin/browser.js': 9,      // CDP best-effort sends on adopt/close/failRequest seams
@@ -195,7 +194,7 @@ const SYNC_BASELINE = {
   'runroute.js': 2,
   'savestore.js': 7,   // AUDITED — 7 left: ensureRoot, stale .corrupt target unlink, fd close in finally, .bak staging (x2), warn wrappers (x2)
   'servicekeys.js': 1,
-  'shellbg.js': 8,
+  'shellbg.js': 1,   // h2 2026-09-22 — 1 left: child.unref() on a fresh spawn (kill/ledger/pin paths now failNote)
   'shellhooks.js': 4,
   'skillreview.js': 2,
   'skills/catalog.js': 1,
