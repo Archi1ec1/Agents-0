@@ -2055,6 +2055,8 @@ const WorldModel = (() => {
         const lp = { id: p.id, t: p.t, x: lx, y: ly, w, h, block: p.block !== false, agentId: p.agentId || null };
         if (p.r) lp.r = p.r; if (p.m) lp.m = 1;   // orientation -> PropSprites.draw (turned/flipped art) + PropAnchor (which side is its front); w,h above are already the effective box
         if (p.role) lp.role = p.role;   // a role-carrying dock's placard/nag copy (guided workflows)
+        // a bound bay's CAPABILITY room (desk room first, else this bay's room) -> the compiler's SPLIT_CREW advice
+        if (p.t === 'bay' && p.agentId) { const cr = agentRoomId(p.agentId, p.id); if (cr) lp.capRoom = cr; }
         if (p.brief) lp.brief = p.brief;   // a dock's standing job brief -> the compiled plan (step editor; prompt text only)
         if (p.hands) lp.hands = p.hands;   // a dock's HANDS OFF phrase -> composed into that brief by the compiler (workflow panel)
         if (p.label) lp.label = p.label;   // an INTAKE's line name (step editor; legibility only, never routing)

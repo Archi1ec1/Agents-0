@@ -14,7 +14,7 @@ const F = require('./_multibay-floor.js');
 let T = 5000; const clock = () => (T += 10);
 function rig() {
   const router = makeRouter();
-  if (!router.setPlan(F.storedPlan()).ok) throw new Error('plan refused');
+  if (!router.setPlan(F.plan()).ok) throw new Error('plan refused');
   const calls = [];
   const runDock = async (h) => { calls.push(h); return { runId: 'run' + calls.length, tools: 0, text: 'OUT' + calls.length + ' ' + h.agentId + '@' + h.dockId, usd: 0.01 }; };
   const st = makeStepTest({

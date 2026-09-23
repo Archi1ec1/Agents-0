@@ -19,7 +19,7 @@ const F = require('./_multibay-floor.js');
 /* ---- the Workflow panel's strip + sentence ---- */
 {
   const geo = F.geo();
-  const plan = F.storedPlan();          // (until DUP_AGENT is gone the compiler refuses this floor; the stored shape heals)
+  const plan = F.plan();                // the compiled acceptance floor (DUP_AGENT retired)
   const comp = P.lineComponents(geo)[0];
   const f = W.lineFlow(plan, comp, P, geo.props);
   A.eq(f.order, ['p2', 'p3', 'p4'], 'the strip runs bay A, bay B, bay C');

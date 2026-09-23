@@ -24,7 +24,7 @@ function fakeStore() {
 
 (async () => {
   const router = makeRouter();
-  A.ok(router.setPlan(F.storedPlan()).ok, 'the acceptance floor arms');
+  A.ok(router.setPlan(F.plan()).ok, 'the acceptance floor arms');
   const runs = [], stationAsks = [], resolved = [];
   const runOnce = async (o) => {
     runs.push({ agentId: o.agentId, system: o.system, last: o.messages[o.messages.length - 1].content, taskKey: o.taskKey || null, station: o.station || null });

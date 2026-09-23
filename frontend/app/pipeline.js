@@ -249,7 +249,7 @@
       if (hit) errors.push({ code: 'BELT_BURIED', propId: p.id, tile: hit, warn: true });
     }
 
-    const seenAgent = {}, unboundBays = [], dockBays = [], unboundBayTile = {};
+    const unboundBays = [], dockBays = [], unboundBayTile = {}, capRoomsOf = {};
     const hasLine = sources.length > 0;   // an INTAKE line exists — only then can "not fed by it" be a finding
     for (const p of props) {
       if (p.t !== 'bay') continue;
@@ -279,6 +279,9 @@
       // bound, still outside the hash: prompt text only.
       const brief = composeStageBrief(p.brief, p.hands);
       agentOfDock[p.id] = p.agentId;
+      // the CAPABILITY room this bay's runs get (worldmodel.projectGeometry stamps it: the agent's desk room when
+      // it has a desk, else this bay's room) — only read by the SPLIT_CREW warning below
+      if (typeof p.capRoom === 'string' && p.capRoom) { const rs = capRoomsOf[p.agentId] || (capRoomsOf[p.agentId] = []); if (rs.indexOf(p.capRoom) < 0) rs.push(p.capRoom); }
       const dockRec = { propId: p.id, agentId: p.agentId, x: p.x, y: p.y, w: p.w || 1, h: p.h || 1 };
       if (brief) dockRec.brief = brief;
       dockBays.push(dockRec);
@@ -288,8 +291,10 @@
         if (hasLine) errors.push({ code: 'ORPHAN_BAY', propId: p.id, agentId: p.agentId, warn: true });
         continue;
       }
-      if (seenAgent[p.agentId]) { errors.push({ code: 'DUP_AGENT', propId: p.id, agentId: p.agentId }); continue; }
-      seenAgent[p.agentId] = true;
+      /* ONE AGENT, MANY BAYS (Andrew's ruling, 2026-09-22). DUP_AGENT used to refuse a second bay for the same
+         agent; routing is keyed by DOCK now (bayTileToDock / dockChains), so writer@A → editor@B → writer@C is a
+         straight three-stage line and every bay is a dispatch target of its own. Each BAY still has exactly one
+         agent (the prop carries one agentId). */
       // A DOCK TOUCHES THE LINE WHEREVER THE LINE TOUCHES IT: record EVERY ring belt tile as a hookup —
       // an inbound lane arrives at one, an outbound lane leaves from another, and both must count (a
       // single-tile hookup left a bay's out-lane dark and spawned its product crates on the in-lane).
@@ -398,6 +403,15 @@
     }
     const plan = { sources, bays, junctions, belts: map, bayTileToAgent, unboundBays, dockBays, outs, reach, errors };
     plan.bayTileToDock = bayTileToDock;
+    /* SPLIT_CREW (multi-bay, 2026-09-22): a DESK-LESS agent whose bays sit in more than one room gets a
+       different toolbox at each bay (station isolation is per dock — never the union), which is surprising.
+       Advice, never a blocker: "PLACE A DESK — TOOLS FOLLOW THE DOCK" — a desk pins every bay to one room.
+       Anchored on the agent's second-oldest bay (the one whose room differs from the first). */
+    for (const a in capRoomsOf) {
+      if (capRoomsOf[a].length < 2) continue;
+      const mine = props.filter(q => q.t === 'bay' && q.agentId === a).map(q => q.id).sort(propIdCmp);
+      errors.push({ code: 'SPLIT_CREW', agentId: a, propId: mine[1] || mine[0], rooms: capRoomsOf[a].slice().sort(), warn: true });
+    }
 
     /* THE CHAIN LAYER (agentic graphs, 2026-07-27) — bay -> bay edges. Until this existed the floor was a
        DISPATCHER: it picked one agent per inbound message, the dock consumed the crate, and everything drawn
@@ -713,7 +727,8 @@
      (bays[].propId + tiles, dockBays, belts, junctions, sources, outs, lineOfProp). The compiler attaches the
      same maps itself; this is for a plan persisted BEFORE the dock layer existed (planlines.healPlan) and for a
      hand-built plan a test or an older surface passes in. Pure; never mutates `plan`. A pre-dock plan was
-     compiled with DUP_AGENT in force, so its agent->dock map is 1:1 and the derivation is lossless. */
+     compiled while DUP_AGENT (retired 2026-09-22) was in force, so its agent->dock map is 1:1 and the
+     derivation is lossless; a plan that carries docks for a multi-bay agent derives them from bays[].propId. */
   function deriveDockLayer(plan) {
     const p = plan || {};
     const bayTileToDock = {}, agentOfDock = {};

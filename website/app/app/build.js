@@ -103,7 +103,7 @@ const Build = (() => {
     ORPHAN_SOURCE: 'NOT CONNECTED — BELT: CLICK IT, THEN A BAY', ORPHAN_BAY: 'NOT ON THE LINE',
     // a belt that only TOUCHES the junction corner feeds nothing: the lane must run THROUGH the junction tile
     BAY_NOT_FED: 'NOT FED — RUN A BELT INTO IT (THROUGH ANY JUNCTION TILE, NOT PAST ITS CORNER)',
-    CYCLE: 'LOOP! — BREAK THE CIRCLE', FILTER_NO_DEFAULT: 'NO DEFAULT LANE — CLICK', DUP_AGENT: 'DUP AGENT — ONE BAY EACH',
+    CYCLE: 'LOOP! — BREAK THE CIRCLE', FILTER_NO_DEFAULT: 'NO DEFAULT LANE — CLICK', SPLIT_CREW: 'PLACE A DESK — TOOLS FOLLOW THE DOCK',
     UNBOUND_BAY: 'NO AGENT — CLICK', SPLIT_ONE_LANE: 'SPLITTER NEEDS 2 OUT-LANES — RUN BELTS THROUGH ITS TILE, IN ONE SIDE, OUT TWO',
     JOIN_ONE_LANE: 'JOINER NEEDS 2 IN-LANES — RUN A SECOND BELT INTO ITS TILE',
     // the done lane defaults to the FIRST exit (E, S, W, N order); this only fires with no exit, or a done set to a non-exit
@@ -3877,7 +3877,7 @@ const Build = (() => {
   }
   /* ---------- DUPE tool: copy a room or prop, then stamp repeats — the symmetry workflow.
      Props copy their type/footprint + carried config (filter routes, airlock seal) but NEVER an
-     agent/connector binding: two bays on one agent is a routing error (DUP_AGENT) and a portal bind is a
+     agent/connector binding: crewing a bay is a deliberate choice (one agent may crew many — 2026-09-22) and a portal bind is a
      live server relationship, not geometry. Rooms copy their full multi-rect shape + kind + deck style. */
   function pickupDupe(w, ev, pickedId) {
     const pid = pickedId || propAtEvent(ev);

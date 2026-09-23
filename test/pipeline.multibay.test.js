@@ -64,5 +64,25 @@ const nodeAssert = require('assert');
   A.eq(same, n, 'deriveDockLayer(stored plan) reproduces the compiled dock maps on every corpus floor');
 }
 
+/* ---- THE ACCEPTANCE FLOOR COMPILES (DUP_AGENT retired): INBOX → quill@A → mira@B → quill@C → OUTBOX ---- */
+{
+  const F = require('./_multibay-floor.js');
+  const plan = F.plan();
+  A.eq(plan.errors, [], 'writer@A → editor@B → writer@C compiles with NO errors or warnings');
+  A.ok(P.ok(plan), '…and is deployable');
+  A.eq(plan.bays.map(b => b.agentId + '@' + b.propId), ['quill@p2', 'mira@p3', 'quill@p4'], 'three dispatch docks, quill twice');
+  A.eq(Object.keys(plan.dockChains).map(d => d + '>' + plan.dockChains[d].next.join(',')), ['p2>p3', 'p3>p4', 'p4>'], 'dock chains: A→B→C, C ships out');
+  A.eq(plan.dockChains.p4.outbox, true, 'bay C reaches the OUTBOX');
+  A.eq(plan.entryDock, { quill: 'p2', mira: 'p3' }, 'entry docks: quill at bay A (INBOX-fed), mira at her only bay');
+  A.eq(plan.chains.quill.next, ['mira'], 'the agent VIEW: quill (entry dock A) hands to mira');
+  A.eq(plan.reach, { quill: true, mira: false }, 'the agent VIEW of reach');
+  const line = P.lineOf(plan, 'quill');
+  A.eq(P.chainStepDock(plan, 'p3', { lineId: line }), { dockId: 'p4', agentId: 'quill' }, 'B hands to quill AT bay C');
+  // the heal of the same floor in its stored (pre-dock) shape derives the identical dock layer
+  const { healPlan } = require('../sidecar/routing/planlines.js');
+  const h = healPlan(F.storedPlan());
+  for (const k of ['bayTileToDock', 'agentOfDock', 'docksOfAgent', 'dockChains', 'reachDock', 'lineOfDock', 'entryDock']) A.eq(h[k], plan[k], 'healed stored plan == compiled plan: ' + k);
+}
+
 module.exports = {};
 A.report();

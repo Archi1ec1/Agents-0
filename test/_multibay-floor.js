@@ -3,10 +3,10 @@
      INBOX p1 → WRITER quill @ bay A (p2) → EDITOR mira @ bay B (p3) → WRITER quill @ bay C (p4) → OUTBOX p5
 
    one straight belt along y=0 (x 1..14, flowing E); each bay/box hooks it through its 1-tile ring.
-   `geo(brief)` is the floor; `plan()` compiles it. Until DUP_AGENT is removed (slice 6) the compiler refuses a
-   second bay for quill, so `storedPlan()` builds the SAME floor the way a stored plan would carry it: compiled
-   with a placeholder agent on bay C, renamed to quill, and stripped of the dock layer — exactly the shape
-   planlines.healPlan must derive dock maps for. After slice 6 both shapes must agree (pipeline.multibay test). */
+   `geo()` is the floor; `plan()` compiles it (legal since DUP_AGENT was retired). `storedPlan()` builds the SAME
+   floor the way a pre-dock sidecar would have stored it: compiled with a placeholder agent on bay C, renamed to
+   quill, and stripped of the dock layer — exactly the shape planlines.healPlan must derive dock maps for. The
+   two shapes must agree (test/pipeline.multibay.test.js). */
 'use strict';
 const Pipeline = require('../frontend/app/pipeline.js');
 

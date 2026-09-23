@@ -59,10 +59,10 @@ const strip = (p, keys) => { const c = JSON.parse(JSON.stringify(p)); for (const
   A.eq(h2.lineOfDock, fresh.lineOfDock, '…and its docks land on the same lines');
 }
 
-/* ---- 2. the multi-dock floor (derived from its stored shape until DUP_AGENT goes) ---- */
-{
+/* ---- 2. the multi-dock floor — both as COMPILED and as a stored pre-dock plan that heals ---- */
+for (const shape of ['compiled', 'stored']) {
   const r = makeRouter();
-  const res = r.setPlan(F.storedPlan());
+  const res = r.setPlan(shape === 'compiled' ? F.plan() : F.storedPlan());
   A.ok(res.ok, 'the writer→editor→writer plan is accepted');
   const p = r.getPlan();
   A.eq(p.docksOfAgent.quill, ['p2', 'p4'], 'quill crews two docks, oldest first');

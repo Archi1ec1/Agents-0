@@ -32,7 +32,7 @@ function wired(router, extra) {
 
 (async function () {
   const router = makeRouter();
-  A.ok(router.setPlan(F.storedPlan()).ok, 'the acceptance floor arms');
+  A.ok(router.setPlan(F.plan()).ok, 'the acceptance floor arms');
   const line = router.lineOfAgent('quill', 'p2');
 
   /* ---- the acceptance line: 2 hops after the entry, in order, bay C briefed as bay C ---- */
