@@ -318,6 +318,12 @@ async function waitUntil(fn, ms, label) {
   const llm = await startMockOpenRouter();
   const tg = await startMockTelegram();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-telegram-e2e-'));
+  // A connected (synthetic) Spotify account, so media control is genuinely AVAILABLE to advertise: without a token the
+  // run defers spotify_* as certainly unavailable (named in the prompt, revealable via tool_search). No Spotify call here.
+  fs.mkdirSync(path.join(ws, '.secrets'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.secrets', 'spotify.json'), JSON.stringify({
+    clientId: 'telegram-e2e', accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 3600e3, scope: ''
+  }));
   fs.writeFileSync(path.join(ws, 'usercommands.json'), JSON.stringify({ commands: [
     { name: 'telegramproof', type: 'exec', command: 'echo TELEGRAM_COMMAND_OK' }
   ] }));
