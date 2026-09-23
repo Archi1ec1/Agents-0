@@ -894,3 +894,8 @@ test/loop.no-progress-guard.test.js
 test/subagents.stop-cascade.test.js
 test/subagents.stale-worker.test.js
 test/loop.stall-giveup.test.js
+test/preflight.first-call-fold.test.js
+test/threshold.anchored.test.js
+test/tail.token-budget.test.js
+test/fold.user-verbatim.test.js
+test/compaction.images.test.js

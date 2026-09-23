@@ -83,7 +83,8 @@ async function runWith(body, turns) {
 (async () => {
   // ---- (1) finishReason 'length' through the real loop: one attempt, history untouched, spend counted ----
   {
-    const r = await runWith(() => ({ text: CUT, done: { finishReason: 'length' } }), [toolTurn('c1', 100), stopTurn]);
+    // one model turn: the only fold attempt is the preflight before it (alwaysFold would re-attempt on every later turn)
+    const r = await runWith(() => ({ text: CUT, done: { finishReason: 'length' } }), [stopTurn]);
     A.eq(r.res.reason, 'done', '(1) the run still completes');
     A.eq(r.reqs.length, 1, '(1) exactly one summarizer call was made');
     A.eq(r.seq.filter(e => e.name === 'agent.compact').length, 0, '(1) a length-cut summary emits NO agent.compact');
@@ -200,7 +201,8 @@ async function runWith(body, turns) {
 
   // ---- (8) a normal summary still folds through the real loop ----
   {
-    const r = await runWith(() => ({ text: GOOD, done: { finishReason: 'stop' } }), [toolTurn('c1', 100), stopTurn]);
+    // one model turn: exactly one fold, the preflight before it (alwaysFold would fold again on every later turn)
+    const r = await runWith(() => ({ text: GOOD, done: { finishReason: 'stop' } }), [stopTurn]);
     A.eq(r.res.reason, 'done', '(8) the run completes');
     const ev = r.seq.filter(e => e.name === 'agent.compact');
     A.ok(ev.length === 1 && ev[0].payload.reason === 'context', '(8) a clean summary still folds (reason context)');

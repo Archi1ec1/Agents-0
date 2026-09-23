@@ -32,7 +32,9 @@ function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { 
     const ctx = makeContext({ contextLimit: 10, compactAt: 0.65, keepTail: 2 });
     const R = reg();
     let gotPrev = null, calls = 0;
-    const summarize = async (older, prevSummary) => { calls++; gotPrev = prevSummary; return { summary: 'MERGED', usd: 0, tokens: 0 }; };
+    // the FIRST fold is the one that merges the seeded note (the preflight fold before request #1 — the history is
+    // already over this 10-token window); later folds merge the running summary that fold produced
+    const summarize = async (older, prevSummary) => { calls++; if (gotPrev === null) gotPrev = prevSummary; return { summary: 'MERGED', usd: 0, tokens: 0 }; };
     const messages = [
       { role: 'system', content: '<conversation_summary>\nOLD RUNNING SUMMARY\n</conversation_summary>' },
       { role: 'user', content: 'u1' }, { role: 'assistant', content: 'a1' },
