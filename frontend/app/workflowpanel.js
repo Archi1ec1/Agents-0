@@ -128,6 +128,7 @@ const WorkflowPanel = (() => {
       + '<div class="wf-body" id="wf-body"></div></div><footer class="wf-foot" id="wf-foot"></footer>';
     H.root().appendChild(el);
     el.addEventListener('keydown', e => { if (e.key === 'Escape' && !/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) { e.stopPropagation(); close(); } });
+    el.addEventListener('input', e => { const t = e.target; if (t && t.dataset && t.dataset.keep) { t.dataset.typed = '1'; S.drafts[t.dataset.keep] = t.value; } }, true);
     H.panelShown(true);   // the Build Library steps aside so the floor is not squeezed between two panels
   }
   function close() {
@@ -167,7 +168,9 @@ const WorkflowPanel = (() => {
 
   /* ---------- painting ---------- */
   const typing = () => { const a = document.activeElement; return !!(a && el && el.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)); };
-  function keepDrafts() { for (const n of $$('[data-keep]')) S.drafts[n.dataset.keep] = n.value; }
+  // a draft is only what the Commander TYPED: a field painted empty (e.g. before the INBOX had a test job) must
+  // never be remembered as an empty draft and later clobber the real default it now has
+  function keepDrafts() { for (const n of $$('[data-keep]')) if (n.dataset.typed === '1') S.drafts[n.dataset.keep] = n.value; }
   function paint(force) {
     if (!el || !H) return;
     const f = flow();
@@ -875,7 +878,7 @@ const WorkflowPanel = (() => {
   function paintTest(body, f) {
     const W = WL(), s = S.session && S.session.lineId === S.lineKey ? S.session : null;
     const live = s && W.isLive(s);
-    const budget = s && s.limits ? '<div class="wf-budget"><span>$' + (+s.totalUsd || 0).toFixed(3) + '</span><span class="meter"><i style="width:' + Math.min(100, ((+s.totalUsd || 0) / (+s.limits.maxUsdPerMessage || 2)) * 100) + '%"></i></span><span class="dim">of $' + (+s.limits.maxUsdPerMessage || 2).toFixed(2) + ' line cap</span></div>' : '';
+    const budget = s && s.limits ? '<div class="wf-budget"><span>$' + (+s.totalUsd || 0).toFixed(3) + '</span><span class="meter"><i style="width:' + Math.min(100, ((+s.totalUsd || 0) / (+s.limits.maxUsdPerMessage || 2)) * 100) + '%"></i></span><span class="dim">of $' + (+s.limits.maxUsdPerMessage || 2).toFixed(2) + ' line cap' + (+s.droppedUsd > 0 ? ' · includes $' + (+s.droppedUsd).toFixed(3) + ' from rewound steps' : '') + '</span></div>' : '';
     const log = s && s.hops && s.hops.length ? '<div class="wf-runlog" aria-label="Run log"><span class="lbl">RUN LOG</span>' + s.hops.map((h, i) => (i ? '<span class="arr">▸</span>' : '')
       + '<button type="button" class="wf-hop' + (S.hop === i ? ' sel' : '') + (h.edited ? ' edited' : '') + (h.verdict === 'revise' ? ' revise' : '') + '" data-hop="' + i + '">' + esc(W.hopLabel(h, nameOf)) + '</button>').join('') + '</div>' : '';
     const err = S.sessionErr ? '<div class="wf-warnline">✕ ' + esc(S.sessionErr) + '</div>' : '';
@@ -883,8 +886,14 @@ const WorkflowPanel = (() => {
     if (S.hop != null && s && s.hops[S.hop]) main = hopDetailHTML(s, S.hop);
     else if (!s || !live) {
       const done = s && s.state === 'done', stopped = s && (s.state === 'stopped' || s.state === 'failed');
-      main = (done ? '<div class="wf-sec"><h3>✓ Reached the OUTBOX</h3><div class="wf-io out">' + esc(s.final || '(empty)') + '</div><div class="wf-meta"><span>cost <b>$' + (+s.totalUsd || 0).toFixed(4) + '</b></span><span>' + s.hops.length + ' step run' + (s.hops.length === 1 ? '' : 's') + '</span><span>' + s.hops.filter(h => h.edited).length + ' edited by you</span></div></div>' : '')
-        + (stopped ? '<div class="wf-sec"><h3>' + (s.state === 'failed' ? 'Test failed' : 'Test stopped') + '</h3><p class="wf-help">' + esc(s.error || 'Stopped by you · nothing shipped.') + '</p></div>' : '')
+      const lastH = s && s.hops && s.hops[s.hops.length - 1];
+      const shipped = done && !s.ended && typeof s.final === 'string';
+      const meta = s ? '<div class="wf-meta"><span>total cost <b>$' + (+s.totalUsd || 0).toFixed(4) + '</b></span>' + (+s.droppedUsd > 0 ? '<span>incl. <b>$' + (+s.droppedUsd).toFixed(4) + '</b> from rewound steps</span>' : '')
+        + '<span>' + s.hops.length + ' step run' + (s.hops.length === 1 ? '' : 's') + '</span><span>' + s.hops.filter(h => h.edited).length + ' edited by you</span></div>' : '';
+      main = (shipped ? '<div class="wf-sec"><h3>✓ Reached the OUTBOX</h3><div class="wf-io out">' + esc(s.final) + '</div>' + meta + '</div>'
+        : done ? '<div class="wf-sec"><h3>The line ended before the OUTBOX</h3><p class="wf-help">' + esc(s.ended || 'there was no next step') + '</p>'
+          + (lastH ? '<div class="wf-from"><span>LAST OUTPUT · ' + esc(nameOf(lastH.agentId)) + '</span></div><div class="wf-io">' + esc(lastH.output || '') + '</div>' : '') + meta + '</div>' : '')
+        + (stopped ? '<div class="wf-sec"><h3>' + (s.state === 'failed' ? 'Test failed' : 'Test stopped') + '</h3><p class="wf-help">' + esc(s.error || 'Stopped by you · nothing shipped.') + '</p>' + meta + '</div>' : '')
         + '<section class="wf-sec"><h3>' + (s ? 'Run it again' : 'Step-test the whole line') + '</h3>'
         + '<p class="wf-help">Your input runs through the real line and <b>pauses after each step</b>, showing the exact text handed to the next one. Edit it, re-run a step with a better brief, or add a BAY right there. A paused test holds no model connection and spends nothing.</p>'
         + '<textarea id="wf-st-in" data-keep="stin" class="wf-io" rows="4" aria-label="Test input" placeholder="What should the line work on?">' + esc(S.testJob[S.lineKey] || '') + '</textarea>'
@@ -907,9 +916,11 @@ const WorkflowPanel = (() => {
   }
   function hopDetailHTML(s, i) {
     const h = s.hops[i];
-    const canRewind = s.state === 'paused' || s.state === 'done' || s.state === 'stopped';
+    const canRewind = s.state === 'paused' || s.state === 'done' || s.state === 'stopped' || s.state === 'failed';
     return '<section class="wf-sec"><h3>' + esc(nameOf(h.agentId)) + (h.pass > 1 ? ' · pass ' + h.pass : '') + (h.rerun ? ' · re-run' : '') + '</h3>'
       + '<div class="wf-from"><span>WHAT IT GOT</span></div><div class="wf-io">' + esc(h.input || '') + '</div>'
+      + (h.turn && h.turn !== h.input ? '<details class="wf-more"><summary>The exact turn it was sent (brief + handoff)</summary><div class="wf-io">' + esc(h.turn) + '</div></details>' : '')
+      + (h.error ? '<div class="wf-warnline">✕ ' + esc(h.error) + '</div>' : '')
       + '<div class="wf-from"><span>WHAT IT REPLIED</span><span class="src">$' + (+h.usd || 0).toFixed(4) + ' · ' + (Array.isArray(h.tools) ? h.tools.length : (+h.tools || 0)) + ' tools</span></div><div class="wf-io out">' + esc(h.output || '') + '</div>'
       + (h.edited ? '<div class="wf-from"><span>WHAT YOU SENT ON</span><span class="wf-tag">EDITED BY YOU</span></div><div class="wf-io edited">' + esc(h.sent || '') + '</div>' : '')
       + '<div class="wf-row"><button type="button" class="bb sm" id="wf-hop-back">◂ BACK</button>' + (canRewind ? '<button type="button" class="bb sm refit-primary" id="wf-hop-rewind">↺ RE-RUN FROM ' + esc(nameOf(h.agentId)) + '</button>' : '') + '</div>'
@@ -922,7 +933,8 @@ const WorkflowPanel = (() => {
     const edited = S.handoff !== s.paused.text;
     const toOut = nx.kind === 'outbox';
     const nextPid = nx.kind === 'agent' ? f && f.order.find(x => f.docks[x].agentId === nx.agentId) : null;
-    const v = h.verdict ? '<div class="wf-verdict' + (h.verdict === 'revise' ? ' revise' : '') + '">VERDICT: ' + esc(h.verdict.toUpperCase()) + '</div>' : '';
+    const v = (h.verdict ? '<div class="wf-verdict' + (h.verdict === 'revise' ? ' revise' : '') + '">VERDICT: ' + esc(h.verdict.toUpperCase()) + (nx.back ? ' — goes back for another pass' : '') + '</div>' : '')
+      + (s.paused.next && s.paused.next.blocked ? '<div class="wf-warnline">⚠ Continuing will stop here: ' + esc(s.paused.next.blocked) + '</div>' : '');
     return '<section class="wf-sec"><h3>✓ ' + esc(nameOf(h.agentId)) + ' finished' + (h.pass > 1 ? ' (pass ' + h.pass + ')' : '') + '</h3>'
       + '<div class="wf-meta"><span>cost <b>$' + (+h.usd || 0).toFixed(4) + '</b></span><span>' + (Array.isArray(h.tools) ? h.tools.length : (+h.tools || 0)) + ' tool calls</span>' + (h.ms ? '<span>' + Math.round(h.ms / 1000) + 's</span>' : '') + '</div>' + v
       + '<div class="wf-from"><span>' + (toOut ? 'FINAL RESULT · WHAT SHIPS' : nx.kind === 'end' ? 'THE LINE ENDS HERE · ' + esc(nx.label) : 'EXACT TEXT ' + esc(nx.label) + ' WILL GET') + '</span><span class="wf-tag" id="wf-edtag"' + (edited ? '' : ' hidden') + '>EDITED BY YOU</span></div>'

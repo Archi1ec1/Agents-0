@@ -54,6 +54,15 @@ A.ok(/if \(restore && dock && dock\.classList\.contains\('is-collapsed'\)\) togg
 A.ok(/if \(!hide\) wfKitAuto = false;/.test(build), 'a reopen by the Commander cancels the owed restore');
 A.ok(/if \(id !== 'select' \|\| !wasSelect\) toggleKit\(false\);/.test(build), 'a bare deselect (ESC) does not pop the minimized library back open');
 
+// the real step-test backend's shape (2026-09-23 live run): an `ended` session did NOT reach the OUTBOX; the
+// total includes rewound spend (droppedUsd); a blocked next hop, a hop's error and its exact turn are shown
+A.ok(/const shipped = done && !s\.ended && typeof s\.final === 'string';/.test(panel), 'only a server `final` (no `ended`) is called Reached the OUTBOX');
+A.ok(/The line ended before the OUTBOX/.test(panel), 'an ended session says it stopped short, and why');
+A.ok(/s\.droppedUsd/.test(panel) && /from rewound steps/.test(panel), 'rewound spend is named inside the total');
+A.ok(/s\.paused\.next\.blocked/.test(panel) && /h\.turn/.test(panel) && /h\.error/.test(panel), 'blocked next hop, the exact turn and a hop error are shown');
+// a draft is only what was TYPED (an input painted empty before the INBOX had a test job must not clobber it)
+A.ok(/if \(n\.dataset\.typed === '1'\) S\.drafts\[n\.dataset\.keep\] = n\.value;/.test(panel), 'drafts keep typed text only');
+
 // load order: the truth layer, then the panel, then build.js
 const iL = html.indexOf('app/workflowline.js'), iP = html.indexOf('app/workflowpanel.js'), iB = html.indexOf('app/build.js');
 A.ok(iL > 0 && iP > iL && iB > iP, 'index.html loads workflowline.js, then workflowpanel.js, then build.js');
