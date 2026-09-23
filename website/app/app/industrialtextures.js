@@ -22,12 +22,12 @@ const IndustrialTextures = (() => {
     // 2026-09-22 key light (WorldLight KEY buffer): pools open further (cut) and then
     // carry a warm gain ON the surface (key), tighter than the cut; screens and beacons
     // splash their own colour (keyProps); unlit deck leans cool (shadeCool).
-    // Andrew, 2026-09-23: the pre-key-light station was "the perfect level of dark" and the
-    // key light "really bright" — "mix these 2 together for the perfect medium". So this is
-    // the 50/50 blend of pre-light (cut 1, key 0, shadeCool 0, film .38) and the merged key
-    // light (cut 1.6, key 1.7, keyProps 3, shadeCool .1, film .32). worldshot hab mean luma:
-    // pre 16.9, this 19.9, merged 23.0; lounge stays near the old dark (11.0 / 11.9 / 16.3).
-    cut: 1.3, key: .85, keyReach: .5, keyProps: 2, keyPropReach: 1.5, shadeCool: .05 };
+    // RESTORED 2026-09-23 to the pre-key-light look (Andrew: the station before the key light
+    // was "literally almost perfect", every brighter step "TOO BRIGHT"). key 0 + shadeCool 0
+    // keep the KEY buffer off entirely and cut 1 is the original pool size, so this renders the
+    // 29bb21d80 station. The KEY machinery stays in worldlight.js for opt-in use (crtlab).
+    // Tried and rejected: cut 2.2/key 2, cut 1.6/key 1.7, cut 1.3/key .85 — all too bright.
+    cut: 1, key: 0, keyReach: .5, keyProps: 1, keyPropReach: 1.5, shadeCool: 0 };
   const plates = new WeakMap();
   const platePyramids = new WeakMap();
   const detailTargets = new WeakMap(), wallStrips = new Map(), materials = new Map(), emitters = new Map();
