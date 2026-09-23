@@ -49,6 +49,17 @@ const RELEASED = {
   'google-calendar': false, 'google-docs': false, 'google-sheets': false
 };
 
+/* EARLY ACCESS — a publisher BUILD flag, never a user setting. A build staged with STARNET_GOOGLE_EARLY_ACCESS=1
+   (scripts/stage-google-client.mjs, desktop-build.yml's opt-in input; never release-train) carries
+   `earlyAccess: true` in its bundled registration, which opens every Google service BEFORE Google's verification:
+   Google then shows its "unverified app" warning at sign-in and caps the app at 100 users. The catalog labels
+   every card so nobody mistakes it for a verified release. Legacy endpoints stay deferred; the relay guard applies. */
+const EARLY_ACCESS = false;
+function loadEarlyAccess({ readFile }) {
+  try { return JSON.parse(readFile() || '{}').earlyAccess === true; }
+  catch (e) { return false; }   // no staged registration (dev, public build) => not early access
+}
+
 function isSelectedFiles(cfg) { return !!cfg && cfg.id === 'google-files' && cfg.url === FILES_URL; }
 function fileScopeOnly(scope) { const scopes = String(scope || '').trim().split(/\s+/); return scopes.length === 1 && scopes[0] === FILE_SCOPE; }
 const DEFERRED = 'Full Google Workspace access is deferred while Google verification is completed. Saved broad-access connections are kept but cannot run. Selected Google files is available separately.';
@@ -75,6 +86,7 @@ function connectorDeferred(cfg) {
   if (api.RELEASE_DEFERRED === false || !isGoogleConnector(cfg)) return false;
   if (isSelectedFiles(cfg)) return !api.SELECTED_FILES_ENABLED;
   const svc = serviceOf(cfg);
+  if (svc && api.EARLY_ACCESS === true) return false;
   return !(svc && api.RELEASED[svc] === true);
 }
 function deferredMessage(cfg) {
@@ -87,4 +99,5 @@ function deferredMessage(cfg) {
 }
 
 const api = module.exports = { desktopClient, loadDesktopClient, UNAVAILABLE, RELEASE_DEFERRED, SELECTED_FILES_ENABLED, FILE_SCOPE, FILES_URL,
-  isSelectedFiles, fileScopeOnly, DEFERRED, isWorkspaceUrl, SERVICES, RELEASED, serviceOf, isGoogleConnector, connectorDeferred, deferredMessage };
+  isSelectedFiles, fileScopeOnly, DEFERRED, isWorkspaceUrl, SERVICES, RELEASED, serviceOf, isGoogleConnector, connectorDeferred, deferredMessage,
+  EARLY_ACCESS, loadEarlyAccess };

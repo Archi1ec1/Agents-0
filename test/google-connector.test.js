@@ -90,6 +90,20 @@ const catalog = require('../sidecar/mcp/catalog.js');
     assert.match(G.deferredMessage(cfgOf('google-calendar')), /^Google Calendar is deferred until Google’s app verification is complete\./);
     assert.ok(!/assessment/.test(G.deferredMessage(cfgOf('gmail-send'))), 'send-only never waits on the assessment');
     assert.equal(G.deferredMessage({ url: 'https://gmailmcp.googleapis.com/mcp/v1' }), G.DEFERRED, 'legacy endpoints keep the generic notice');
+    // EARLY ACCESS: a build flag, off in source, only ever read from the bundled registration.
+    assert.equal(G.EARLY_ACCESS, false, 'source ships with early access off');
+    assert.equal(G.loadEarlyAccess({ readFile: () => JSON.stringify({ installed: {}, earlyAccess: true }) }), true);
+    assert.equal(G.loadEarlyAccess({ readFile: () => JSON.stringify({ installed: {} }) }), false);
+    assert.equal(G.loadEarlyAccess({ readFile: () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } }), false, 'no staged registration is not early access');
+    assert.equal(G.loadEarlyAccess({ readFile: () => '{"earlyAccess":"true"}' }), false, 'only a literal true counts');
+    try {
+      G.EARLY_ACCESS = true;
+      for (const id of Object.keys(G.SERVICES)) assert.equal(G.connectorDeferred(cfgOf(id)), false, id + ' opens in an early-access build');
+      assert.equal(G.connectorDeferred({ id: 'gmail', url: 'https://gmailmcp.googleapis.com/mcp/v1', transport: 'http' }), true, 'legacy endpoints stay deferred even in early access');
+    } finally { G.EARLY_ACCESS = false; }
+    const wf = dir => fs.readFileSync(path.join(__dirname, '../.github/workflows', dir), 'utf8');
+    assert.ok(!/STARNET_GOOGLE_EARLY_ACCESS/.test(wf('release-train.yml')), 'the public release train can never stage early access');
+    assert.match(wf('desktop-build.yml'), /google_early_access:[\s\S]*default: "false"/, 'internal builds opt in explicitly, default off');
   }
   // Send-only Gmail: one tool, a well-formed MIME message, and header injection refused before any network call.
   {
@@ -152,6 +166,15 @@ const catalog = require('../sidecar/mcp/catalog.js');
     assert.equal(fs.statSync(staged).mode & 0o444, 0o444, 'installed native metadata remains readable across OS accounts');
     assert.equal(stage('', true).status, 0);
     assert.equal(fs.existsSync(staged), false, 'internal builds cannot inherit a stale registration');
+    // EARLY ACCESS is stamped into the registration only when the build asks for it.
+    const stageEarly = (flag) => spawnSync(process.execPath, [path.join(stageRoot, 'scripts/stage-google-client.mjs')], {
+      encoding: 'utf8', env: { ...process.env, STARNET_GOOGLE_DESKTOP_CLIENT_JSON: JSON.stringify(installed), STARNET_GOOGLE_EARLY_ACCESS: flag, NODE_OPTIONS: '' }
+    });
+    assert.equal(stageEarly('').status, 0);
+    assert.equal(JSON.parse(fs.readFileSync(staged, 'utf8')).earlyAccess, undefined, 'a normal build carries no early-access flag');
+    assert.equal(stageEarly('1').status, 0);
+    assert.equal(JSON.parse(fs.readFileSync(staged, 'utf8')).earlyAccess, true, 'an early-access build stamps the flag into the bundled registration');
+    assert.equal(JSON.parse(fs.readFileSync(staged, 'utf8')).installed.client_id, installed.installed.client_id, 'and still ships only the installed client');
   } finally { fs.rmSync(stageRoot, { recursive: true, force: true }); }
   console.log('google-connector: PASS (native registration, legacy routing, ' + exercised + ' real MCP tool paths, validation, API errors, timeout, bounds, customer UI, release gate)');
 })().catch(e => { console.error(e); process.exitCode = 1; });

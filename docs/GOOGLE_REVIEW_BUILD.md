@@ -72,6 +72,38 @@ Same flow for **Gmail** (search the fixture subject, read it, create a draft, se
 **Google Drive** (search, read metadata, export text, create and rename a fixture folder), after the
 security-assessment scope has been settled. Keep submission A's approval separate.
 
+## Submission B and the security assessment: the on-device position
+
+Google requires CASA for restricted scopes when the data is accessed through **the developer's** servers, and
+exempts apps whose restricted data stays on the device
+([restricted-scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification)).
+StarNet runs on the user's computer; the one StarNet-operated path model traffic can take is **StarNet Managed**
+(the credits relay, provider `starnet`). Since 2026-09-22 (`sidecar/mcp/google-relay-guard.js`):
+
+- a StarNet Managed run is **not offered** Gmail read/compose or whole-Drive tools;
+- every request streamed to StarNet Managed (primary, fallback, auxiliary pass) has earlier Gmail/Drive tool
+  results **replaced with a notice** — the user's local transcript is untouched;
+- proven end to end by `test/google-relay-guard.e2e.test.js` (and shown to fail with either half removed).
+
+Restricted Google data therefore reaches only Google and the model provider the user selected with their own key.
+**Residual paths the guard does not cover** — decide before claiming the exemption: an assistant's own prose that
+restates mail/Drive content in the same conversation, memory notes and files the agent writes from that content
+(both can later be sent on a StarNet Managed run), and any future StarNet server feature. Whether the exemption
+applies is Google's determination during review; this is a technical position, not a compliance claim.
+
+## Early access builds (before approval)
+
+For up to **100 users** before verification, build with the early-access flag:
+
+- GitHub → Actions → **desktop-build** → Run workflow → `google_early_access: true` (optionally `publish-test: true`
+  for a shareable pre-release link). The public **release-train never** stages it (a test enforces this).
+- Locally: `STARNET_GOOGLE_EARLY_ACCESS=1 node scripts/stage-google-client.mjs` before packaging.
+
+Every Google card in that build opens and says **"Early access — not yet verified by Google"**; Google shows its
+unverified-app warning at sign-in. Keep the project's publishing status in mind: in **Testing** status only listed
+test users can sign in and refresh tokens expire after 7 days; in **In production** (unverified) anyone can sign in
+up to the 100-user cap. The relay guard applies in early access builds too.
+
 ## After approval
 
 Flip only the approved services in `RELEASED` (google-client.js), in an isolated change with the full gates,

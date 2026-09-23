@@ -107,7 +107,7 @@ const edgetts = require('./edgetts.js');   // V-EDGE: free keyless neural TTS fl
 const localVoice = require('./local-voice.js');
 const { makeMediaService } = require('./media-service.js');
 const {
-  selectProvider,
+  selectProvider: selectProviderRaw,
   listProviderProfiles,
   getProviderProfile,
   normalizeProviderId: normalizeProviderIdFromRegistry,
@@ -118,6 +118,22 @@ const {
   providerRequiresBaseUrl,
   attachRateLimits
 } = require('./providers/factory.js');
+/* RESTRICTED GOOGLE DATA NEVER RIDES THE STARNET RELAY (mcp/google-relay-guard.js). Every provider this process
+   builds for StarNet Managed ('starnet' — the one StarNet-operated path model traffic can take) streams through
+   the guard, so primary runs, fallbacks and auxiliary passes all send a copy with Gmail/Drive tool results
+   withheld. Built lazily: providers are constructed long after boot, and connector configs are read per request. */
+let googleRelayGuardInstance = null;
+function googleRelayGuard() {
+  if (!googleRelayGuardInstance) googleRelayGuardInstance = require('./mcp/google-relay-guard.js').makeGoogleRelayGuard({
+    googleClient: require('./mcp/google-client.js'), tools: require('./mcp/transport.google.js').TOOLS,
+    mcpToolName: require('./mcp/translate.js').mcpToolName, configs: () => connectorConfigs
+  });
+  return googleRelayGuardInstance;
+}
+function selectProvider(opts) {
+  const built = selectProviderRaw(opts);
+  return opts && normalizeProvider(opts.provider) === 'starnet' ? googleRelayGuard().guardProvider(built) : built;
+}
 /* PROACTIVE QUOTA. One tracker for the whole process, attached to the factory so every provider adapter's
    injected fetch is instrumented at a single seam (see providers/ratelimits.js). Quota used to be learned only
    by hitting a 429; now the *-remaining headers of ordinary successful calls are kept, so the station can say
@@ -4360,6 +4376,12 @@ const googleConnectorDeferred = cfg => googleClientConfig.connectorDeferred(cfg)
 const googleDeferredMessage = cfg => googleClientConfig.deferredMessage(cfg);
 const GOOGLE_DESKTOP_CLIENT = googleClientConfig.loadDesktopClient({ env: process.env,
   readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') });
+// EARLY ACCESS is a publisher build flag carried in the bundled registration (mcp/google-client.js). Only ever
+// turned ON here — a dev or public build has no staged flag and keeps the per-service release map.
+if (googleClientConfig.loadEarlyAccess({ readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') })) {
+  googleClientConfig.EARLY_ACCESS = true;
+  console.log('  · Google early access build: every Google service is open before Google verification (unverified-app warning, 100-user cap)');
+}
 const GOOGLE_OAUTH_ENV_CLIENT = (() => {
   const clientId = String(process.env.STARNET_GOOGLE_OAUTH_CLIENT_ID || '').trim();
   const clientSecret = String(process.env.STARNET_GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
@@ -11232,6 +11254,10 @@ function handleConnectorCatalog(req, res) {
     if (e.staticOauth) e.needsClient = !connectorOauthClient(e.staticOauth.authorizationServer).clientId;
     if (e.googleApi) {
       e.releaseDeferred = googleConnectorDeferred(e);
+      if (!e.releaseDeferred && googleClientConfig.EARLY_ACCESS === true && !googleClientConfig.isSelectedFiles(e)) {
+        e.earlyAccess = true;
+        e.blurb = 'Early access — not yet verified by Google; Google shows a warning when you sign in. ' + e.blurb;   // catalog entries are fresh clones per request
+      }
       if (e.releaseDeferred) e.blurb = 'Planned for a later update. ' + e.blurb.replace(/^Planned for a later update\. /, '').replace(' Sign in with Google to connect your account.', '');
       e.signInAvailable = !connectorStorageError && !e.releaseDeferred && !e.needsClient && (!googleClientConfig.isSelectedFiles(e) || connectorVault.protected);
       if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleDeferredMessage(e) : googleClientConfig.UNAVAILABLE);
@@ -16242,7 +16268,10 @@ async function runOnceCore(o) {
   // gate, network classification, and the wire tool-list treat them exactly like a built-in. Never breaks a run.
   try {
     const room = station.rooms && station.agents && station.agents[agentId] && station.rooms[station.agents[agentId].room];
-    for (const def of connectors.toolDefsForObjects((room && room.objects) || [])) {
+    // Restricted-tier Google connectors (Gmail read/compose, whole-Drive) are withheld from StarNet Managed runs.
+    const projectableObjects = ((room && room.objects) || []).filter(ob => !ob || ob.objectType !== 'connector'
+      || googleRelayGuard().projectable(ob.connectorId || (ob.binding && ob.binding.connectorId), providerId));
+    for (const def of connectors.toolDefsForObjects(projectableObjects)) {
       registry.register(def, { provenance: 'connector' });
       if (resolved.tools.indexOf(def.name) < 0) resolved.tools.push(def.name);
       resolved.networkCaps[def.name] = true;
