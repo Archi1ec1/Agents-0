@@ -235,6 +235,7 @@ const Build = (() => {
     tool = 'select';   // SELECT is the default mode — a fresh REFIT session never opens with a placement tool armed
     ridePending = false; rideAgentId = null; ridePrevReach = null;   // the auto first-ride re-arms (and re-baselines its reach snapshot) from THIS session's compile, never a stale one
     // finish-the-line: fresh session state (the registry itself persists in localStorage) + one seam probe
+    wfHighlightId = null; wfPaused = null; wfHostMemo = null;
     finSample = null; finKeySel = null; finEngaged = false; finSig = ''; finCardEl = null; finComp = null; valComps = null; lastStampIds = null; finPollTs = 0; finSampleRes = null;
     for (const k in stampNameOf) delete stampNameOf[k];   // session-scoped blueprint-name placeholders (line naming)
     clearLineFields();   // a fresh session never inherits a prior floor's "where can this go" answers
@@ -301,6 +302,8 @@ const Build = (() => {
     propThumbs.length = 0; lastThumbTs = 0;   // free the preview tiles' canvases
     if (unsub) unsub(), unsub = null;
     if (ro) { try { ro.disconnect(); } catch (e) {} ro = null; }
+    if (typeof WorkflowPanel !== 'undefined' && WorkflowPanel.isOpen()) WorkflowPanel.close();   // saves its open fields while the station is still ours
+    wfHighlightId = null; wfPaused = null;
     finCardEl = null; finComp = null; finSig = '';   // the card's DOM dies with root below
     document.body.classList.remove('refit-on');
     document.body.style.removeProperty('--refit-dock-clearance');
@@ -2109,20 +2112,6 @@ const Build = (() => {
       compact: (comp && comp.intakes.length ? 'Inbox' : 'No inbox') + ' → ' + bays.length + ' step' + (bays.length === 1 ? '' : 's') + ' → ' + (exits ? 'Outbox' : 'Check output route') };
   }
   /* REFIT-WORKFLOW-PURE-END */
-  function workflowHTML(comp) {
-    if (!comp) return '<div class="refit-note">Connect this inbox to a step to see its workflow.</div>';
-    const view = workflowReadout(comp, valPlan, agentLabelFor);
-    return '<section class="refit-workflow" aria-label="Workflow overview"><h4>Connected steps</h4>'
-      + '<p class="workflow-help">Click a step to choose its agent and instructions.</p>'
-      + view.steps.map(s => {
-        const prop = station.propById(s.propId), brief = prop && prop.brief;
-        const detail = [s.agent !== s.label ? s.agent : '', s.receives].filter(Boolean).join(' · ');
-        return '<button type="button" class="bb refit-workflow-step" data-workflow-step="' + esc(s.propId) + '"><b>' + esc(s.label) + '</b>' + (detail ? '<span>' + esc(detail) + '</span>' : '')
-          + '<span>' + (brief ? esc(String(brief).slice(0, 180)) + (String(brief).length > 180 ? '…' : '') : 'Add instructions for this step') + '</span>'
-          + '<span>Next → ' + esc(s.sends) + '</span><span class="refit-workflow-edit">Edit agent & instructions</span></button>';
-      }).join('')
-      + '<p><b>Result</b><br>' + esc(view.result) + '</p><p class="refit-workflow-note">Connections shown here describe where work will go. They do not mean a job has run.</p></section>';
-  }
   /* which position does this dock's agent hold on the COMPILED line? (inbox-trigger, 2026-08-05)
      'entry' = fed straight by an intake source (plan.reach — the BFS from every source), 'chain' = fed by an
      upstream dock's chain edge (plan.chains[..].next), null = unknowable (unbound dock / no compiled plan /
@@ -2135,45 +2124,18 @@ const Build = (() => {
     for (const a in chains) { const nx = (chains[a] && chains[a].next) || []; if (nx.indexOf(agentId) >= 0) return 'chain'; }
     return null;
   }
-  /* the brief placeholder differs by POSITION (Andrew's confusion, now law): an entry dock's brief reads
-     against the ARRIVING message; a chain-fed dock's against the previous station's output. One generic
-     fallback for docks the plan can't place (unbound / beltless). */
-  const BRIEF_PH = {
-    entry: "The arriving message is the task. This is your station's standing part of it — what this desk always does with arriving work.",
-    chain: "Work arrives here as the previous station's output. This is your station's job — your part of every run that reaches you."
-  };
-  /* ON <LINE> — n docks, feeds <next> (2026-08-22 sweep): the dock's line fact is DURABLE and LIVE. After a
-     click-connect the only signal used to be a 1.3s flash; this sentence sits on the open STEP card and
-     refreshLineFacts() re-reads it off the recompiled plan (valComps / valPlan.chains) every time the floor
-     changes, so "did that connect?" is answered by the card without reopening it. Every word is a compiled
-     fact: the line from Pipeline.lineComponents, the hand-off from plan.chains (the sidecar's own route). */
-  function lineFactHTML(bayId) {
-    const comp = lineOfProp(bayId);
-    if (!comp) return 'Not connected yet. Close this panel, choose BELT, then click this Bay and the next prop to connect them.';
-    const p = station.propById(bayId), aid = p && p.agentId;
-    const ch = aid && valPlan && valPlan.chains && valPlan.chains[aid];
-    const feeds = !ch ? null
-      : (ch.next && ch.next.length) ? 'Sends the result to <b>' + esc(ch.next.map(agentLabelFor).join(' + ')) + '</b>.'
-      : ch.outbox ? 'Sends the result to the <b>Outbox</b>.'
-      : ch.deadEnd ? 'No next step connected. Add a belt to another Bay or an Outbox.' : null;
-    return '<b>' + esc(lineNameOf(comp) || 'Unnamed workflow') + '</b> · ' + comp.bays.length + ' agent step' + (comp.bays.length === 1 ? '' : 's')
-      + '<p>' + (feeds || (aid ? 'No onward connection confirmed yet.' : 'Choose an agent to check this step’s route.')) + '</p>';
-  }
+  /* THE LINE FACTS FOLLOW THE FLOOR (2026-08-22 sweep -> 2026-09-22 docked panel). The STEP card's "ON <LINE> —
+     feeds <next>" sentence became the docked Workflow panel's GETS/TO contract rows, the flow strip and the
+     how-it-runs sentence; every one of them re-reads the recompiled plan here, after every floor edit, so a
+     click-connect is answered on the open panel without reopening it. */
   function refreshLineFacts() {
-    if (!root) return;
-    root.querySelectorAll('[data-linefact]').forEach(el => { if (station.propById(el.dataset.linefact)) el.innerHTML = lineFactHTML(el.dataset.linefact); });
+    if (typeof WorkflowPanel !== 'undefined' && WorkflowPanel.isOpen()) WorkflowPanel.refresh();
   }
-  /* THE COMPUTE RULE, SAID PLAINLY (2026-08-22 sweep): the floor's amber "NO COMPUTE — ADD A PC IN THIS ROOM"
+  /* THE COMPUTE RULE, SAID PLAINLY  /* THE COMPUTE RULE, SAID PLAINLY (2026-08-22 sweep): the floor's amber "NO COMPUTE — ADD A PC IN THIS ROOM"
      never said WHOSE PC — bayObjects grants `computer` only from a workstation in the bay's room that is
      assigned to THIS agent (or unassigned in a one-agent room). The card states exactly that, with the
      one-click fix: a desk placed IN THIS ROOM and bound to the agent (requisitionPcFor — the same validated
      addProp path a hand placement takes; never a flag). Reads bayObjectsMemoed — the same truth the nag draws. */
-  function computeFactHTML(bayId) {
-    const p = station.propById(bayId); if (!p || !p.agentId) return '';
-    if (bayObjectsMemoed(p.agentId).indexOf('computer') >= 0) return '<div class="step-fact">✓ ' + esc(agentLabel(p.agentId)) + ' has a workstation for this step.</div>';
-    return '<div class="refit-note">' + esc(agentLabel(p.agentId)) + ' needs an assigned workstation in this room before this step can run.</div>'
-      + '<button type="button" class="bb sm refit-primary refit-summon" id="step-pc">⊕ ADD A WORKSTATION HERE</button>';
-  }
   function requisitionPcFor(bayId) {
     const p = station.propById(bayId); if (!p || !p.agentId) return { ok: false, reason: 'uncrewed' };
     const rid = station.roomAt(p.x, p.y), rm = rid && station.roomById(rid);
@@ -2190,17 +2152,6 @@ const Build = (() => {
         }
     return { ok: false, reason: 'no-room-for-a-desk' };
   }
-  function refreshComputeFact(g, bayId) {
-    const el = g.querySelector('#step-compute'); if (!el) return;
-    el.innerHTML = computeFactHTML(bayId);
-    const b = el.querySelector('#step-pc');
-    if (b) b.onclick = () => {
-      b.disabled = true;
-      const res = requisitionPcFor(bayId);
-      if (res.ok) { sfx('chime'); flashTip(null, 'PC placed + assigned — compute is on', true); bumpGeo(); refreshComputeFact(g, bayId); }
-      else { b.disabled = false; sfx('bad'); flashTip(null, res.reason === 'no-room-for-a-desk' ? 'no clear 2×1 floor in this room — make space first' : 'could not place a PC here', false); }
-    };
-  }
   /* THE CHECKLIST FOLLOWS THE LINE YOU ARE TOUCHING (2026-08-22 sweep): with two lines on the floor the
      FINISH card stayed pinned to whichever line it first adopted. Opening any machine's card (STEP / INBOX /
      OUTBOX / junction) now focuses that machine's line — finKeySel is the same session key finPick honours —
@@ -2213,150 +2164,128 @@ const Build = (() => {
     finKeySel = c.key; finSig = '';
     if (running) renderFinCard();
   }
+  /* ---------- THE DOCKED WORKFLOW PANEL (2026-09-22 — Andrew: "a docked panel, not a modal") ----------
+     The BAY's step card and the INBOX/gate flow card were modals over the floor ("puts the user in a box").
+     Both doors keep their names — the floor click, FINISH ① CREW, the world's NO AGENT nag, EDIT STEPS all
+     still call openStepCard / openFlowCard — but they now open ONE panel docked beside the floor
+     (frontend/app/workflowpanel.js) with that part selected. The floor stays live: selecting a part in the
+     panel highlights + pans to it here, and clicking a machine here selects it there. Every capability the
+     two cards had moved into the panel, reorganized (simplify = organization, never removal). */
   function openStepCard(bayId, ev) {
     if (!root) return;
     const p = station.propById(bayId); if (!p || p.t !== 'bay') return;
-    cardCloseAll();   // this card REPLACES whatever was up (FINISH ① CREW / the world's NO AGENT nag land here)
+    cardCloseAll();   // a modal that was up (a room card, the belt card) gives way — the panel never covers the floor
     finFocusLine(bayId);
-    const agents = (opts && typeof opts.agents === 'function' && opts.agents()) || [];
-    const roleInfo = (p.role && typeof WorldModel !== 'undefined' && WorldModel.bayRoleInfo) ? WorldModel.bayRoleInfo(p.role) : null;
-    const canSummon = !!(roleInfo && typeof App !== 'undefined' && App.summonAgent);
-    const cur = p.agentId || '';
-    // THE STEP zone copy — all provable floor facts: the role from the stamp, the line from the compiled
-    // component grouping (Pipeline.lineComponents), its name from the intake's saved label.
-    const comp = lineOfProp(bayId);
-    const lineTxt = lineFactHTML(bayId);
-    const stepTxt = roleInfo
-      ? 'Suggested role: <b>' + esc(p.role) + '</b>. ' + esc(roleInfo.desc)
-      : 'Any agent can handle this step. Choose who should do the work.';
-    /* WORK BELONGS TO A LINE (Andrew's ruling, 2026-08-07): "each conveyor system built has a purpose and
-       a different workflow — the conveyor system should visually run ONLY when the specific workflow is
-       running." So the dock has to SAY what makes its line distinct and when it runs. Both facts are read
-       off the compiled plan, never guessed: whether this line has a front door of its own (comp.intakes)
-       and whether there is anything downstream of this dock at all (valPlan.chains). Plain language only —
-       no ids, no "lineId", no belt vocabulary. */
-    const handsOn = !!(cur && valPlan && valPlan.chains && valPlan.chains[cur] && (valPlan.chains[cur].next || []).length);
-    const runsTxt = !comp ? null
-      : comp.intakes.length
-      ? 'This step runs when work reaches it from the workflow’s <b>Inbox</b> or a schedule for this workflow.'
-      : 'This step can run from a schedule assigned to this workflow.';
-    const restTxt = (comp && (handsOn || comp.bays.length > 1))
-      ? 'A direct COMMS message only runs this agent. Start the workflow through its Inbox or schedule to include the other steps.'
-      : null;
-    const rows = agents.map(a => `<button type="button" class="bb sm bay-agent${a.id === cur ? ' active' : ''}" data-aid="${esc(a.id)}" aria-pressed="${a.id === cur}">${esc(a.name || a.id)}</button>`).join('');
-    const briefPh0 = 'what this step does with arriving work' + (roleInfo ? ' — e.g. ' + roleInfo.desc : '');
-    const briefPh = BRIEF_PH[stepPositionOf(cur)] || briefPh0;
-    const g = document.createElement('div');
-    g.className = 'refit-guide refit-step-card refit-workflow-editor';
-    g.innerHTML = `
-      <div class="refit-guide-card" role="dialog" aria-modal="true" aria-labelledby="workflow-title">
-        ${workflowIntroHTML('BAY · AGENT STEP', 'Give an agent a job', 'A Bay is one step in your workflow. Pick who works here and tell them what to do with each arriving task.')}
-        <div class="workflow-body workflow-columns">
-        <div class="workflow-main refit-form">
-        <section class="workflow-section"><h4><span>1</span> Choose an agent</h4>
-        ${roleInfo ? '<p class="workflow-help">' + stepTxt + '</p>' : ''}
-        <div id="step-bound" class="workflow-selection" role="status">${cur ? 'Assigned to ' + esc(agentLabel(cur)) : 'No agent selected yet'}</div>
-        ${agents.length > 8 ? '<input id="step-agent-search" class="refit-input" type="search" placeholder="Find an agent…" aria-label="Find an agent" />' : ''}
-        ${agents.length ? '<div class="refit-agents refit-bay-agents" id="step-rows">' + rows + '</div>' : ''}
-        <p id="step-agent-empty" class="workflow-help" hidden>No matching agent. Try another name.</p>
-        ${canSummon ? '<button type="button" class="bb sm refit-summon" id="bay-summon">⊕ RECRUIT A ' + esc(p.role) + '</button>' : ''}
-        <details><summary>Assign by agent ID</summary>
-        <input id="bay-aid" class="refit-input" type="text" maxlength="40" placeholder="${agents.length ? 'or type an agent id' : 'agent id — e.g. coder'}" value="${esc(cur)}" />
-        <div class="refit-error" id="bay-err">unknown agent — pick one above, or check the id</div>
-        <div class="refit-actions step-agent-actions">
-          <button type="button" class="btn-sm" id="bay-ok">▸ ASSIGN</button>
-          <button type="button" class="btn-sm" id="bay-clear">UNASSIGN</button>
-        </div>
-        </details>
-        <div class="step-compute" id="step-compute"></div></section>
-        <section class="workflow-section"><h4><span>2</span> What should they do?</h4>
-        <p class="workflow-help">For example: “Check the draft and return a corrected version.”</p>
-        <textarea id="step-brief" class="refit-input refit-brief" aria-label="Instructions for this step" maxlength="2000" rows="5" placeholder="${esc(briefPh)}">${esc(p.brief || '')}</textarea>
-        <div class="step-brief-note">These instructions apply to every task that reaches this step.</div></section>
-        </div>
-        <aside class="workflow-aside"><section class="workflow-section"><h4>Where the work goes</h4>
-        <div class="step-fact" data-linefact="${esc(bayId)}">${lineTxt}</div></section>
-        <section class="workflow-section"><h4>When it runs</h4>
-        <p class="workflow-help">${runsTxt || 'Connect this Bay to an Inbox or another Bay using the BELT tool.'}</p>
-        ${restTxt ? '<p class="workflow-help">' + esc(restTxt) + '</p>' : ''}</section></aside>
-        </div><div class="workflow-footer">
-          <span>Instructions save when you leave the field or close.</span>
-          <button type="button" class="btn-sm refit-primary" id="step-done">✓ DONE</button>
-        </div>
-      </div>`;
-    root.appendChild(g);
-    requestAnimationFrame(() => g.classList.add('refit-swap'));   // soft rise-in on open (reduced-motion safe)
-    const input = g.querySelector('#bay-aid');
-    const brief = g.querySelector('#step-brief');
-    const boundEl = g.querySelector('#step-bound');
-    const clearErr = () => { input.classList.remove('is-error'); };
-    const closeP = () => { saveBrief(); if (g.parentNode) g.parentNode.removeChild(g); };
-    cardRegister(g, closeP);   // ESC closes THROUGH here, so the job brief is saved and never discarded
-    g.querySelector('[data-workflow-close]').onclick = closeP;
-    const agentSearch = g.querySelector('#step-agent-search');
-    if (agentSearch) agentSearch.oninput = () => {
-      const query = agentSearch.value.trim().toLowerCase();
-      let visible = 0;
-      g.querySelectorAll('.bay-agent').forEach(b => { b.hidden = !b.textContent.toLowerCase().includes(query); if (!b.hidden) visible++; });
-      g.querySelector('#step-agent-empty').hidden = visible > 0;
+    openWorkflowPanel(bayId);
+  }
+  function openWorkflowPanel(propId, fromFloor) {
+    if (typeof WorkflowPanel === 'undefined' || !root) return;
+    WorkflowPanel.open(wfHost(), propId, { fromFloor: !!fromFloor });
+  }
+  // the machines a line is made of — clicking one on the floor opens/selects it in the panel
+  const WF_PART = { bay: 1, intake: 1, outbox: 1, loop: 1, joiner: 1, merger: 1, splitter: 1 };
+  let wfHighlightId = null, wfPaused = null, wfHostMemo = null;
+  /* the HOST the panel is handed: live reads of THIS editor's state (station, compiled plan, camera) and the
+     seams it already owns (sample, plan gate, flash/sfx). Lazy getters — the panel never caches a plan. */
+  function wfHost() {
+    if (wfHostMemo) return wfHostMemo;
+    wfHostMemo = {
+      root: () => root, station: () => station, plan: () => valPlan, comps: () => valComps || [], geo: () => cacheGeo,
+      lineOfProp, lineNameOf, stampName: id => stampNameOf[id] || null, stationKey: () => stationKeyOf(station),
+      agents: () => (opts && typeof opts.agents === 'function' && opts.agents()) || [],
+      agentLabel: agentLabelFor, esc, sfx, flashTip: (msg, ok) => flashTip(null, msg, ok), valLabel: code => VAL_LABEL[code] || code,
+      roleInfo: r => (typeof WorldModel !== 'undefined' && WorldModel.bayRoleInfo) ? WorldModel.bayRoleInfo(r) : null,
+      canSummon: () => typeof App !== 'undefined' && !!App.summonAgent, summonForRole,
+      hasCompute: aid => !!aid && bayObjectsMemoed(aid).indexOf('computer') >= 0,
+      requisitionPcFor: id => { const r = requisitionPcFor(id); if (r.ok) bumpGeo(); return r; },
+      stepPositionOf,
+      api: finApi, planGate: c => finPlanGate(c),
+      runSample: (c, o) => finRunSample(c, o), sampleState: () => finSampleRes,
+      feedState: () => (opts && opts.world && opts.world.feedState) ? opts.world.feedState() : { known: false, fed: false },
+      pollFeed: () => { try { return Promise.resolve(opts && opts.world && opts.world.pollFeed && opts.world.pollFeed()); } catch (e) { return Promise.resolve(); } },
+      human: d => { const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } })();
+        return (typeof CronHuman !== 'undefined' && CronHuman.describeDisplay) ? CronHuman.describeDisplay(d, { tz }) : String(d == null ? '' : d); },
+      provider: () => (typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : undefined,
+      openTerm: name => { close(); if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm(name); },
+      highlight: id => { wfHighlightId = id || null; },
+      focusProp: (id, onlyIfHidden) => focusPropOnFloor(id, onlyIfHidden),
+      frameLine: key => frameLineOnFloor(key),
+      pausedMarker: m => { wfPaused = m || null; },
+      layoutChanged: () => { bumpUi(); insMemo = null; },
+      lineRenamed: () => { if (running) { finSig = ''; renderFinCard(); } },
+      loopExits: id => {
+        const p = station.propById(id), jt = p && junctionBeltTile(p), o = (cacheGeo && cacheGeo.origin) || { tx: 0, ty: 0 };
+        return jt ? loopExitLabels(valPlan, { x: jt.x - o.tx, y: jt.y - o.ty }, agentLabel) : [];
+      },
+      loopRuleTxt, loopBackTxt,
+      lineCycles: () => { let errs = []; try { errs = Pipeline.compileRoutingPlan(station.projectGeometry()).errors || []; } catch (e) { errs = []; } return errs.some(e => e.code === 'CYCLE' || e.code === 'CHAIN_CYCLE'); },
+      insertBay: (fromId, toId, role) => {
+        if (typeof station.insertBayBetween !== 'function') return { ok: false, msg: 'this station model cannot insert a step' };
+        const sp = propSpec('bay');
+        const res = station.insertBayBetween(fromId, toId, { role: role || null, w: sp.w, h: sp.h, block: sp.blocks !== false });
+        if (res && res.ok) { pushFlash([{ x1: res.x, y1: res.y, x2: res.x + (sp.w || 2) - 1, y2: res.y + (sp.h || 2) - 1 }], false); if (typeof Tutorial !== 'undefined' && Tutorial.onPropPlaced) Tutorial.onPropPlaced('bay'); }
+        return res;
+      },
     };
-    // a bind/unbind UPDATES the card in place (the brief draft must survive crewing the dock) — the
-    // one-surface law: configure the whole step here, close once.
-    refreshComputeFact(g, bayId);
-    const refreshBinding = () => {
-      const live = station.propById(bayId), aid = (live && live.agentId) || '';
-      if (boundEl) boundEl.textContent = aid ? 'Assigned to ' + agentLabel(aid) : 'No agent selected yet';
-      g.querySelectorAll('.bay-agent').forEach(x => { x.classList.toggle('active', x.dataset.aid === aid); x.setAttribute('aria-pressed', String(x.dataset.aid === aid)); });
-      refreshComputeFact(g, bayId);
-      input.value = aid;
-      // a bind can place this dock on the compiled line — re-read its position so the brief placeholder
-      // speaks to the right feed (arriving message vs the previous station's output). Best-effort: the plan
-      // recompiles async, so a one-frame-stale read just keeps the current copy until the next open.
-      if (brief && !brief.value) brief.placeholder = BRIEF_PH[stepPositionOf(aid)] || briefPh0;
-    };
-    // THE WORK — saved on blur / Ctrl-Enter (never lost on close; a no-op save is silent)
-    let briefSaved = p.brief || '';
-    function saveBrief() {
-      if (!brief || typeof station.setPropBrief !== 'function') return;
-      const v = brief.value.trim();
-      if (v === briefSaved) return;
-      const res = station.setPropBrief(bayId, v);
-      if (res && res.ok) { briefSaved = res.brief || ''; sfx('click'); flashTip(ev, v ? 'job brief saved' : 'job brief cleared', true); }
-      else sfx('bad');
+    return wfHostMemo;
+  }
+  /* pan the floor so a part sits in the middle of the VISIBLE glass (clear of the kit dock and the panel) */
+  function focusPropOnFloor(id, onlyIfHidden) {
+    const p = id && station && station.propById(id);
+    if (!p || !cv) return;
+    const t = T(), ins = viewInsets();
+    const vw = Math.max(1, cv.width - ins.l - (ins.r || 0)), vh = Math.max(1, cv.height - ins.t - ins.b);
+    const cx = (p.x + (p.w || 1) / 2) * t, cy = (p.y + (p.h || 1) / 2) * t;
+    if (onlyIfHidden) {   // a floor click: leave the camera alone unless the panel now covers what was clicked
+      const sx = cx * zoom + panX, sy = cy * zoom + panY;
+      if (sx >= ins.l && sx <= cv.width - (ins.r || 0) && sy >= ins.t && sy <= cv.height - ins.b) return;
     }
-    brief.addEventListener('blur', saveBrief);
-    brief.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveBrief(); }
-      if (e.key === 'Escape') { e.stopPropagation(); brief.blur(); }   // first ESC leaves the field (saving); the next closes the card
+    panX = ins.l + vw / 2 - cx * zoom;
+    panY = ins.t + vh / 2 - cy * zoom;
+  }
+  /* frame a whole LINE in the visible glass when any of it sits behind the panel / kit (the panel just docked
+     over it). Pans to the line's centre; zooms out only as far as it must to fit, never in. */
+  function frameLineOnFloor(key) {
+    const c = valComps && valComps.find(x => x.key === key);
+    if (!c || !c.bbox || !cv || !cacheGeo) return;
+    const t = T(), o = cacheGeo.origin || { tx: 0, ty: 0 }, ins = viewInsets();
+    const x1 = (c.bbox.x1 + o.tx) * t, y1 = (c.bbox.y1 + o.ty) * t, x2 = (c.bbox.x2 + 1 + o.tx) * t, y2 = (c.bbox.y2 + 1 + o.ty) * t;
+    const L = ins.l, R = cv.width - (ins.r || 0), Tp = ins.t, B = cv.height - ins.b;
+    if (x1 * zoom + panX >= L && x2 * zoom + panX <= R && y1 * zoom + panY >= Tp && y2 * zoom + panY <= B) return;
+    const vw = Math.max(1, R - L), vh = Math.max(1, B - Tp), pad = 3 * t;
+    zoom = clamp(Math.min(zoom, vw / (x2 - x1 + pad * 2), vh / (y2 - y1 + pad * 2)), MINZ, MAXZ);
+    panX = L + vw / 2 - (x1 + x2) / 2 * zoom;
+    panY = Tp + vh / 2 - (y1 + y2) / 2 * zoom;
+  }
+  /* the panel's floor marks: the selected part pulses gold; a PAUSED step test parks a pulsing marker on the
+     finished dock's OUTBOUND tile (plan.chains[agent].tile — the tile its product really ships from). The
+     REFIT conveyor cannot hold a real crate mid-belt, so no crate is drawn riding: only where it waits. */
+  function drawWorkflowMarks(t, now) {
+    if (wfHighlightId) {
+      const p = station.propById(wfHighlightId);
+      if (p) drawPropSelection(p, t, 'rgba(255,211,74,' + (0.55 + 0.35 * Math.sin(now / 260)).toFixed(2) + ')');
+    }
+    if (!wfPaused || !valPlan || !cacheGeo) return;
+    const ch = valPlan.chains && valPlan.chains[wfPaused.agentId];
+    if (!ch || !ch.tile) return;
+    const o = cacheGeo.origin || { tx: 0, ty: 0 }, x = (ch.tile.x + o.tx) * t, y = (ch.tile.y + o.ty) * t;
+    const k = 0.5 + 0.5 * Math.sin(now / 220);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(95,216,255,' + (0.45 + 0.5 * k).toFixed(2) + ')'; ctx.lineWidth = 2 / zoom;
+    const pad = (2 + 2 * k) / zoom * 2;
+    ctx.strokeRect(x - pad, y - pad, t + pad * 2, t + pad * 2);
+    ctx.fillStyle = 'rgba(95,216,255,' + (0.18 + 0.2 * k).toFixed(2) + ')'; ctx.fillRect(x + t * 0.2, y + t * 0.2, t * 0.6, t * 0.6);
+    ctx.restore();
+    const label = wfPaused.label || 'HANDOFF WAITING', fs = Math.max(9, 11 / zoom);
+    ctx.save(); ctx.font = VAL_FONT(); const tw = ctx.measureText(label).width; ctx.restore();
+    const lx = x + t / 2, ly = y + t + fs + 4 / zoom;   // under the tile: the dock's nameplate owns the space above
+    voiceSay('activeFlow', { x, y, w: t, h: t }, { x: lx - tw / 2, y: ly - fs, w: tw, h: fs }, c => {
+      c.save(); c.font = VAL_FONT(); c.textAlign = 'center'; c.textBaseline = 'bottom';
+      c.shadowBlur = 3; c.shadowColor = '#5fd8ff'; c.fillStyle = '#5fd8ff'; c.fillText(label, lx, ly); c.restore();
     });
-    // ⊕ SUMMON A <ROLE> HERE — one click: real summon (existing seam) + bind to THIS dock. On any
-    // failure the button re-arms and the manual pick below stays fully available (never a dead end).
-    const sumBtn = g.querySelector('#bay-summon');
-    if (sumBtn) sumBtn.onclick = () => {
-      sumBtn.disabled = true;
-      const a = summonForRole(p.role, roleInfo);
-      const res = a && station.assignPropAgent(bayId, a.id);
-      if (res && res.ok) { sfx('chime'); flashTip(ev, a.name + ' summoned → crews this dock', true); refreshBinding(); }
-      else { sumBtn.disabled = false; sfx('bad'); flashTip(ev, a ? 'summoned, but the dock refused the bind' : 'summon failed — pick an agent below', false); }
-    };
-    // ONE CLICK: choosing a roster agent IS the assignment (kept from the old picker — see its note).
-    g.querySelectorAll('.bay-agent').forEach(b => b.onclick = () => {
-      const res = station.assignPropAgent(bayId, b.dataset.aid);
-      if (res && res.ok) { sfx('click'); flashTip(ev, 'bay → ' + (b.textContent || res.agentId).trim(), true); refreshBinding(); }
-      else { input.value = b.dataset.aid; input.classList.add('is-error'); sfx('bad'); }
-    });
-    input.addEventListener('input', clearErr);
-    g.querySelector('#bay-ok').onclick = () => {
-      const res = station.assignPropAgent(bayId, input.value.trim());
-      if (res && res.ok) { sfx('click'); flashTip(ev, res.agentId ? ('bay → ' + res.agentId) : 'bay unbound', true); refreshBinding(); }
-      else { input.classList.add('is-error'); sfx('bad'); }
-    };
-    g.querySelector('#bay-clear').onclick = () => { station.assignPropAgent(bayId, ''); sfx('click'); flashTip(ev, 'bay unbound', true); refreshBinding(); };
-    g.querySelector('#step-done').onclick = () => { sfx('click'); closeP(); };
-    g.addEventListener('click', e => { if (e.target === g) closeP(); });
   }
 
-  /* ---------- WORKSTATION agent-picker: the desk/PC version of the BAY picker. A workstation carries an
+  /* ---------- WORKSTATION agent-picker  /* ---------- WORKSTATION agent-picker: the desk/PC version of the BAY picker. A workstation carries an
      agentId exactly like a bay does (assignPropAgent is type-agnostic); world.js then seats THAT agent here, so
      when it's given a task it walks over and sits at this desk. The host/model is already chosen when the agent
      was created, so this is a single "pick an agent" step. Opens on place + on click (PROP_EDITABLE). */
@@ -2527,466 +2456,10 @@ const Build = (() => {
     const p = station.propById(propId); if (!p) return;
     cardCloseAll();
     finFocusLine(propId);
-    const TITLE = { intake: 'Start this workflow', outbox: 'Collect the finished work', merger: 'Bring paths together', splitter: 'Send work down different paths', joiner: 'Wait for every part', loop: 'Repeat until the work is ready' };
-    const PROP_NAME = { intake: 'INBOX', outbox: 'OUTBOX', merger: 'MERGER', splitter: 'SPLITTER', joiner: 'JOINER', loop: 'LOOP' };
-    const LINE = {
-      intake: 'The Inbox is where work enters. Give your workflow a name, then choose how tasks arrive.',
-      outbox: 'The Outbox receives completed work. Connect the last Bay to it with a belt; there are no settings to fill in here.',
-      // honest by construction: the harness runs each work-item on its own, so the floor must show each
-      // one arriving. A merger tidies several lanes into one — it never combines the JOBS riding them.
-      merger: 'Connect several belts into one outgoing belt. Each task keeps going separately. This joins paths, not the contents of the tasks.',
-      // the splitter's counterpart card: it balances UNOWNED work across its out-lanes; addressed
-      // jobs still ride home (junctionLaneOwners). Nothing to configure — topology does the work.
-      splitter: 'Connect one incoming belt to several outgoing belts. Tasks without an assigned agent are spread across those paths. Tasks already assigned to an agent follow that agent’s path.',
-      // the joiner is the barrier the merger never was: one crate per in-lane is HELD per job until every branch
-      // has delivered (or the timeout passes), then ONE merged crate leaves — the sidecar chain runner performs it.
-      joiner: 'Bring together the results from parallel parts of the same job. Work waits here for every part, then continues as one combined result.',
-      // a bounded cycle: the gate is the only legal way round; the runner counts passes per job
-      loop: 'Send work back for another attempt, then let it continue when your chosen condition is met. Connect one path back to an earlier Bay and one path onward.'
-    };
-    const line = LINE[p.t] || LINE.outbox;
-    /* LINE NAMING (workflow studio, 2026-08-05): the INTAKE is a line's front door, so its card names the
-       line — an additive `label` on the intake prop (worldmodel.setPropLabel; migrate() whitelists it).
-       Blueprint stamps leave it UNSET: the placeholder offers the blueprint's name (session map) but only
-       what the Commander types is saved. Legibility only — the finish-the-line header + the intake glance
-       read it; routing never does. Multiple lines on one floor become nameable systems. */
-    const isIntake = p.t === 'intake';
-    const namePh = isIntake ? (stampNameOf[p.id] || 'e.g. Weekly news summary') : '';
-    const nameHtml = isIntake
-      ? '<section class="workflow-section"><h4><span>1</span> Name your workflow</h4>'
-        + '<input id="line-name" class="refit-input" type="text" aria-label="Workflow name" maxlength="48" placeholder="' + esc(namePh) + '" value="' + esc(p.label || '') + '" />'
-        + '<p class="workflow-help">Choose a name that reminds you what this workflow does.</p></section>'
-      : '';
-    /* LINE BUDGET (2026-08-21): the line's own ceilings, set at its front door like its name. Rides the intake
-       prop as `limits` (worldmodel.setPropLimits -> migrate() whitelist), compiles onto plan.lines[].limits
-       (outside plan.hash; the poster key carries it) and the sidecar's chain executor reads it by lineId
-       (router.lineLimits). Blank = the executor's defaults (6 stages / $2.00 per message / no daily cap).
-       The numbers shown are the ones IN FORCE: the shared normalizer clamps (24 / $50 / $500) and the card
-       says so, so the field never claims a ceiling the harness will not apply. */
-    const LD = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_DEFAULTS) || { maxHops: 6, maxUsdPerMessage: 2, maxUsdPerDay: null };
-    const LC = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_CEILINGS) || { maxHops: 24, maxUsdPerMessage: 50, maxUsdPerDay: 500 };
-    const lim0 = (isIntake && p.limits && typeof p.limits === 'object') ? p.limits : {};
-    const limVal = (k) => (typeof lim0[k] === 'number' && isFinite(lim0[k]) && lim0[k] > 0) ? String(lim0[k]) : '';
-    const lbDefaultNote = 'blank = station default · ceilings ' + LC.maxHops + ' stages / $' + LC.maxUsdPerMessage + ' / $' + LC.maxUsdPerDay + ' a day, never above the global pool — saved on Enter / blur';
-    const limField = (id, k, label, ph, step) => '<label class="refit-field lb-field" for="' + id + '">' + label
-      + '<input id="' + id + '" class="refit-num lb-num" type="number" min="0" step="' + step + '" data-k="' + k + '" placeholder="' + esc(ph) + '" value="' + esc(limVal(k)) + '" /></label>';
-    const budgetHtml = isIntake
-      ? '<div class="refit-sec">LINE BUDGET</div>'
-        + limField('lb-hops', 'maxHops', 'max stages after the first', String(LD.maxHops), '1')
-        + limField('lb-msg', 'maxUsdPerMessage', '$ per message, whole line', LD.maxUsdPerMessage.toFixed(2), '0.05')
-        + limField('lb-day', 'maxUsdPerDay', '$ per day, this line', 'off', '0.50')
-        + '<div class="refit-note lb-note" id="lb-note">' + esc(lbDefaultNote) + '</div>'
-      : '';
-    /* JOINER / LOOP GATE CONFIG (2026-08-22): the two junctions that carry numbers had cards that only
-       DESCRIBED them ("10 minutes at most", "up to 5 times") with no way to set either — every number
-       the copy quoted was a default the Commander could not reach. Both ride the prop exactly like a
-       filter's routes (station.configureJunction -> applyJunctionCfg whitelist: timeoutMin 1..120,
-       maxIter 1..20, done = an out-lane dir, when = a verdict tag) and COMPILE INTO plan.junctions —
-       which is inside plan.hash — so an edit re-POSTs the plan on its own; nothing is added to the
-       poster key. The numbers shown are the ones in force (the compiler's defaults fill the blanks). */
-    const isJoiner = p.t === 'joiner', isLoop = p.t === 'loop';
-    const jnField = (id, label, min, max, step, val, ph) => '<label class="refit-field lb-field" for="' + id + '">' + label
-      + '<input id="' + id + '" class="refit-num lb-num" type="number" min="' + min + '" max="' + max + '" step="' + step + '" placeholder="' + esc(ph) + '" value="' + esc(val) + '" /></label>';
-    const joinerHtml = isJoiner
-      ? '<section class="workflow-section"><h4>How long should it wait?</h4>'
-        + jnField('jn-timeout', 'minutes to wait for a late branch', 1, 120, 1, p.timeoutMin ? String(p.timeoutMin) : '', '10')
-        + '<div class="workflow-help" id="jn-note">If a part is late, the available results continue without it, marked PARTIAL. Leave blank for 10 minutes. Choose 1–120 minutes.</div></section>'
-      : '';
-    // LOOP: the gate's REAL exits, read off the compiled plan in its local frame (junctionBeltTile = the
-    // compiler's attach tile), each labelled by direction AND destination ("E → OUTBOX" / "S → to WRITER").
-    const loopJt = isLoop ? junctionBeltTile(p) : null;
-    const loopO = (cacheGeo && cacheGeo.origin) || { tx: 0, ty: 0 };
-    const loopExits = (isLoop && loopJt) ? loopExitLabels(valPlan, { x: loopJt.x - loopO.tx, y: loopJt.y - loopO.ty }, agentLabel) : [];
-    const loopMaxDef = (typeof Pipeline !== 'undefined' && Pipeline.LOOP_MAX_DEFAULT) || 5;
-    const loopMaxCeil = (typeof Pipeline !== 'undefined' && Pipeline.LOOP_MAX_CEILING) || 20;
-    const loopDoneCur = (p.done && loopExits.some(x => x.dir === p.done)) ? p.done : (loopExits[0] ? loopExits[0].dir : null);
-    const loopHtml = isLoop
-      ? '<section class="workflow-section"><h4><span>1</span> Where should finished work go?</h4>'
-        + (loopExits.length
-            ? '<div class="refit-agents loop-exits" id="loop-exits">' + loopExits.map(x => '<button type="button" class="bb sm loop-exit' + (x.dir === loopDoneCur ? ' active' : '') + '" data-dir="' + x.dir + '">'
-                + esc(x.label) + '</button>').join('') + '</div>'
-              + '<div class="step-fact" id="loop-back">' + esc(loopBackTxt(loopExits, loopDoneCur)) + '</div>'
-            : '<div class="refit-note bad">Add two outgoing belts first: one to the next step and one back to an earlier Bay.</div>')
-        + '</section><section class="workflow-section"><h4><span>2</span> Limit the number of attempts</h4>'
-        + jnField('loop-max', 'MAX PASSES', 1, loopMaxCeil, 1, p.maxIter ? String(p.maxIter) : '', String(loopMaxDef))
-        /* the verdict is a pick, not a free word, and the picks are the ONLY words the sidecar's loop gate
-           (routing/chain.js) can ever read: two VERDICT words (`VERDICT: approved` / `VERDICT: revise` — the
-           last line of the reviewer's reply, parsed by routing/verdict.js; the reviewer is TOLD to end with it)
-           and the three content tags the same classifier a FILTER sorts by can produce (classify.js getTag).
-           A verdict word flips the rule: the crate goes round UNTIL the verdict says it (revise / no verdict =
-           round again); a classifier tag keeps it going round WHILE the output reads as that kind of work. */
-        + '<p class="workflow-help">A pass is one attempt. The workflow stops repeating when it reaches this limit.</p></section>'
-        + '<section class="workflow-section"><h4><span>3</span> When should it stop repeating?</h4>'
-        + '<p class="workflow-help">Choose the reviewer’s verdict that lets work move on.</p>'
-        + '<div class="refit-route-row loop-when-row">'
-        + [['approved', 'APPROVED'], ['revise', 'REVISE']].map(([tag, lbl]) => '<button type="button" class="bb sm loop-when loop-verdict' + (p.when === tag ? ' sel' : '') + '" data-tag="' + tag + '">' + lbl + '</button>').join('')
-        + '</div>'
-        + '<details class="workflow-extra"' + (p.when && p.when !== 'approved' && p.when !== 'revise' ? ' open' : '') + '><summary>Repeat based on content instead</summary>'
-        + '<p class="workflow-help">Repeat while the result matches this type. Other results move on.</p><div class="refit-route-row loop-when-row">'
-        + [['code', 'CODE'], ['research', 'RESEARCH'], ['general', 'GENERAL']].map(([tag, lbl]) => '<button type="button" class="bb sm loop-when' + (p.when === tag ? ' sel' : '') + '" data-tag="' + tag + '">' + lbl + '</button>').join('')
-        + '</div></details>'
-        + '<div class="workflow-help" id="loop-note">' + esc(loopRuleTxt(p.when, p.maxIter || loopMaxDef)) + ' Blank max = ' + loopMaxDef + '.</div></section>'
-      : '';
-    /* ---------- THE TRIGGER ZONE (inbox-trigger, 2026-08-05) ----------
-       The INBOX card is the workflow's WHY, completing the loop the floor already draws: trigger (INBOX) →
-       steps (docks + briefs) → result (OUTBOX). Before this the floor shipped the SHAPE of a workflow while
-       its triggers had to be pre-created elsewhere (CHANNELS / AUTOMATION). The zone is truthfully derived:
-       the server-proven feed truth (World.feedState — the exact NO FEED source) and the cron store's own
-       rows (GET /api/cron, filtered to THIS line's dock agents). ⊕ NEW ROUTINE posts the SAME body the
-       AUTOMATION window's create form sends — same schedule vocabulary (every 30m · 0 9 * * * · in 2h),
-       same /api/cron/preview honesty, and NO unattended grants: a routine made from the inbox gets nothing
-       the AUTOMATION window wouldn't give by default. */
-    const comp = isIntake ? lineOfProp(propId) : null;
-    const docks = (comp ? comp.bays : []).filter(b => b.agentId);
-    // default fire-at: the line's entry-reachable dock (plan.reach — fed straight by an intake source);
-    // several bound docks -> a small picker naming role + agent. No bound dock -> honest disable.
-    const entryDocks = docks.filter(b => valPlan && valPlan.reach && valPlan.reach[b.agentId]);
-    let trgDock = (entryDocks[0] || docks[0] || {}).agentId || null;
-    const dockChip = b => '<button type="button" class="bb sm trg-dock' + (b.agentId === trgDock ? ' active' : '') + '" data-aid="' + esc(b.agentId) + '">'
-      + esc((b.role ? b.role + ' · ' : '') + agentLabelFor(b.agentId)) + '</button>';
-    /* the line's STAGE ORDER, read off the compiled plan (entry docks first, then each dock's chain `next`),
-       so the FIRES AT picker can say which stages a later dock SKIPS — a routine that fires at dock 3 runs
-       the line FROM dock 3; stages 1–2 never see that work. Docks the plan can't place trail in bay order. */
-    const dockOrder = (() => {
-      const ids = docks.map(b => b.agentId), seen = {}, out = [];
-      const q = entryDocks.map(b => b.agentId);
-      const chains = (valPlan && valPlan.chains) || {};
-      while (q.length) { const a = q.shift(); if (seen[a] || ids.indexOf(a) < 0) continue; seen[a] = true; out.push(a); for (const n of ((chains[a] && chains[a].next) || [])) q.push(n); }
-      for (const a of ids) if (!seen[a]) { seen[a] = true; out.push(a); }
-      return out;
-    })();
-    const dockHint = aid => {
-      const i = dockOrder.indexOf(aid);
-      const skipped = i > 0 ? dockOrder.slice(0, i) : [];
-      if (!skipped.length) return 'starts at the first dock — the whole line runs, ' + docks.length + ' stage' + (docks.length === 1 ? '' : 's');
-      return 'skips ' + skipped.map(a => agentLabelFor(a)).join(' and ') + ' — the line runs from ' + agentLabelFor(aid) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' stages)';
-    };
-    const trgHtml = isIntake
-      ? '<section class="workflow-section"><h4><span>2</span> Choose how it starts</h4>'
-        // WORK BELONGS TO A LINE (2026-08-07): the trigger zone is where the Commander decides WHY this line
-        // runs, so it is where the rule belongs — only work that comes in through one of these triggers runs
-        // the whole line. Plain language; the same fact the STEP card states from the dock's side.
-        // It is an EXPLANATION, not a warning, so it reads in the dim voice (.trg-explain) — .refit-note is
-        // amber, and an amber paragraph on every INBOX card teaches the Commander to ignore amber.
-        + '<p class="trg-explain">Use a schedule or a connected channel to start this workflow. A direct COMMS message only runs the agent you message.</p>'
-        + '<div class="workflow-start-options"><button type="button" class="bb workflow-choice" id="trg-new" aria-expanded="false" aria-controls="trg-form"><b>On a schedule</b><span>Choose a task and when it runs.</span></button>'
-        + '<button type="button" class="bb workflow-choice" id="trg-chan"><b>From a channel</b><span>Set up incoming messages in Channels.</span></button></div>'
-        // the create form is ONE bordered object (same vocabulary as AUTOMATION's inline RESCHEDULE editor):
-        // opened from the ⊕ button, it used to be a stack of loose fields with no edge, so on a card that is
-        // already six zones tall there was nothing saying where the form began or ended.
-        + '<div id="trg-form" class="trg-form" style="display:none">'
-          + '<label class="trg-form-k" for="trg-prompt">What task should start each run?</label>'
-          + '<textarea id="trg-prompt" class="refit-input refit-brief" maxlength="2000" rows="3" placeholder="e.g. Find this week’s AI news and summarize the three biggest stories."></textarea>'
-          /* WHEN — the SAME schedule picker the AUTOMATION window mounts (frontend/app/schedpicker.js), not a
-             second dialect of "when". It owns the `#trg-sched` text input and TYPES into it, so the server
-             preview, the create POST and every selector below are byte-identical to what they always were;
-             without the module we fall back to that same bare input, never to a dead form. Before this the
-             only cadences reachable here were three preset buttons + hand-typed cron — "every Tuesday at
-             9am" was expressible by the backend and unreachable from this card. */
-          + '<div class="rt-when trg-when" id="trg-when"><div class="trg-form-k">WHEN SHOULD IT RUN?</div>'
-          + (typeof SchedPicker !== 'undefined'
-              ? SchedPicker.html({ inputId: 'trg-sched' })
-              : '<input id="trg-sched" class="refit-input" type="text" maxlength="80" placeholder="schedule — every 30m · 0 9 * * * · in 2h" />')
-          + '</div>'
-          + '<div class="trg-preview" id="trg-preview"></div>'
-          + (docks.length > 1
-              ? '<details class="workflow-extra"><summary>Starting agent · ' + esc(agentLabelFor(trgDock)) + '</summary><p class="workflow-help">Usually, start with the first agent. Choosing a later step skips the steps before it.</p><div class="refit-agents" id="trg-docks">' + docks.map(dockChip).join('') + '</div>'
-                + '<div class="step-fact trg-dock-hint" id="trg-dock-hint">' + esc(dockHint(trgDock)) + '</div>'
-                + '</details>'
-              : docks.length === 1
-              ? '<div class="step-fact">fires at <b>' + esc((docks[0].role ? docks[0].role + ' · ' : '') + agentLabelFor(docks[0].agentId)) + '</b> — this line’s ' + (entryDocks.length ? 'entry dock' : 'dock') + '</div>'
-              : '<div class="refit-note">Assign an agent to a connected Bay first. The schedule needs an agent to start the work.</div>')
-          + '<div class="refit-actions"><button type="button" class="btn-sm refit-primary" id="trg-create"' + (docks.length ? '' : ' disabled') + '>▸ SAVE SCHEDULE</button><button type="button" class="btn-sm" id="trg-cancel">CANCEL</button></div>'
-          + '<div class="refit-note trg-msg" id="trg-msg" style="display:none"></div>'
-        + '</div>'
-        + '<details class="workflow-extra"><summary>Existing schedules & connections</summary><div class="step-fact" id="trg-feed">Checking connections…</div><div id="trg-routines" class="trg-list"></div>'
-        + '<div class="refit-actions trg-doors"><button type="button" class="btn-sm" id="trg-auto">MANAGE SCHEDULES</button></div></details></section>'
-      : '';
-    const g = document.createElement('div');
-    g.className = 'refit-guide refit-flow-card refit-workflow-editor' + (isIntake ? ' refit-flow-intake' : '');
-    const help = p.t === 'joiner' ? 'Connect each parallel path to this Joiner, then connect its outgoing belt to the next step. A Splitter feeding a Joiner runs all its paths for the same job.'
-      : p.t === 'loop' ? 'Use the BELT tool to connect this Loop to an earlier Bay and to the next step. The labels beside each exit come from the belts you actually connected.'
-      : p.t === 'outbox' ? 'Leave Build mode and click the Outbox to browse delivered work in the Logbook.'
-      : 'The belts determine the paths. Close this panel, choose BELT, then click one prop and the next to connect them.';
-    g.innerHTML = '<div class="refit-guide-card" role="dialog" aria-modal="true" aria-labelledby="workflow-title">'
-      + workflowIntroHTML((PROP_NAME[p.t] || 'WORKFLOW') + ' · SETUP', TITLE[p.t] || TITLE.outbox, line)
-      + '<div class="workflow-body' + (isIntake || isJoiner || isLoop ? ' workflow-columns' : '') + '"><div class="workflow-main">' + nameHtml + trgHtml + joinerHtml + loopHtml
-      + (!isIntake && !isJoiner && !isLoop ? '<section class="workflow-section workflow-no-settings"><h4>No extra settings needed</h4><p>' + esc(help) + '</p></section>' : '')
-      + (budgetHtml ? '<details class="refit-workflow-advanced"><summary>Optional limits</summary>' + budgetHtml + '</details>' : '')
-      + '</div>' + (isIntake || isJoiner || isLoop ? '<aside class="workflow-aside">'
-      + (isIntake ? workflowHTML(comp) : '<section class="workflow-section"><h4>Connect it on the station</h4><p class="workflow-help">' + esc(help) + '</p></section>')
-      + '</aside>' : '') + '</div><div class="workflow-footer"><span>' + (isIntake ? 'Names save as you edit. Schedules need SAVE SCHEDULE.' : isJoiner || isLoop ? 'Settings save when you leave a field or close.' : 'Connections are made with the BELT tool.')
-      + '</span><button type="button" class="btn-sm refit-primary" id="flow-ok">✓ DONE</button></div></div>';
-    root.appendChild(g);
-    g.querySelectorAll('[data-workflow-step]').forEach(b => { b.onclick = () => openStepCard(b.dataset.workflowStep); });
-    requestAnimationFrame(() => g.classList.add('refit-swap'));
-    let savedLabel = p.label || '';
-    const nameIn = g.querySelector('#line-name');
-    const saveName = () => {
-      if (!nameIn || typeof station.setPropLabel !== 'function') return;
-      const v = nameIn.value.trim();
-      if (v === savedLabel) return;
-      const res = station.setPropLabel(propId, v);
-      if (res && res.ok) { savedLabel = res.label || ''; sfx('click'); flashTip(null, v ? 'line named — ' + v : 'line name cleared', true); if (running) { finSig = ''; renderFinCard(); } }
-      else sfx('bad');
-    };
-    if (nameIn) {
-      nameIn.addEventListener('blur', saveName);
-      nameIn.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); saveName(); }
-        if (e.key === 'Escape') { e.stopPropagation(); nameIn.blur(); }   // leave the field (saving); the next ESC closes the card
-      });
-    }
-    // LINE BUDGET fields: one save for the three (the prop holds one `limits` object). The saved answer is
-    // re-painted INTO the fields — a clamped number comes back as the number in force, never as what was typed.
-    const lbNums = Array.prototype.slice.call(g.querySelectorAll('.lb-num'));
-    const lbNote = g.querySelector('#lb-note');
-    let lbSaved = JSON.stringify(Object.keys(lim0).length ? lim0 : null);
-    const lbName = k => k === 'maxHops' ? 'stages' : k === 'maxUsdPerMessage' ? '$ per message' : '$ per day';
-    const saveLimits = () => {
-      if (!lbNums.length || typeof station.setPropLimits !== 'function') return;
-      const raw = {};
-      for (const el of lbNums) { const v = String(el.value || '').trim(); if (v !== '' && isFinite(+v) && +v > 0) raw[el.dataset.k] = +v; }
-      const res = station.setPropLimits(propId, Object.keys(raw).length ? raw : null);
-      if (!res || !res.ok) { sfx('bad'); return; }
-      const next = JSON.stringify(res.limits || null);
-      for (const el of lbNums) { const k = el.dataset.k, v = res.limits && res.limits[k]; el.value = (typeof v === 'number' && v > 0) ? String(v) : ''; }
-      if (lbNote) lbNote.textContent = (res.clamped && res.clamped.length)
-        ? 'clamped to the ceiling — ' + res.clamped.map(c => lbName(c.split('>')[0])).join(', ') + ' (the numbers shown are the ones in force)'
-        : lbDefaultNote;
-      if (next === lbSaved) return;
-      lbSaved = next; sfx('click');
-      // the confirmation is DURABLE on the card (a blur-save used to show only the 1.3s flash, which a
-      // Commander tabbing to the next field never saw): the note itself says it landed
-      if (lbNote) lbNote.textContent = (res.limits ? '✓ line budget saved · ' : '✓ cleared — station defaults · ') + lbNote.textContent;
-      flashTip(null, res.limits ? 'line budget saved' : 'line budget cleared — station defaults', true);
-    };
-    for (const el of lbNums) {
-      el.addEventListener('blur', saveLimits);
-      el.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); saveLimits(); }
-        if (e.key === 'Escape') { e.stopPropagation(); el.blur(); }   // leave the field (saving); the next ESC closes the card
-      });
-    }
-    /* JOINER / LOOP gate saves — one configureJunction per save (it replaces the prop's gate config wholesale,
-       so every field is sent every time). The answer is re-painted INTO the fields: a clamped number comes
-       back as the number in force. The plan recompiles off station.onChange and re-POSTs by itself. */
-    const jnTimeout = g.querySelector('#jn-timeout'), jnNote = g.querySelector('#jn-note');
-    const loopMax = g.querySelector('#loop-max'), loopNote = g.querySelector('#loop-note'), loopBackEl = g.querySelector('#loop-back');
-    const gate = { done: loopDoneCur, when: p.when || null };
-    let gateSaved = JSON.stringify(isJoiner ? { timeoutMin: p.timeoutMin || null } : isLoop ? { maxIter: p.maxIter || null, done: p.done || null, when: p.when || null } : null);
-    const saveGate = () => {
-      if (!(isJoiner || isLoop) || typeof station.configureJunction !== 'function') return;
-      const cfg = {};
-      if (isJoiner) { const v = +String(jnTimeout && jnTimeout.value || '').trim(); if (isFinite(v) && v >= 1) cfg.timeoutMin = Math.min(120, Math.floor(v)); }
-      if (isLoop) {
-        const v = +String(loopMax && loopMax.value || '').trim(); if (isFinite(v) && v >= 1) cfg.maxIter = Math.min(loopMaxCeil, Math.floor(v));
-        if (gate.done) cfg.done = gate.done;
-        if (gate.when) cfg.when = gate.when;
-      }
-      const res = station.configureJunction(propId, Object.keys(cfg).length ? cfg : null);
-      if (!res || !res.ok) { sfx('bad'); return; }
-      if (jnTimeout) jnTimeout.value = res.timeoutMin ? String(res.timeoutMin) : '';
-      if (loopMax) loopMax.value = res.maxIter ? String(res.maxIter) : '';
-      const next = JSON.stringify(isJoiner ? { timeoutMin: res.timeoutMin || null } : { maxIter: res.maxIter || null, done: res.done || null, when: res.when || null });
-      if (next === gateSaved) return;
-      gateSaved = next; sfx('click');
-      const said = isJoiner
-        ? (res.timeoutMin ? '✓ saved — waits ' + res.timeoutMin + ' min, then releases partial' : '✓ saved — station default (10 min), then releases partial')
-        : '✓ saved — ' + loopRuleTxt(res.when, res.maxIter || loopMaxDef) + (res.done ? ' DONE on ' + res.done + '.' : '');
-      if (isJoiner && jnNote) jnNote.textContent = said;
-      if (isLoop && loopNote) loopNote.textContent = said;
-      /* THE WRONG DONE LANE IS A CYCLE (live-proved 2026-08-22): pick the back lane as DONE and the static
-         graph has no way out — the compiler refuses the line (CYCLE / CHAIN_CYCLE) and the floor nags
-         "LOOP!" somewhere else. Say it HERE, on the field that caused it, with the lane that fixes it. */
-      if (isLoop && loopNote && typeof Pipeline !== 'undefined') {
-        let errs = []; try { errs = Pipeline.compileRoutingPlan(station.projectGeometry()).errors || []; } catch (e) { errs = []; }
-        if (errs.some(e => e.code === 'CYCLE' || e.code === 'CHAIN_CYCLE')) {
-          const onward = loopExits.find(x => x.dir !== (res.done || gate.done));
-          loopNote.textContent = '⚠ with DONE on ' + (res.done || gate.done) + ' the line goes round with no way out — it is refused until DONE points onward' + (onward ? ' (' + onward.label + ')' : '');
-        }
-      }
-      flashTip(null, isJoiner ? 'joiner timeout saved' : 'loop gate saved', true);
-    };
-    for (const el of [jnTimeout, loopMax]) {
-      if (!el) continue;
-      el.addEventListener('blur', saveGate);
-      el.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); saveGate(); }
-        if (e.key === 'Escape') { e.stopPropagation(); el.blur(); }
-      });
-    }
-    g.querySelectorAll('.loop-exit').forEach(b => b.onclick = () => {
-      gate.done = b.dataset.dir;
-      g.querySelectorAll('.loop-exit').forEach(x => x.classList.toggle('active', x.dataset.dir === gate.done));
-      if (loopBackEl) loopBackEl.textContent = loopBackTxt(loopExits, gate.done);
-      saveGate();
-    });
-    g.querySelectorAll('.loop-when').forEach(b => b.onclick = () => {
-      gate.when = (gate.when === b.dataset.tag) ? null : b.dataset.tag;   // click again to clear
-      g.querySelectorAll('.loop-when').forEach(x => x.classList.toggle('sel', x.dataset.tag === gate.when));
-      saveGate();
-    });
-    const closeP = () => { saveName(); saveLimits(); saveGate(); if (g.parentNode) g.parentNode.removeChild(g); };
-    cardRegister(g, closeP);   // ESC closes THROUGH here, so the line name + budget + gate config are saved and never discarded
-    g.querySelector('[data-workflow-close]').onclick = closeP;
-    /* ---- trigger-zone wiring (intake only; every claim below is a server answer, never synthesized) ---- */
-    if (isIntake) {
-      const feedEl = g.querySelector('#trg-feed'), listEl = g.querySelector('#trg-routines');
-      const formEl = g.querySelector('#trg-form'), newBtn = g.querySelector('#trg-new');
-      const promptEl = g.querySelector('#trg-prompt'), schedEl = g.querySelector('#trg-sched');
-      const pvEl = g.querySelector('#trg-preview'), msgEl = g.querySelector('#trg-msg');
-      const dockAgents = {};
-      for (const b of docks) dockAgents[b.agentId] = true;
-      let schedulerArmed = false;   // mirrors GET /api/cron enabled && !halted — the honest create-confirm
-      const say = (t, bad) => { msgEl.style.display = ''; msgEl.style.color = bad ? 'var(--bad)' : ''; msgEl.textContent = t; };
-      /* cron.js's display string -> the sentence this card shows ("cron 0 9 * * 2" -> "every Tuesday at
-         9:00 AM") — the SAME translator the AUTOMATION rows speak through. CronHuman returns the RAW
-         display for any shape it cannot state exactly (multi-time, month-restricted, the dom-OR-dow case),
-         and so do we when the module is absent: a cadence label never guesses. The raw expression stays
-         one hover away wherever the two differ. */
-      const devTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } })();
-      const human = d => ((typeof CronHuman !== 'undefined' && CronHuman.describeDisplay)
-        ? CronHuman.describeDisplay(d, { tz: devTz })
-        : String(d == null ? '' : d));
-      // the channel/routine FEED TRUTH — the same World.feedState the NO FEED nag keys on. Floor-global by
-      // construction (that is what the server proves), said in floor-global words.
-      const paintFeed = () => {
-        const feed = (opts && opts.world && opts.world.feedState) ? opts.world.feedState() : { known: false, fed: false };
-        if (!feedEl.isConnected) return;
-        feedEl.innerHTML = !feed.known ? 'CHANNEL FEED — checking the wires…'
-          : feed.fed ? '<b>✓ FED</b> — a channel or an armed routine is wired to drop work on this floor'
-          : '<b>NO FEED</b> — nothing is wired to drop work here yet';
-      };
-      paintFeed();
-      // routines targeting THIS line's dock agents — straight off the cron store, name + schedule + state
-      function trgRefresh() {
-        listEl.innerHTML = '<span class="dim">reading routines…</span>';
-        fetch(finApi('/api/cron')).then(r => (r.ok ? r.json() : null)).then(j => {
-          if (!listEl.isConnected) return;
-          if (!j) { listEl.innerHTML = '<div class="refit-note">sidecar unreachable — routines unknown</div>'; return; }
-          schedulerArmed = !!(j.enabled && !j.halted);
-          const mine = (Array.isArray(j.jobs) ? j.jobs : []).filter(jb => jb && dockAgents[jb.agentId]);
-          if (!mine.length) { listEl.innerHTML = '<div class="trg-row dim">no routines target this line’s docks yet</div>'; return; }
-          // name on its own line, the schedule sentence + dock beneath it: a routine's meta is a SENTENCE
-          // now ("every Tuesday at 9:00 AM"), and run inline after the name it wrapped mid-phrase.
-          listEl.innerHTML = mine.map(jb => {
-            const raw = jb.scheduleDisplay || '', said = human(raw);
-            return '<div class="trg-row"><span class="trg-state' + (jb.enabled && schedulerArmed ? ' on' : '') + '">' + (jb.enabled ? (schedulerArmed ? '●' : '◍') : '○') + '</span> '
-              + '<b>' + esc(jb.name || '(unnamed)') + '</b>'
-              + '<div class="trg-row-meta"><span' + (said !== raw ? ' title="' + esc(raw) + '"' : '') + '>' + esc(said) + '</span>'
-              + ' · fires at ' + esc(agentLabelFor(jb.agentId))
-              + (jb.enabled ? (schedulerArmed ? '' : ' · <span class="trg-warn">saved — scheduler OFF</span>') : ' · paused') + '</div></div>';
-          }).join('');
-        }).catch(() => { if (listEl.isConnected) listEl.innerHTML = '<div class="refit-note">sidecar unreachable — routines unknown</div>'; });
-      }
-      trgRefresh();
-      // schedule preview — the honest "next fires", straight from the server math (same seam AUTOMATION uses)
-      const relFmt = iso => { const d = Date.parse(iso) - Date.now(); if (!isFinite(d)) return ''; const m = Math.round(d / 60000); return m < 1 ? 'under a minute' : m < 60 ? 'in ' + m + 'm' : m < 2880 ? 'in ' + Math.round(m / 60) + 'h' : 'in ' + Math.round(m / 1440) + 'd'; };
-      let pvTimer = null;
-      const preview = () => {
-        clearTimeout(pvTimer);
-        const v = schedEl.value.trim();
-        if (!v) { pvEl.textContent = ''; return; }
-        pvTimer = setTimeout(() => {
-          fetch(finApi('/api/cron/preview'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ schedule: v }) })
-            .then(r => r.json()).then(r => {
-              if (!pvEl.isConnected || schedEl.value.trim() !== v) return;
-              if (r && r.ok) {
-                const nx = (Array.isArray(r.localNext) && r.localNext[0]) ? r.localNext[0] : (Array.isArray(r.next) && r.next[0] ? relFmt(r.next[0]) : '');
-                const said = human(r.display);
-                pvEl.innerHTML = '✓ <span' + (said !== r.display ? ' title="' + esc(r.display) + '"' : '') + '>' + esc(said) + '</span>' + (nx ? ' → next: ' + esc(nx) : '');
-              } else pvEl.innerHTML = '<span class="trg-warn">' + esc((r && r.error) || 'unrecognized schedule') + '</span>';
-            }).catch(() => {});
-        }, 300);
-      };
-      schedEl.addEventListener('input', preview);
-      /* Mount the WHEN picker AFTER that listener exists — the same ordering the AUTOMATION form documents.
-         The picker types its default schedule into `#trg-sched` the moment it mounts, and that seed has to
-         land on a live listener or the form opens with a blank "next fires" line. It is a TYPEWRITER: it
-         only ever writes a string into the input the create path already read, so nothing below changes. */
-      if (typeof SchedPicker !== 'undefined') SchedPicker.mount(g.querySelector('#trg-when'), { onChange: () => sfx('click') });
-      g.querySelectorAll('.trg-dock').forEach(b => b.onclick = () => {
-        trgDock = b.dataset.aid; sfx('click');
-        g.querySelectorAll('.trg-dock').forEach(x => x.classList.toggle('active', x.dataset.aid === trgDock));
-        const hintEl = g.querySelector('#trg-dock-hint'); if (hintEl) hintEl.textContent = dockHint(trgDock);
-        b.closest('details').querySelector('summary').textContent = 'Starting agent · ' + agentLabelFor(trgDock);
-      });
-      // Keep the chosen start method visible above its form, so its purpose stays clear while editing.
-      const showForm = on => {
-        formEl.style.display = on ? '' : 'none';
-        newBtn.classList.toggle('active', on);
-        newBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
-        if (on) promptEl.focus();
-        else newBtn.focus();
-      };
-      newBtn.onclick = () => { sfx('click'); showForm(formEl.style.display === 'none'); };
-      g.querySelector('#trg-cancel').onclick = () => { sfx('click'); showForm(false); };
-      g.querySelector('#trg-create').onclick = () => {
-        const prompt = promptEl.value.trim(), schedule = schedEl.value.trim();
-        if (!prompt || !schedule) { sfx('bad'); say('a task and a schedule are required', true); return; }
-        if (!trgDock) { sfx('bad'); say('crew a dock first — a routine fires at an agent', true); return; }
-        const btn = g.querySelector('#trg-create'); btn.disabled = true; say('saving…');
-        /* the SAME create body the AUTOMATION window posts — tz for wall-clock honesty, the station's live
-           provider, and NOTHING else: no unattendedGrants, no toolsets (a routine minted here holds exactly
-           the defaults the AUTOMATION window's untouched form would give)…
-           …plus ONE field only this door may set. `runsLine` is what makes a routine THIS LINE'S OWN
-           trigger: the work it fires carries the line's id, so the chain gate lets it run the whole line.
-           It is created here, on the INBOX card, under a button that literally says FOR THIS LINE — that
-           is the Commander asking for the line to run. A routine minted anywhere else omits it and stays
-           terminal (absent/false = the dock answers and nothing downstream spends), which is the safe
-           default: no run the Commander did not ask for. */
-        const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch (e) { return undefined; } })();
-        const provider = (typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : undefined;
-        const lname2 = lineNameOf(comp);
-        const name = (lname2 ? lname2 + ' — ' : '') + (prompt.length > 48 ? prompt.slice(0, 45) + '…' : prompt);
-        fetch(finApi('/api/cron'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, prompt, schedule, agentId: trgDock, provider, tz, runsLine: true }) })
-          .then(async response => {
-            const r = await response.json();
-            const refuse = message => { btn.disabled = false; sfx('bad'); say('✕ ' + message, true); };
-            if (r && r.error) { refuse(r.error); return; }
-            // mint-gate refusals are 200s with no error key (declined / near-duplicate name — the auto-named
-            // "<LINE> — <prompt…>" form collides easily): claiming "✓ routine scheduled" over them discarded
-            // the new trigger silently. Same fix as AUTOMATION / MAKE ROUTINE.
-            if (r && r.declined) { refuse(r.message || 'this routine name was deleted before — reword the brief'); return; }
-            if (r && r.duplicate) { refuse('a similar routine already exists' + (r.job && r.job.name ? (' ("' + r.job.name + '")') : '') + ' — reword the brief; nothing new was created'); return; }
-            if (!response.ok || !r || r.ok !== true || !r.job || !r.job.id) {
-              refuse('save not confirmed — check AUTOMATION before retrying'); return;
-            }
-            // The open card's scheduler snapshot can be stale, and a create acknowledgement alone is not
-            // proof that the job is visible. Confirm the exact saved id through the same list AUTOMATION reads.
-            const readback = await fetch(finApi('/api/cron'), { cache: 'no-store' });
-            const current = readback.ok ? await readback.json() : null;
-            const saved = current && Array.isArray(current.jobs) && current.jobs.find(job => job.id === r.job.id);
-            if (!saved || current.degraded) { refuse('save not confirmed — check AUTOMATION before retrying'); return; }
-            schedulerArmed = !!(current.enabled && !current.halted);
-            btn.disabled = false;
-            sfx('chime');
-            if (saved.state === 'completed') say('✓ routine completed — see its result in AUTOMATION');
-            else if (!saved.enabled) say('✓ saved — this routine is paused; manage it in AUTOMATION', true);
-            else say(schedulerArmed ? '✓ routine scheduled — fires at ' + agentLabelFor(trgDock) : '✓ saved — but scheduling is OFF or STOPPED; enable it in AUTOMATION', !schedulerArmed);
-            // clear the BRIEF (the next routine is a different job) but keep the WHEN preview: the picker
-            // still holds that schedule, so blanking its "next fires" line left the form looking unset
-            // while it was in fact still armed on the same cadence.
-            promptEl.value = '';
-            trgRefresh();
-            // the routine just persisted is a FEED: re-ask the server NOW (World.pollFeed — the same poll the
-            // NO FEED nag keys on) and repaint this card's feed line, so the card, the world nag and the finish
-            // checklist stop asserting NO FEED the moment the answer lands — not on the next 60s poll / reload.
-            if (opts && opts.world && typeof opts.world.pollFeed === 'function') {
-              try { Promise.resolve(opts.world.pollFeed()).then(paintFeed).catch(() => {}); } catch (e) {}
-            }
-          }).catch(() => { btn.disabled = false; sfx('bad'); say('✕ save not confirmed — check AUTOMATION before retrying', true); });
-      };
-      // the two doors: the SAME openers the finish card / NO FEED nag promise. Both leave REFIT (saving).
-      g.querySelector('#trg-chan').onclick = () => { sfx('click'); closeP(); close(); if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('messaging'); };
-      g.querySelector('#trg-auto').onclick = () => { sfx('click'); closeP(); close(); if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('routines'); };
-    }
-    g.querySelector('#flow-ok').onclick = () => { sfx('click'); closeP(); };
-    g.addEventListener('click', e => { if (e.target === g) closeP(); });
+    openWorkflowPanel(propId);
   }
 
-  /* ---------- BELT-TILE INFO CARD (select mode): "where does this lane go?" ----------
+  /* ---------- BELT-TILE INFO CARD  /* ---------- BELT-TILE INFO CARD (select mode): "where does this lane go?" ----------
      Answered from the COMPILED plan via Pipeline.routeFrom — the same fan-every-junction walk the
      hover tags and the sidecar's routing read from, so the card can never claim a destination a
      dispatch wouldn't reach. Plan coords are LOCAL (valPlan compiles from cacheGeo) → rebase the
@@ -3642,7 +3115,8 @@ const Build = (() => {
       if (!r0.width) return;
       finPosSig = osig;
       const z = U.uiZoom(), cr0 = finCardEl.getBoundingClientRect();
-      const ox = r0.right - (cr0.width || 236 * z) - 14 * z;
+      const wpo = root.querySelector('.wf-panel')?.getBoundingClientRect();
+      const ox = Math.min(r0.right, (wpo && wpo.width && wpo.width < window.innerWidth * 0.9) ? wpo.left : r0.right) - (cr0.width || 236 * z) - 14 * z;
       let oy = r0.top + 58 * z;
       if (coach && coach.right > ox && coach.bottom > oy) oy = coach.bottom + 10 * z;   // stack under the bubble
       finCardEl.style.left = Math.round(ox / z) + 'px';
@@ -3667,6 +3141,8 @@ const Build = (() => {
     // NEVER over the tool dock (the never-blocks-editing law): a left-sidebar dock raises the floor x
     const dock = root.querySelector('.refit-dock');
     let minX = 8, maxY = window.innerHeight - h - 8;
+    const wpr = root.querySelector('.wf-panel')?.getBoundingClientRect();
+    const edgeR = (wpr && wpr.width && wpr.width < window.innerWidth * 0.9) ? wpr.left : window.innerWidth;   // the docked Workflow panel is a wall
     if (dock) {
       const d = dock.getBoundingClientRect();
       if (d.width < window.innerWidth * 0.6 && d.left < window.innerWidth / 2) minX = Math.max(minX, d.right + 10);
@@ -3675,10 +3151,10 @@ const Build = (() => {
     const rightX = sx((c.bbox.x2 + 1 + o.tx) * t) + 14;
     const leftX = sx((c.bbox.x1 + o.tx) * t) - w - 14;
     let x, y;
-    if (rightX + w <= window.innerWidth - 8) { x = rightX; y = sy((c.bbox.y1 + o.ty) * t) - 4; }          // beside, to the right
+    if (rightX + w <= edgeR - 8) { x = rightX; y = sy((c.bbox.y1 + o.ty) * t) - 4; }          // beside, to the right
     else if (leftX >= minX) { x = leftX; y = sy((c.bbox.y1 + o.ty) * t) - 4; }                            // beside, to the left
     else { x = sx((c.bbox.x2 + 1 + o.tx) * t) - w; y = sy((c.bbox.y2 + 1 + o.ty) * t) + 12; }             // no side room — under the line
-    x = Math.max(minX, Math.min(x, window.innerWidth - w - 8));
+    x = Math.max(minX, Math.min(x, edgeR - w - 8));
     y = Math.max(56, Math.min(y, maxY));
     // a coach bubble over the same spot: stack the checklist UNDER it (never hide it, never cover it)
     if (coach && x < coach.right && x + w > coach.left && y < coach.bottom && y + h > coach.top) {
@@ -3860,7 +3336,7 @@ const Build = (() => {
   let insMemo = null;
   const viewInsetsFrame = () => (insMemo || (insMemo = viewInsets()));
   function viewInsets() {
-    const out = { l: 0, t: 0, b: 0 };
+    const out = { l: 0, t: 0, b: 0, r: 0 };
     if (!cv || !root) return out;
     const c = cv.getBoundingClientRect();
     if (!c.width || !c.height) return out;
@@ -3873,6 +3349,14 @@ const Build = (() => {
       if (window.matchMedia('(max-width: 700px)').matches) out.b = Math.max(0, c.bottom - d.top) * sy;
       else if (!dock.classList.contains('is-collapsed')) out.l = Math.max(0, d.right - c.left) * sx;
     }
+    const wp = root.querySelector('.wf-panel');
+    if (wp) {
+      const w = wp.getBoundingClientRect();
+      if (w.width && w.height) {
+        if (w.width >= c.width * 0.9) out.b = Math.max(out.b, (c.bottom - w.top) * sy);   // narrow: a bottom sheet
+        else out.r = Math.max(0, c.right - w.left) * sx;
+      }
+    }
     return out;
   }
   function fitCamera() {
@@ -3880,7 +3364,7 @@ const Build = (() => {
     const wx1 = b.minTx * t, wy1 = b.minTy * t, wx2 = (b.maxTx + 1) * t, wy2 = (b.maxTy + 1) * t;
     const ww = (wx2 - wx1) + 8 * t, wh = (wy2 - wy1) + 8 * t;
     const ins = viewInsets();
-    const vw = Math.max(1, cv.width - ins.l), vh = Math.max(1, cv.height - ins.t - ins.b);
+    const vw = Math.max(1, cv.width - ins.l - ins.r), vh = Math.max(1, cv.height - ins.t - ins.b);
     zoom = clamp(Math.min(vw / ww, vh / wh), MINZ, MAXZ);
     panX = ins.l + vw / 2 - (wx1 + wx2) / 2 * zoom;
     panY = ins.t + vh / 2 - (wy1 + wy2) / 2 * zoom;
@@ -4183,6 +3667,9 @@ const Build = (() => {
     if(!p)return;
     if(ev&&ev.detail>=2&&isEditableProp(p.t))return configureProp(p,ev);
     selectedPropId=p.id;renderSelection();
+    // THE CARD AND THE FLOOR ARE ONE LINE: a click on a line machine opens the docked Workflow panel on it
+    // (or re-selects it there), without panning — the floor is where the Commander is looking
+    if(WF_PART[p.t]){finFocusLine(p.id);openWorkflowPanel(p.id,true);}
     setHint('Selected '+propLabel(p.t)+' · choose an action in the build kit');
   }
   function renderSelection(){
@@ -4538,6 +4025,7 @@ const Build = (() => {
       if (details) { const toggle = details.querySelector('.refit-details-toggle'); toggle.click(); toggle.focus(); return; }
       if (drag || connectFrom || dupe) { selectTool('select'); return; }
       if (selectedPropId || movingPropId) { selectTool('select'); return; }
+      if (typeof WorkflowPanel !== 'undefined' && WorkflowPanel.isOpen()) { WorkflowPanel.close(); return; }   // the docked panel closes (saving) before REFIT does
       if (tool !== 'select') { deselectTool(); return; }                 // then the armed tool → SELECT
       return close();                                                    // only a bare select-mode ESC leaves REFIT
     }
@@ -4968,7 +4456,8 @@ const Build = (() => {
     });
     if (!nextLight) drawLayer('glows', () => drawGlows(now));
     drawLayer('flashes', () => drawFlashes(now, t));
-    drawLayer('validation', () => drawRoutingValidation(t, now));   // plain-words callouts on any broken piece, IN build mode (cost-safety + guidance)
+    drawLayer('validation', () => drawRoutingValidation(t, now));
+    drawLayer('workflow', () => drawWorkflowMarks(t, now));   // the docked panel's selection + a paused step test's waiting handoff   // plain-words callouts on any broken piece, IN build mode (cost-safety + guidance)
     drawLayer('beltEndpoints', () => drawBeltEndpointGlow(t, now)); // BELT tool armed → INTAKE glows FROM, BAY/OUTBOX glow TO (what connects to what)
     drawLayer('bayNames', () => {
       if (typeof PropSprites !== 'undefined' && PropSprites.drawBayNames) {
