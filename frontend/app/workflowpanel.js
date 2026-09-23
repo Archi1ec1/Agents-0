@@ -153,7 +153,12 @@ const WorkflowPanel = (() => {
   function refresh() {
     if (!el || !H) return;
     // the selected part may have moved lines (a belt connected it) or been deleted
-    if (S.sel && !prop(S.sel)) { close(); return; }
+    if (S.sel && !prop(S.sel)) {   // an UNDO / delete took the selected part: stay on its line if the line survives
+      const c0 = comp();
+      const next = c0 && ((c0.intakes || [])[0] || ((c0.bays || [])[0] || {}).propId);
+      if (!next) { close(); return; }
+      S.sel = next; H.highlight(next); paint(true); return;
+    }
     const c = S.sel ? H.lineOfProp(S.sel) : null;
     if (c && c.key !== S.lineKey) { S.lineKey = c.key; S.lone = null; }
     else if (!c && S.lineKey && !comp()) { S.lineKey = null; S.lone = S.sel; }
@@ -343,6 +348,7 @@ const WorkflowPanel = (() => {
         : '<button type="button" class="bb sm refit-primary" id="wf-steptest">' + (s && W.isLive(s) ? '▶ STEP TEST · ' + s.state.toUpperCase() : '▶ STEP-TEST THE LINE') + '</button>';
     } else if (c && S.seam === false) {
       const sr = H.sampleState(), mine = sr && sr.key === c.key ? sr : null;
+      if (mine && mine.view) html = '<div class="wf-sample-res">' + H.sampleHTML(mine.view) + '</div>' + html;   // the server's own verdict on the sample, on the panel
       html += '<button type="button" class="bb sm refit-primary" id="wf-sample"' + (mine && mine.pending ? ' disabled' : '') + '>' + (mine && mine.pending ? (mine.phase === 'post' ? 'POSTING LINE…' : 'SAMPLE RIDING THE LINE…') : '▶ RUN A SAMPLE JOB') + '</button>';
     }
     html += '<button type="button" class="bb sm" id="wf-done">✓ DONE</button>';

@@ -620,6 +620,7 @@ test/refit-footprint.test.js
 test/refit-run-gate.test.js
 test/step-brief.test.js
 test/workflow-line.test.js
+test/workflow-panel-source.test.js
 test/propanchor.test.js
 test/prop-mount.test.js
 test/prop-flat-decal.test.js
