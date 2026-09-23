@@ -134,3 +134,6 @@ test/autonomy-confirmation.http.test.js
 test/cli.e2e.test.js
 test/interrupted-run-in-history.test.js
 test/procledger.windows-orphan.test.js
+test/toolsearch.connectors-deferred.test.js
+test/effective-toolsets.availability.test.js
+test/payload.budget.test.js
