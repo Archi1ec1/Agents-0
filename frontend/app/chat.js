@@ -525,7 +525,7 @@ const Chat = (() => {
      invariant is inviolate: every model substring is HTML-ESCAPED first (escapeHtml / linkify both escape), and
      we only ever wrap ALREADY-ESCAPED text in our OWN tags — model output never reaches innerHTML raw. `code`
      spans are pulled to placeholders before the bold pass so a ** inside code stays literal. */
-  const MD_MARKERS = /\||^\s*>|^\s*\d+[.)]\s|\*\*|`|^#{1,6}\s|^[ \t]*[-*+]\s/m;   // cheap gate: does this text carry any markdown we render?
+  const MD_MARKERS = /\||^\s*>|^\s*\d+[.)]\s|\*\*|`|^#{1,6}\s|^[ \t]*[-*+]\s|\r?\n[ \t]*\r?\n/m;   // plain paragraph breaks need the same spacing as formatted prose
   function mdInline(safe) {
     // `safe` is escaped-and-linkified HTML. Pull `inline code` to placeholders, bold the rest, restore code.
     const codes = [];
@@ -555,7 +555,7 @@ const Chat = (() => {
     return out+escapeHtml(raw.slice(last));
   }
   function renderMarkdown(raw) {
-    const lines=String(raw).split('\n');
+    const lines=String(raw).replace(/\r\n?/g,'\n').split('\n');
     // Older macOS WebKit cannot PARSE lookbehind, even in a function not yet called.
     // Consume escaped pipes before splitting; retain the existing immediate-backslash semantics.
     const cells = line => {
@@ -571,22 +571,29 @@ const Chat = (() => {
     };
     const listMatch=line=>/^([ \t]*)([-*+][ \t]+|\d+[.)][ \t]+)(.*)$/.exec(line);
     function blocks(from,to,depth) {
-      const parts=[];let i=from;
+      const parts=[],paragraph=[];let i=from;
+      const flushParagraph=()=>{
+        if(paragraph.length)parts.push('<span class="md-p">'+paragraph.splice(0).join('\n')+'</span>');
+      };
       while(i<to) {
         const ln=lines[i];
+        if(!ln.trim()){flushParagraph();i++;continue;}
         if(/^[ \t]*```/.test(ln)) {
+          flushParagraph();
           const code=[];i++;
           while(i<to && !/^[ \t]*```/.test(lines[i]))code.push(lines[i++]);
           if(i<to)i++;parts.push(renderFence(code));continue;
         }
         const h=/^(#{1,6})\s+(.*)$/.exec(ln);
-        if(h){parts.push('<span class="md-h" role="heading" aria-level="'+h[1].length+'">'+reportInline(h[2])+'</span>');i++;continue;}
+        if(h){flushParagraph();parts.push('<span class="md-h" role="heading" aria-level="'+h[1].length+'">'+reportInline(h[2])+'</span>');i++;continue;}
         if(/^\s*>/.test(ln)) {
+          flushParagraph();
           const quote=[];
           while(i<to && /^\s*>/.test(lines[i]))quote.push(reportInline(lines[i++].replace(/^\s*> ?/,'')));
           parts.push('<blockquote class="md-quote">'+quote.join('<br>')+'</blockquote>');continue;
         }
         if(i+1<to && ln.includes('|') && cells(lines[i+1]).length>1 && cells(lines[i+1]).every(c=>/^:?-{3,}:?$/.test(c))) {
+          flushParagraph();
           const headers=cells(ln);i+=2;
           let table='<div class="md-table-scroll" tabindex="0" role="region" aria-label="Report table"><table class="md-table"><thead><tr>'+headers.map(c=>'<th scope="col">'+reportInline(c)+'</th>').join('')+'</tr></thead><tbody>';
           while(i<to && lines[i].includes('|') && lines[i].trim())table+='<tr>'+cells(lines[i++]).map(c=>'<td>'+reportInline(c)+'</td>').join('')+'</tr>';
@@ -594,23 +601,35 @@ const Chat = (() => {
         }
         const first=listMatch(ln);
         if(first && depth<16) {
+          flushParagraph();
           const indent=first[1].replace(/\t/g,'    ').length;
           const ordered=/\d/.test(first[2]),tag=ordered?'ol':'ul';
           let list='<'+tag+' class="md-list"'+(ordered?' start="'+parseInt(first[2],10)+'"':'')+'>';
           while(i<to) {
+            // Loose Markdown lists remain one list; blank separators are not visible rows.
+            let next=i;
+            while(next<to && !lines[next].trim())next++;
+            const following=next<to && listMatch(lines[next]);
+            if(following && following[1].replace(/\t/g,'    ').length===indent && /\d/.test(following[2])===ordered)i=next;
             const item=listMatch(lines[i]);
             if(!item || item[1].replace(/\t/g,'    ').length!==indent || /\d/.test(item[2])!==ordered)break;
             list+='<li>'+reportInline(item[3]);i++;
             const begin=i;
-            while(i<to && lines[i].trim() && /^\s/.test(lines[i]) && (lines[i].match(/^\s*/)[0].replace(/\t/g,'    ').length>indent))i++;
+            while(i<to) {
+              let continuation=i;
+              while(continuation<to && !lines[continuation].trim())continuation++;
+              if(continuation>=to || !/^[ \t]/.test(lines[continuation]) || lines[continuation].match(/^[ \t]*/)[0].replace(/\t/g,'    ').length<=indent)break;
+              i=continuation+1;
+            }
             if(i>begin)list+=blocks(begin,i,depth+1);
             list+='</li>';
           }
           parts.push(list+'</'+tag+'>');continue;
         }
-        parts.push(reportInline(ln));i++;
+        paragraph.push(reportInline(depth ? ln.trimStart() : ln));i++;
       }
-      return parts.join('\n');
+      flushParagraph();
+      return parts.join('');
     }
     return blocks(0,lines.length,0);
   }
