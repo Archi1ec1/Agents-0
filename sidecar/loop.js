@@ -22,6 +22,9 @@
   'use strict';
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('./failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
+  // fold-fidelity helpers (verbatim user section, usage anchor, provider-reported window). Node-only like failopen;
+  // absent (a browser build that never runs the loop) = compaction stays off rather than folding unfaithfully.
+  const fidelity = (typeof require === 'function') ? require('./compaction-fidelity.js') : null;
 
   // tool-call argument repair (L2): recover mechanically-broken JSON from non-Anthropic models. Degrades to
   // identity if the module is absent (e.g. a browser build that never runs the loop).
@@ -818,7 +821,10 @@
     let unpricedTokens = 0;          // tokens reconciled at $0 on a model nothing could price (feeds maxUnpricedTokens)
     let unpricedFlagged = false;     // agent.cost carries unpriced:true ONCE per run — the first turn it happens
     let unpricedModel = '';
-    let lastUsage = null;   // the previous turn's usage, used to decide compaction before the next paid call
+    /* USAGE ANCHOR (Step 2 wave 2, audit F1). The provider's prompt_tokens for the last successful request, paired
+       with the local ruler's reading of that SAME request. The fold decision adds what the ruler says grew since
+       (tool results appended after the reading) — see promptAnchor. null = no reading: the full local ruler decides. */
+    let usageReading = null;
     let lastFinishReason = null;   // the last done-event finishReason ('length'/'content_filter' surfaced at run end)
     // SEMANTIC OUTPUT CONTINUATION. Unlike a broken transport (`truncated:true`), finishReason:length is a valid,
     // billable partial response. Keep it, then make up to four new paid calls to finish the same answer. The next
@@ -1079,46 +1085,116 @@
       if (prevSummary) lines.push(prevSummary);
       lines.push('[compaction fallback — the summarizer was unavailable; ' + older.length + ' older messages reduced to one line each]');
       for (const m of older) {
-        let c = (m && typeof m.content === 'string') ? m.content : JSON.stringify((m && m.content) || '');
+        // the user's own words are carried whole in the note's verbatim section (see summaryNote) — not clipped here too
+        if (fidelity.collectUserMessages([m]).length) { lines.push('- ' + (m.role === 'user' ? 'user' : 'steering note') + ': [carried word for word in the user messages section below]'); continue; }
+        // text, never bytes: an image part is "[image]", a data URL a sized marker (compaction-fidelity contentText)
+        let c = fidelity.contentText(m && m.content);
         if (m && Array.isArray(m.tool_calls) && m.tool_calls.length) c = 'called ' + m.tool_calls.map(t => (t && t.function && t.function.name) || 'tool').join(', ') + (c ? ' — ' + c : '');
         c = c.replace(/\s+/g, ' ').trim();
         lines.push('- ' + (m && m.role ? m.role : 'msg') + ': ' + (c.length > 160 ? c.slice(0, 160) + '…' : c));
       }
       return lines.join('\n');
     }
-    async function maybeCompact(force) {
-      if (!context) return false;
-      if (!force && (!lastUsage || !context.shouldCompact(lastUsage))) return false;
+    /* THE LOCAL RULER: the context manager's estimate of the messages PLUS the advertised tool schemas, which the
+       provider counts in full on every request (~38KB with every tool advertised) and the message estimate never saw.
+       Cached per tool-list length (a tool.search reveal only ever appends). No estimator (an injected test context
+       without one) = 0. */
+    let toolsTok = 0, toolsTokLen = -1;
+    function toolsTokens() {
+      if (!context || typeof context.estimateTokens !== 'function') return 0;
+      if (tools.length !== toolsTokLen) {
+        toolsTokLen = tools.length;
+        try { toolsTok = tools.length ? Math.max(0, Number(context.estimateTokens(JSON.stringify(tools))) || 0) : 0; }
+        catch (e) { failNote('loop.compaction.toolsEstimate', e); toolsTok = 0; }
+      }
+      return toolsTok;
+    }
+    function rulerTokens(arr) {
+      if (!context || typeof context.estimateMessages !== 'function') return 0;
+      try { return Math.max(0, Number(context.estimateMessages(arr)) || 0) + toolsTokens(); }
+      catch (e) { failNote('loop.compaction.ruler', e); return 0; }
+    }
+    // the anchored prompt size (compaction-fidelity usageAnchor): last real count + ruler growth since, else the ruler
+    function promptAnchor() { return fidelity ? fidelity.usageAnchor(usageReading, rulerTokens(messages)) : 0; }
+    // record a successful request's reading; `messages` here is exactly what that request carried
+    function noteReading(u) {
+      const real = u ? (Number(u.prompt_tokens || u.promptTokens) || 0) : 0;
+      usageReading = real > 0 ? { promptTokens: real, rulerAtReading: rulerTokens(messages) } : null;
+    }
+    // the live window: the context manager's (kept in sync on a fallback / a provider-named window), else the loop's
+    function windowTokens() { return (context && Number(context.contextLimit)) || contextLimit || 0; }
+    /* A PROVIDER THAT NAMES ITS WINDOW IS BELIEVED (audit F5, Hermes parity). "prompt is too long: 215000 tokens >
+       200000 maximum" states the real ceiling; one smaller than the catalog's (or a cold catalog's 0 / assumed 128k)
+       is adopted for the classifier and the context manager, so proactive folds aim at the window that is actually
+       enforced. Only ever LOWERS a known limit. */
+    function adoptReportedWindow(limit) {
+      const n = Math.floor(Number(limit) || 0);
+      if (!(n > 0)) return;
+      if (!contextLimit || n < contextLimit) contextLimit = n;
+      if (context && typeof context.setContextLimit === 'function') {
+        const cur = Number(context.contextLimit) || 0;
+        if (!cur || n < cur) { try { context.setContextLimit(n); } catch (e) { failNote('loop.compaction.adoptWindow', e); } }
+      }
+    }
+
+    const OVERFLOW_FOLDS = 3;   // folds one overflow recovery may make to get the prompt under the window (Hermes: 3)
+
+    async function maybeCompact(force, hint) {
+      if (!context || !fidelity) return false;
+      /* THE TRIGGER IS THE USAGE ANCHOR (audit F1). It read the PREVIOUS request's prompt_tokens — blind to every tool
+         result appended since — and did nothing at all until a first reading existed, so a resumed history at 150% of
+         the window went out as-is on the first call with zero fold attempts (probe 09-22). Now: the last real count +
+         what the ruler says grew since, or the full ruler (messages + tool schemas) before any reading — evaluated
+         before every model call, the first one included. */
+      const anchor = promptAnchor();
+      if (!force && !context.shouldCompact({ prompt_tokens: anchor })) return false;
       // H5.2: lift any prior summary OUT of the working set first — its text seeds the merge, and the rebuild below
       // re-inserts exactly ONE note, so successive folds keep a single running summary instead of stacking notes.
-      let prevSummary = '';
+      // Its verbatim user section is split off here (compaction-fidelity splitSummary): the summarizer only ever sees
+      // the prose, and the section is re-rendered from its parsed items plus this fold's own user messages.
+      let prevNote = null, prevSummary = '', prevUsers = null;
       const working = [];
-      for (const m of messages) { if (isSummaryNote(m)) { if (!prevSummary) prevSummary = summaryInner(m.content); } else working.push(m); }
+      for (const m of messages) {
+        if (!isSummaryNote(m)) { working.push(m); continue; }
+        if (!prevNote) { prevNote = m; prevUsers = fidelity.splitSummary(summaryInner(m.content)); prevSummary = prevUsers.summary; }
+      }
       let i = 0;
       while (i < working.length && working[i].role === 'system') i++;   // leading system prefix kept verbatim
       // THE DIRECTIVE IS PINNED: the first non-system message is the task itself. It used to sit inside the
       // foldable slice, so after one fold the agent worked from a paraphrase of its own orders. Kept byte-identical.
       if (i < working.length && working[i].role !== 'system') i++;
       const prefix = working.slice(0, i);
-      const plan = context.planCompaction(working.slice(i));
+      // the tail budget is in REAL tokens: tell the planner how many real tokens one local-ruler token is worth right
+      // now (anchored/provider count over the ruler), so an estimator blind spot cannot make the whole history "fit"
+      const rulerNow = rulerTokens(messages);
+      const realNow = (hint && hint.realBefore > 0) ? hint.realBefore : anchor;
+      const plan = context.planCompaction(working.slice(i), { scale: rulerNow > 0 ? Math.max(1, realNow / rulerNow) : 1 });
       if (!plan.older.length) return false;                               // nothing safely foldable yet (no paid call)
       const beforeTokens = context.estimateMessages(messages);
       const threshold = (typeof context.thresholdTokens === 'function') ? context.thresholdTokens() : 0;
       const appendTodo = (arr) => { if (todoNote) { try { const tn = todoNote(); if (tn) return arr.concat([{ role: 'system', content: String(tn) }]); } catch (e) { failNote('loop.compaction.todoNote', e); } } return arr; };
+      /* THE USER'S WORDS RIDE EVERY FOLD VERBATIM (audit F3). Only the first user message was pinned; a later "NEVER
+         modify prod-db.conf" went through the summarizer and a generic summary dropped it. Every fold that removes
+         messages (paid, fallback) now ends its note with the folded slice's user/steering messages, word for word,
+         merged onto what the previous note carried — deterministic, bounded, never duplicated (compaction-fidelity). */
+      const userSection = () => fidelity.renderUserSection(fidelity.mergeUserMessages(prevUsers, fidelity.collectUserMessages(plan.older), fidelity.userBudgetChars(windowTokens())));
+      const summaryNote = (text) => ({ role: 'system', content: '<conversation_summary>\n' + fidelity.joinSummary(text, userSection()) + '\n</conversation_summary>' });
       // ---- micro tier: free; measured on a copy; committed only if it clears the threshold on its own ----
       if (microCompaction && threshold > 0) {
         const micro = elideTools(plan.older);
         if (micro.elided > 0) {
-          const trial = appendTodo(prefix.concat(prevSummary ? [{ role: 'system', content: '<conversation_summary>\n' + prevSummary + '\n</conversation_summary>' }] : [], micro.older, plan.tail));
+          // the micro tier folds no user message: the previous note (its carried section included) stays as it was
+          const trial = appendTodo(prefix.concat(prevNote ? [prevNote] : [], micro.older, plan.tail));
           const afterTokens = context.estimateMessages(trial);
-          /* PROJECT AGAINST THE PROVIDER'S RULER. The local estimator does not see tool schemas or provider
-             overhead (live: ~12k local vs 32k real), so "afterTokens < threshold" alone declared the prompt
-             cleared while the real count still sat 2x over it — a free tier that thrashed one elision per turn
-             and starved the LLM fold. Scale the REAL count by the LOCAL shrink ratio to decide (scale-invariant
-             in both directions); the emitted numbers stay one-unit (both local). force (overflow) has no usage:
-             fall back to the local number. */
-          const realBefore = (lastUsage && (lastUsage.prompt_tokens || lastUsage.promptTokens)) || beforeTokens;
-          const projected = beforeTokens > 0 ? realBefore * (afterTokens / beforeTokens) : afterTokens;
+          /* PROJECT AGAINST THE PROVIDER'S RULER. The local estimator undercounts the real prompt (live: ~12k local
+             vs 32k real), so "afterTokens < threshold" alone declared the prompt cleared while the real count still
+             sat 2x over it — a free tier that thrashed one elision per turn and starved the LLM fold. Scale the
+             ANCHORED real count by the ruler's shrink ratio — messages + tool schemas on both sides, the same ruler
+             the anchor is built on, so a fixed schema overhead is not scaled away. The emitted numbers stay one-unit
+             (both local, messages only). An overflow recovery may hand the provider's own count in `hint`. */
+          const tt = toolsTokens();
+          const realBefore = (hint && hint.realBefore > 0) ? hint.realBefore : (anchor || (beforeTokens + tt));
+          const projected = (beforeTokens + tt) > 0 ? realBefore * ((afterTokens + tt) / (beforeTokens + tt)) : afterTokens;
           if (projected < threshold && afterTokens < beforeTokens) {
             /* DRAIN THE ORIGINALS BEFORE THE ELISION. The elided copies are NEW objects, so they lost the
                transcript's persisted marker and the run-end drain (index.js appendNewStrict over result.messages)
@@ -1132,7 +1208,7 @@
             }
             carryMarkers(plan.older, micro.older);   // the drained originals' persisted marker rides onto the elided copies
             messages.length = 0; for (const mm of trial) messages.push(mm);
-            lastUsage = null;
+            usageReading = null;
             emit('agent.compact', { agentId, runId, beforeTokens, afterTokens, removed: Math.max(0, beforeTokens - afterTokens), reason: 'micro', elided: micro.elided });
             return true;
           }
@@ -1143,12 +1219,12 @@
         // digest the ORIGINAL messages: a tool result's first line is usually the fact worth keeping — an elided body would
         // reduce every read to "[elided]" and the run forgets what it saw (live-proved 08-21 against a real model)
         if (summarize && typeof summarize.drain === 'function') { try { summarize.drain(plan.older); } catch (e) { failNote('loop.compaction.fallbackDrain', e); return false; } }
-        const note = { role: 'system', content: '<conversation_summary>\n' + fallbackNote(plan.older, prevSummary) + '\n</conversation_summary>' };
+        const note = summaryNote(fallbackNote(plan.older, prevSummary));
         const rebuilt = appendTodo(prefix.concat([note], plan.tail));
         const afterTokens = context.estimateMessages(rebuilt);
         if (afterTokens >= beforeTokens) return false;                  // didn't shrink — don't spin the overflow retry
         messages.length = 0; for (const mm of rebuilt) messages.push(mm);
-        lastUsage = null;
+        usageReading = null;
         emit('agent.compact', { agentId, runId, beforeTokens, afterTokens, removed: Math.max(0, beforeTokens - afterTokens), reason: 'fallback' });
         return true;
       }
@@ -1157,7 +1233,7 @@
          fabricated saving (truthful-telemetry law), and `savings` below sat near 1.0 forever, which meant the
          anti-thrash breaker — "two folds in a row that each freed <10% -> stop compacting" — could never fire
          and a degraded run kept paying for a summarizer call every single turn. The provider's count is the
-         honest one for DECIDING to compact (shouldCompact still uses it); for measuring what a fold SAVED,
+         honest one for DECIDING to compact (the usage anchor is built on it); for measuring what a fold SAVED,
          both ends must come from the same estimator. */
       /* HOOKS — on_pre_compress. The last moment history still exists in full. This is the seam a Commander
          uses to keep something the summarizer would flatten (archive the transcript, extract decisions to a
@@ -1170,7 +1246,7 @@
       // Pass the loop's CURRENT provider/model/cost: after a rotation or a cross-provider fallback these are the
       // only live ones, and the injected summarizer captured its own bindings before the run started.
       try { r = await summarize(plan.older, prevSummary, { provider, model, cost }); }   // prevSummary => the summarizer MERGE-updates it (H5.2)
-      catch (e) { if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false; }   // summarizer threw -> skip
+      catch (e) { if (++compactionFails >= 2) compactionOff = true; usageReading = null; return false; }   // summarizer threw -> skip
       if (signal.aborted) return false;
       const summary = (typeof r === 'string') ? r : ((r && r.summary) || '');
       /* A CUT-OFF OR REFUSED SUMMARY IS A FAILED ONE (compaction-summarizer.js rejectReason): a fragment like
@@ -1185,10 +1261,10 @@
           if (Array.isArray(r.unpricedUsage)) for (const u of r.unpricedUsage) unpricedUsage.push(u);
         }
         if (rejected) failNote('loop.compaction.rejected', new Error('summary rejected (' + rejected + '); history kept'));
-        if (++compactionFails >= 2) compactionOff = true; lastUsage = null; return false;   // empty/cut/refused -> don't drop history
+        if (++compactionFails >= 2) compactionOff = true; usageReading = null; return false;   // empty/cut/refused -> don't drop history
       }
       compactionFails = 0;
-      const note = { role: 'system', content: '<conversation_summary>\n' + summary + '\n</conversation_summary>' };
+      const note = summaryNote(summary);
       let rebuilt = prefix.concat([note], plan.tail);
       // re-append the active task plan so it rides through the compaction (folded into the after-count below)
       if (todoNote) { try { const tn = todoNote(); if (tn) rebuilt = rebuilt.concat([{ role: 'system', content: String(tn) }]); } catch (e) { failNote('loop.compaction.todoNote', e); } }
@@ -1198,7 +1274,7 @@
         spentUsd += r.usd || 0; spentTokens += r.tokens || 0;   // count the summarizer's own spend
         if (Array.isArray(r.unpricedUsage)) for (const u of r.unpricedUsage) unpricedUsage.push(u);
       }
-      lastUsage = null;   // the next turn re-measures against the compacted prompt before considering another fold
+      usageReading = null;   // the next decision re-measures the compacted prompt (the ruler) until a new reading lands
       const compactEv = { agentId, runId, beforeTokens, afterTokens, removed: Math.max(0, beforeTokens - afterTokens), reason: 'context' };
       if (r && typeof r === 'object') {   // chunked-fold telemetry (additive): how many summarizer calls, and whether the input was cut
         if (r.chunks > 0) compactEv.chunks = r.chunks;
@@ -1256,8 +1332,10 @@
         emit('capdenied', { agentId, need: 'compute', reason: capCtx.computeReason || 'no compute capability in room' });
         return end('error', { failureStage: 'compute_gate', failureCode: 'capability_denied' });
       }
-      // CONTEXT COMPACTION: fold older turns into a summary if the last prompt crossed the threshold (no-op
-      // until a context manager + summarizer are injected). Runs before turns++ so it cannot inflate the count.
+      // CONTEXT COMPACTION (PREFLIGHT): fold older turns into a summary if the anchored prompt — the last real count
+      // plus what was appended since, or the full ruler before any reading — is past the threshold. Runs before the
+      // FIRST call too, so a seeded/resumed history over the window folds before it is ever sent (no-op until a
+      // context manager is injected). Runs before turns++ so it cannot inflate the count.
       await maybeCompact();
       if (signal.aborted) return end('cancelled');   // a cancel during summarization ends cleanly
       // LIVE STEERING: fold any Commander notes queued mid-run into the prompt BEFORE the next paid call. This is
@@ -1392,12 +1470,41 @@
           continue;
         }
         if (decision.action === 'compress') {
-          // context_overflow: fold older turns away, then retry the turn. Only counts as recovery if it shrank.
-          if (await maybeCompact(true)) {
+          /* context_overflow: fold older turns away, then retry the turn. Only counts as recovery if it shrank.
+             VERIFY BEFORE RETRYING (audit F5). One fold used to be retried blind: when what cannot fold (system
+             prompt, tool schemas, the newest turn) is itself over the window, the retry was a certain second 400
+             and the run died on the provider's words. Now up to OVERFLOW_FOLDS folds run until the projected real
+             size is under the window — calibrated by the count the provider named in its error when it named one
+             (whose window is adopted if smaller), else the usage anchor — and a prompt that still cannot fit ends
+             the run saying exactly that. An unknown window (0) keeps the old blind retry. */
+          const reported = fidelity ? fidelity.reportedWindow(String((streamErr && streamErr.message) || '') + ' ' + String(cls.message || '')) : null;
+          if (reported) adoptReportedWindow(reported.limit);
+          const windowNow = contextLimit || 0;
+          const rulerBefore = rulerTokens(messages);
+          const realBefore = (reported && reported.used) || promptAnchor();
+          let folds = 0, projected = 0, fits = true;
+          while (folds < OVERFLOW_FOLDS) {
+            if (!(await maybeCompact(true, { realBefore: folds ? projected : realBefore }))) break;
+            folds++;
+            if (signal.aborted) break;
+            projected = fidelity.projectAfterFold(realBefore, rulerBefore, rulerTokens(messages));
+            fits = !(windowNow > 0) || projected < windowNow;
+            if (fits) break;
+          }
+          if (signal.aborted) break;
+          if (folds > 0 && fits) {
             armRetryDedupe(acc);
             recoveries++;
             noteRecovery({ stage: 'provider_stream', action: 'compress', reason: decision.reason, attempt: recoveries, model, delayMs: 0 });
             continue;
+          }
+          if (folds > 0) {
+            fatal = Object.assign({}, cls, {
+              reason: 'context_overflow', retryable: false,
+              message: 'context still too large after compacting: about ' + Math.round(projected).toLocaleString('en-US') + ' tokens remain against the model\'s '
+                + windowNow.toLocaleString('en-US') + '-token window after ' + folds + ' fold' + (folds === 1 ? '' : 's') + ' — what cannot be folded (system prompt, tool definitions, the newest turn) no longer fits, so the turn was not re-sent. Start a fresh conversation, switch to a larger-context model, or ask for smaller tool outputs.'
+            });
+            break;
           }
           decision = decide(false, fbIndex < fallbacks.length);
         }
@@ -1443,6 +1550,10 @@
                 if (context && typeof context.setContextLimit === 'function') context.setContextLimit(nl);
               }
             }
+            // PREFLIGHT AGAIN: the retry is a NEW model's first call. A prompt that fit the window we left can be
+            // over this one's threshold — fold before sending it rather than learning so from a 400 (audit F1).
+            await maybeCompact();
+            if (signal.aborted) break;
             armRetryDedupe(acc);
             recoveries++;
             idleStalls = 0;   // a different provider/model starts its own stall count
@@ -1537,7 +1648,7 @@
       spentUsd += final.usd || 0;
       spentTokens += (final.tokensIn || 0) + (final.tokensOut || 0);
       noteUnpriced(model, final);
-      lastUsage = usage;   // feeds the next turn's compaction decision (shouldCompact reads prompt_tokens)
+      noteReading(usage);   // the usage anchor for the next fold decision (real count + the ruler on this same request)
       const costPayload = {
         agentId, runId, usd: final.usd || 0, tokensIn: final.tokensIn || 0, tokensOut: final.tokensOut || 0,
         reasoningTokens: final.reasoningTokens || 0, cachedTokens: final.cachedTokens || 0, model, reconciled: true
