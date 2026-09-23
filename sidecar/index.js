@@ -17841,7 +17841,9 @@ async function runOnceCore(o) {
       },
       // rough initial estimate for the error classifier's context-overflow ratio; contextLimit is 0 until the
       // /models catalog warms, which (by design) disables the ratio so a bare 400 is never mislabelled.
-      approxTokens: Math.ceil(JSON.stringify(msgs).length / 4), contextLimit: provider.contextLimit(model)
+      // context.js's estimator, not JSON length: a base64 image (attachment, or a recovered run's screen capture) is
+      // ~1,500 tokens, not length/4 — 300k chars of pixels counted as 75k tokens froze a phantom overflow ratio.
+      approxTokens: ctxMgr.estimateMessages(msgs), contextLimit: provider.contextLimit(model)
     });
       } finally { detachWorkerCascade(); }
     }
