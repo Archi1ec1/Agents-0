@@ -178,7 +178,7 @@ function twoStagePlan(hopBrief) {
     A.eq(s.state, 'paused', 'paused after the entry dock');
     A.eq(s.hops.length, 1); A.eq(s.hops[0].agentId, 'research-agent'); A.eq(s.hops[0].output, 'stage one findings');
     A.eq(s.paused.text, 'stage one findings', 'the paused handoff text is exactly the dock\'s output');
-    A.eq(s.paused.next, { kind: 'agent', agentId: 'writer-agent', back: false }, 'the preview names the writer');
+    A.eq(s.paused.next, { kind: 'agent', agentId: 'writer-agent', back: false, dockId: 'b2' }, 'the preview names the writer — and its bay (additive dockId, multi-bay)');
     A.ok(/^steptest-/.test(s.streamId), 'the session runs under its own stream: ' + s.streamId);
     const sysOf = rq => ((rq && rq.messages) || []).filter(x => x && x.role === 'system').map(x => String(x.content || '')).join('\n');
     const lastUserOf = rq => { const m = [...((rq && rq.messages) || [])].reverse().find(x => x && x.role === 'user'); return String((m && m.content) || ''); };

@@ -25,7 +25,7 @@ A.ok(/S\.seam === false[\s\S]{0,1400}H\.runSample\(c,/.test(panel) && /H\.sample
 A.ok(/if \(!c \|\| !p\.agentId \|\| S\.seam !== true\) return none;/.test(panel), 'Try this step is hidden unless the route answered');
 
 // the contract
-A.ok(/api\('\/api\/routing\/steptest', 'POST', \{ line: c\.key, text, startAt: agentId, single: true \}\)/.test(panel), 'Try this step = POST {line, text, startAt, single:true}');
+A.ok(/api\('\/api\/routing\/steptest', 'POST', \{ line: c\.key, text, startAt: pid, single: true \}\)/.test(panel), 'Try this step = POST {line, text, startAt: <this BAY>, single:true} (multi-bay: the dock, not the agent)');
 A.ok(/api\('\/api\/routing\/steptest', 'POST', \{ line: c\.key, text, pause \}\)/.test(panel), 'the full step test posts the pause rule');
 for (const v of ['continue', 'rerun', 'rewind', 'stop', 'pause']) A.ok(new RegExp("sessionCall\\('" + v + "'").test(panel), 'the pause UI drives /' + v);
 A.ok(/, 700\);/.test(panel), 'running sessions are polled every ~700 ms');
@@ -33,7 +33,7 @@ A.ok(/H\.planGate\(comp\(\)\)\.then\(gate => \{[\s\S]{0,300}sessionCall\('rerun'
 A.ok(/H\.planGate\(c\)\.then/.test(panel), 'every test run posts THIS floor first (the same gate the sample uses)');
 
 // the trigger
-A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId: S\.trgDock, provider: H\.provider\(\), tz, runsLine: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine) and carries no unattended grants');
+A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId: trgAgent\(\), dockId: S\.trgDock, provider: H\.provider\(\), tz, runsLine: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine), FIRES AT the chosen bay (dockId), and carries no unattended grants');
 A.ok(/SchedPicker\.mount\(/.test(panel) && /api\('\/api\/cron\/preview'/.test(panel), 'the same WHEN picker + server preview as AUTOMATION');
 A.ok(/H\.openTerm\('messaging'\)/.test(panel), 'one click to the Channels panel to connect a channel');
 

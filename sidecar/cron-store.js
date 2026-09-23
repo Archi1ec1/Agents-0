@@ -58,7 +58,7 @@
   const iso = cron._internals.iso;            // ms(arg) -> ISO; deterministic (no zero-arg new Date)
 
   // fields a user may edit via updateJob. `id`, timestamps, run-state and counters are NOT editable here.
-  const EDITABLE = ['name', 'prompt', 'agentId', 'model', 'provider', 'deliver', 'skills', 'script', 'scriptTimeoutMs', 'workdir', 'contextFrom', 'monitorMode', 'misfire', 'unattendedGrants', 'noAgent', 'enabledToolsets', 'attachToSession', 'origin', 'runsLine'];
+  const EDITABLE = ['name', 'prompt', 'agentId', 'model', 'provider', 'deliver', 'skills', 'script', 'scriptTimeoutMs', 'workdir', 'contextFrom', 'monitorMode', 'misfire', 'unattendedGrants', 'noAgent', 'enabledToolsets', 'attachToSession', 'origin', 'runsLine', 'dockId'];
 
   /* UNATTENDED CAPABILITY GRANT (2026-07-25) — the capability families the Commander explicitly approved for
      THIS routine to use with nobody watching. Default EMPTY: a routine grants nothing extra unless the user
@@ -210,6 +210,11 @@
          answer (router.lineOfAgent), and a second copy on disk would be a second derivation that drifts the
          first time the Commander edits the floor. The flag records the INTENT; the line is looked up live. */
       runsLine: spec.runsLine === true,
+      /* FIRES AT A BAY (multi-bay agents, 2026-09-22): which of the agent's bays this routine fires at, when the
+         Commander picked one (the workflow panel's FIRES AT chips). OPTIONAL and additive — present only when a
+         safe id was given, so every existing job record is byte-identical. The fire resolves it against the
+         live plan (router.dockOf): a dock the floor no longer has falls back to the agent's ENTRY dock. */
+      ...(ID_RE.test(String(spec.dockId == null ? '' : spec.dockId)) ? { dockId: String(spec.dockId) } : {}),
       enabledToolsets: spec.enabledToolsets == null ? null : normList(spec.enabledToolsets, 16, /^[A-Za-z0-9:_-]{1,80}$/),
       attachToSession: spec.attachToSession === true,
       // ADDITIVE provenance (Recipe Marketplace R3): a sibling `meta` bag for caller-supplied provenance, e.g.
@@ -256,6 +261,8 @@
       const next = Object.assign({}, job);
       for (const k of EDITABLE) if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = patch[k];
       if (Object.prototype.hasOwnProperty.call(patch, 'misfire')) next.misfire = normMisfire(patch.misfire);
+      // dockId: a safe id or nothing (a cleared/garbage value removes the key — the job fires at the entry dock)
+      if (Object.prototype.hasOwnProperty.call(patch, 'dockId')) { if (ID_RE.test(String(patch.dockId == null ? '' : patch.dockId))) next.dockId = String(patch.dockId); else delete next.dockId; }
       // re-normalize through the whitelist: the EDITABLE loop above copies the RAW patch value, so without this
       // a patch could persist an ungrantable capability name (same trap misfire guards against).
       if (Object.prototype.hasOwnProperty.call(patch, 'unattendedGrants')) next.unattendedGrants = normGrants(patch.unattendedGrants);

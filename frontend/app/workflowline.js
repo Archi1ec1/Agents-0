@@ -70,23 +70,26 @@
        order: [propId…] every dock in strip order (the contract's previous/next)
        outbox: { propId|null, reached:bool }, trigger: { propId|null } }
      Order law: a BOUND dock's column is the compiled chain's (chainStep from the entry docks, loop back
-     edges excluded). An UNCREWED dock sits where the physical belt walk meets it, flagged routed:false. */
+     edges excluded). An UNCREWED dock sits where the physical belt walk meets it, flagged routed:false.
+     KEYED BY DOCK (multi-bay agents, 2026-09-22): one agent may crew several bays, so the walk reads the plan's
+     DOCK layer (reachDock / dockChains / Pipeline.chainStepDock) — writer@A → editor@B → writer@C is three
+     columns with the writer in two of them. A plan without the dock layer derives it (Pipeline.dockLayer). */
   function lineFlow(plan, comp, P, props) {
     const out = { cols: [], docks: {}, gates: [], order: [], outbox: { propId: null, reached: false }, trigger: { propId: null } };
     if (!comp) return out;
     out.trigger.propId = (comp.intakes && comp.intakes[0]) || null;
     out.outbox.propId = (comp.outboxes && comp.outboxes[0]) || null;
     const lineId = comp.key;
-    const chains = (plan && plan.chains) || {}, reach = (plan && plan.reach) || {};
+    const L = (P && P.dockLayer && plan) ? P.dockLayer(plan) : { dockChains: {}, reachDock: {} };
+    const chains = L.dockChains || {}, reach = L.reachDock || {};
     const bays = comp.bays || [];
-    const byAgent = {};
     for (const b of bays) {
       out.docks[b.propId] = { propId: b.propId, agentId: b.agentId || null, role: b.role || null,
         bound: !!b.agentId, routed: false, col: null, deadEnd: false, reachedBy: null };
-      if (b.agentId && !byAgent[b.agentId]) byAgent[b.agentId] = b.propId;
     }
-    const pidOf = aid => (aid && byAgent[aid]) || null;
-    const step = aid => { try { return (P && P.chainStep && plan) ? P.chainStep(plan, aid, { lineId }) : null; } catch (e) { return null; } };
+    // a node is a DOCK id (the walk never confuses the writer's two bays); step answers carry { dockId }
+    const pidOf = n => (n && typeof n === 'object') ? (n.dockId || null) : (n && out.docks[n] ? n : null);
+    const step = pid => { try { return (P && P.chainStepDock && plan) ? P.chainStepDock(plan, pid, { lineId }) : null; } catch (e) { return null; } };
     // the junction prop at a plan junction key (the compiler's attach rule: own tile if on a belt, else the ring)
     const I = (P && P._internals) || {};
     const jprop = (jk) => {
@@ -101,7 +104,7 @@
 
     // 1. the compiled DAG: columns by longest forward path from the entry docks (reach = fed by an INBOX)
     const col = {}, gateByKey = {};
-    const entries = bays.filter(b => b.agentId && reach[b.agentId]).map(b => b.agentId);
+    const entries = bays.filter(b => b.agentId && reach[b.propId]).map(b => b.propId);
     const srcStarts = [];
     for (const s of ((plan && plan.sources) || [])) if ((comp.intakes || []).indexOf(s.propId) >= 0) for (const t of ((s.tiles && s.tiles.length) ? s.tiles : (s.tile ? [s.tile] : []))) srcStarts.push(t);
     const entryBy = entries.length > 1 ? (forkKind(plan, srcStarts, I) || 'oneof') : 'entry';
@@ -111,10 +114,10 @@
       const { a, c, by } = q.shift();
       const pid = pidOf(a); if (!pid) continue;
       const d = out.docks[pid];
-      if (col[a] != null && col[a] >= c) continue;
-      col[a] = c; d.routed = true;
+      if (col[pid] != null && col[pid] >= c) continue;
+      col[pid] = c; d.routed = true;
       if (!d.reachedBy || by === 'all' || by === 'turns') d.reachedBy = by;
-      const s = step(a), ch = chains[a];
+      const s = step(pid), ch = chains[pid];
       const statics = (ch && ch.next) || [];
       if (!s) {
         if (ch && !ch.outbox && ch.deadEnd) d.deadEnd = true;
@@ -122,10 +125,10 @@
         for (const n of statics) q.push({ a: n, c: c + 1, by: 'oneof' });   // a static fork chainStep's default tag didn't take
         continue;
       }
-      if (s.agentId) {
+      if (s.dockId) {
         const fk = statics.length > 1 ? (forkKind(plan, ch && ch.tile ? [ch.tile] : [], I) || 'oneof') : 'single';
-        q.push({ a: s.agentId, c: c + 1, by: fk });
-        for (const n of statics) if (n !== s.agentId) q.push({ a: n, c: c + 1, by: fk });
+        q.push({ a: s.dockId, c: c + 1, by: fk });
+        for (const n of statics) if (n !== s.dockId) q.push({ a: n, c: c + 1, by: fk });
       } else if (s.branches) {
         for (const n of s.branches) q.push({ a: n, c: c + 1, by: 'all' });
       } else if (s.loop || s.join) {
@@ -133,21 +136,22 @@
         let g = gateByKey[k];
         if (!g) {
           g = gateByKey[k] = { kind: s.loop ? 'loop' : 'join', key: k, propId: jprop(k), after: [], backTo: null, backAgent: null,
-            max: s.max || null, when: s.when || null, next: null, nextAgent: s.next || null, timeoutMin: s.timeoutMin || null, col: c };
+            max: s.max || null, when: s.when || null, next: null, nextAgent: (s.next && s.next.agentId) || null, nextDock: pidOf(s.next), timeoutMin: s.timeoutMin || null, col: c };
           out.gates.push(g);
         }
         if (g.after.indexOf(pid) < 0) g.after.push(pid);
         if (c > g.col) g.col = c;
-        if (s.loop) { g.backAgent = s.backTo || null; g.backTo = pidOf(s.backTo); }
-        if (s.next) q.push({ a: s.next, c: c + 1, by: 'single' });
+        if (s.loop) { g.backAgent = (s.backTo && s.backTo.agentId) || null; g.backTo = pidOf(s.backTo); }
+        const nd = pidOf(s.next), bd = pidOf(s.backTo);
+        if (nd) q.push({ a: nd, c: c + 1, by: 'single' });
         else if (ch && ch.outbox) out.outbox.reached = true;
         // a loop's back lane re-enters UPSTREAM: never a forward edge (it is drawn as the back-arc)
-        for (const n of statics) if (n !== s.next && n !== s.backTo) q.push({ a: n, c: c + 1, by: 'oneof' });
+        for (const n of statics) if (n !== nd && n !== bd) q.push({ a: n, c: c + 1, by: 'oneof' });
       }
-      if (ch && ch.outbox && !s.agentId && !s.branches) out.outbox.reached = true;
+      if (ch && ch.outbox && !s.dockId && !s.branches) out.outbox.reached = true;
     }
-    for (const g of out.gates) g.next = pidOf(g.nextAgent);
-    for (const a in col) { const pid = pidOf(a); if (pid) out.docks[pid].col = col[a]; }
+    for (const g of out.gates) g.next = g.nextDock || null;
+    for (const pid in col) if (out.docks[pid]) out.docks[pid].col = col[pid];
 
     // 2. the physical walk: where do UNCREWED (or unrouted) docks sit? Forward along the belts from the INBOX
     // mouths, passing THROUGH every dock (a dock's other ring belts continue the work), fanning junctions.
@@ -181,7 +185,7 @@
      splitter (round-robin), 'oneof' = a FILTER (by content). null = no fork before the docks. */
   function forkKind(plan, starts, I) {
     if (!plan || !plan.belts) return null;
-    const map = plan.belts, junctions = plan.junctions || {}, bayAt = plan.bayTileToAgent || {};
+    const map = plan.belts, junctions = plan.junctions || {}, bayAt = plan.bayTileToDock || plan.bayTileToAgent || {};
     const q = (starts || []).slice(), seen = {};
     let guard = 0;
     while (q.length && guard++ < 4096) {
@@ -343,6 +347,8 @@
      crews one of the line's ENTRY docks (Pipeline.lineOriginOf: reach, never the chat binding). Proven by id
      for per-agent Telegram bots; by display name for the station channels (the payload names, never ids). */
   const CHAN_LABEL = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', matrix: 'Matrix', signal: 'Signal' };
+  // (a channel addresses an AGENT; on a multi-bay line it enters at that agent's ENTRY dock — the plan's
+  //  entryDock — so "feeds this line" = the agent's entry dock is one of this line's entry docks)
   function channelFeeds(status, entryAgentIds, agents) {
     const rows = [];
     if (!status || typeof status !== 'object') return rows;
@@ -368,14 +374,18 @@
   /* ---------- schedules: the routines that run the WHOLE line ----------
      A routine runs the line only with runsLine:true AND fired at an ENTRY dock (router.lineOriginFor is
      keyed on reach). A routine at a mid-line dock runs that dock on (the old "skips" rule, said plainly). */
-  function lineRoutines(jobs, dockAgentIds, entryAgentIds) {
-    const docks = {}, entry = {};
+  /* (multi-bay) entryDockIds: a routine that FIRES AT a named bay (job.dockId) is at the entry only when THAT bay is
+     one of the line's entry docks — the writer's second bay is mid-line even though the writer's first is not. */
+  function lineRoutines(jobs, dockAgentIds, entryAgentIds, entryDockIds) {
+    const docks = {}, entry = {}, entryDock = {};
     for (const a of (dockAgentIds || [])) docks[a] = true;
     for (const a of (entryAgentIds || [])) entry[a] = true;
+    for (const d of (entryDockIds || [])) entryDock[d] = true;
+    const atEntry = j => (j.dockId && entryDockIds) ? !!entryDock[j.dockId] : !!entry[j.agentId];
     return (Array.isArray(jobs) ? jobs : []).filter(j => j && docks[j.agentId]).map(j => ({
-      id: j.id, name: j.name || '(unnamed)', agentId: j.agentId, enabled: j.enabled !== false, display: j.scheduleDisplay || '',
-      prompt: j.prompt || '', runsLine: j.runsLine === true, atEntry: !!entry[j.agentId],
-      startsLine: j.runsLine === true && !!entry[j.agentId] && j.enabled !== false }));
+      id: j.id, name: j.name || '(unnamed)', agentId: j.agentId, dockId: j.dockId || null, enabled: j.enabled !== false, display: j.scheduleDisplay || '',
+      prompt: j.prompt || '', runsLine: j.runsLine === true, atEntry: atEntry(j),
+      startsLine: j.runsLine === true && atEntry(j) && j.enabled !== false }));
   }
 
   /* ---------- the test input a dock's "Try this step" starts from ----------
@@ -392,7 +402,7 @@
   function pausedNext(session, nameOf) {
     const p = session && session.paused, nx = p && p.next;
     if (!nx) return null;
-    if (nx.kind === 'agent') return { kind: 'agent', agentId: nx.agentId, back: !!nx.back, label: (nameOf ? nameOf(nx.agentId) : nx.agentId) + (nx.back ? ' (sent back)' : '') };
+    if (nx.kind === 'agent') return { kind: 'agent', agentId: nx.agentId, dockId: nx.dockId || null, back: !!nx.back, label: (nameOf ? nameOf(nx.agentId) : nx.agentId) + (nx.back ? ' (sent back)' : '') };
     if (nx.kind === 'outbox') return { kind: 'outbox', label: 'the OUTBOX' };
     return { kind: 'end', label: 'the end (' + (nx.reason || 'no next step') + ')' };
   }

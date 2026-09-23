@@ -68,13 +68,15 @@ const WorkflowPanel = (() => {
     return (d.role || 'BAY ' + (i + 1)) + (d.agentId ? ' · ' + nameOf(d.agentId) : '');
   }
   const entryAgents = f => f ? f.order.map(p => f.docks[p]).filter(d => d.agentId && d.col === 0 && d.routed).map(d => d.agentId) : [];
+  // (multi-bay) the ENTRY DOCKS themselves — a routine that fires at one bay of a multi-dock agent is judged by its bay
+  const entryDocks = f => f ? f.order.filter(p => { const d = f.docks[p]; return d.agentId && d.col === 0 && d.routed; }) : [];
   const dockAgents = f => f ? f.order.map(p => f.docks[p].agentId).filter(Boolean) : [];
 
   function triggers(f) {
     const W = WL(); const out = { schedules: [], channels: [], routines: [], chanRows: [] };
     if (!W || !f) return out;
     if (S.cron && Array.isArray(S.cron.jobs)) {
-      out.routines = W.lineRoutines(S.cron.jobs, dockAgents(f), entryAgents(f));
+      out.routines = W.lineRoutines(S.cron.jobs, dockAgents(f), entryAgents(f), entryDocks(f));
       const armed = !!(S.cron.enabled && !S.cron.halted);
       for (const r of out.routines) if (r.startsLine && armed) out.schedules.push(H.human(r.display));
     }
@@ -181,7 +183,7 @@ const WorkflowPanel = (() => {
     else paintLive(f);
     if (S.session && S.session.state === 'paused') {
       const h = S.session.hops[S.session.paused.afterHop];
-      H.pausedMarker(h ? { agentId: h.agentId, label: 'HANDOFF WAITING ▸ ' + ((WL().pausedNext(S.session, nameOf) || {}).label || '') } : null);
+      H.pausedMarker(h ? { agentId: h.agentId, dockId: h.dockId || null, label: 'HANDOFF WAITING ▸ ' + ((WL().pausedNext(S.session, nameOf) || {}).label || '') } : null);
     } else H.pausedMarker(null);
   }
 
@@ -429,22 +431,26 @@ const WorkflowPanel = (() => {
     if (res.ok) { H.sfx('chime'); H.flashTip('PC placed + assigned — compute is on', true); paint(true); }
     else { b.disabled = false; H.sfx('bad'); H.flashTip(res.reason === 'no-room-for-a-desk' ? 'no clear 2×1 floor in this room — make space first' : 'could not place a PC here', false); }
   }
+  /* MULTI-BAY (Andrew's ruling, 2026-09-22): each bay has ONE agent, but one agent may crew MANY bays — so an
+     agent already on another bay is NOT disabled here; the row says where else it works ("also on WRITER bay").
+     Picking it adds this bay to its docks; its body stays at its home dock and this bay lights when work lands. */
   function agentStatus(aid, bayId) {
-    const other = H.station().props().find(q => q.t === 'bay' && q.agentId === aid && q.id !== bayId);
-    if (!other) return { busy: false, txt: 'free' };
+    const others = H.station().props().filter(q => q.t === 'bay' && q.agentId === aid && q.id !== bayId);
+    if (!others.length) return { busy: false, txt: 'free' };
+    const other = others[0];
     const c = H.lineOfProp(other.id), ln = c ? H.lineNameOf(c) : null;
-    return { busy: true, txt: 'busy · ' + (ln ? ln + ' ' : '') + (other.role || 'another') + ' bay' };
+    return { busy: false, also: true, txt: 'also on ' + (ln ? ln + ' ' : '') + (other.role || 'another') + ' bay' + (others.length > 1 ? ' +' + (others.length - 1) : '') };
   }
   function paintBay(body, f, p) {
     const W = WL(), ri = p.role ? H.roleInfo(p.role) : null, agents = H.agents();
     const cur = p.agentId || '', canSummon = !!(ri && H.canSummon());
     const rows = agents.map(a => {
       const st = a.id === cur ? { busy: false, txt: 'works this bay' } : agentStatus(a.id, p.id);
-      return '<button type="button" class="wf-agent' + (a.id === cur ? ' on' : '') + '" data-aid="' + esc(a.id) + '" aria-pressed="' + (a.id === cur) + '"' + (st.busy ? ' disabled' : '') + '>'
+      return '<button type="button" class="wf-agent' + (a.id === cur ? ' on' : '') + (st.also ? ' also' : '') + '" data-aid="' + esc(a.id) + '" aria-pressed="' + (a.id === cur) + '">'
         + '<span class="av" style="background:' + esc(a.color || 'var(--ph)') + '">' + esc(String(a.name || a.id)[0] || '?').toUpperCase() + '</span>'
         + '<span class="nm">' + esc(String(a.name || a.id).toUpperCase()) + '</span><span class="st' + (st.txt === 'free' ? ' free' : '') + '">' + esc(st.txt) + '</span></button>';
     }).join('') + (canSummon ? '<button type="button" class="wf-agent recruit" id="wf-recruit"><span class="av">+</span><span class="nm">RECRUIT</span><span class="st">a new ' + esc(p.role.toLowerCase()) + '</span></button>' : '');
-    const pos = H.stepPositionOf(cur);
+    const pos = H.stepPositionOf(cur, p.id);   // THIS bay's position (multi-bay: the agent may crew another)
     const ph = pos === 'entry' ? 'The arriving job is the task. What does this step always do with it?' : pos === 'chain' ? "Work arrives as the previous step's output. What does this step do with it?" : 'What this step does with arriving work' + (ri ? ' — e.g. ' + ri.desc : '');
     const st = W.starters(p.role);
     const cr = contractRows(f, p);
@@ -548,7 +554,7 @@ const WorkflowPanel = (() => {
       if (run) run.onclick = () => {
         const tin = $('#wf-tin'), text = tin ? tin.value.trim() : '';
         if (!text) { H.sfx('bad'); H.flashTip('give this step a test input first', false); return; }
-        tryStep(p.id, p.agentId, text);
+        tryStep(p.id, p.agentId, text);   // startAt = THIS bay (multi-bay: the agent may crew another)
       };
     } };
   }
@@ -558,12 +564,12 @@ const WorkflowPanel = (() => {
     S.trying[pid] = true; delete S.tryErr[pid]; S.busy = true; paint(true);
     H.planGate(c).then(gate => {
       if (gate && gate.refuse) throw new Error(gate.refuse);
-      return api('/api/routing/steptest', 'POST', { line: c.key, text, startAt: agentId, single: true });
+      return api('/api/routing/steptest', 'POST', { line: c.key, text, startAt: pid, single: true });
     }).then(r => {
       if (!r.j || !r.j.ok || !r.j.session) throw new Error((r.j && r.j.error) || 'step test refused (HTTP ' + r.status + ')');
       return waitDone(r.j.session);
     }).then(sess => {
-      const h = (sess.hops || []).find(x => x.agentId === agentId) || (sess.hops || [])[0];
+      const h = (sess.hops || []).find(x => x.dockId ? x.dockId === pid : x.agentId === agentId) || (sess.hops || [])[0];
       if (sess.state === 'failed' || !h) throw new Error(sess.error || 'the step did not finish');
       tests[pid] = { input: h.input != null ? h.input : text, output: String(h.output || ''), usd: typeof h.usd === 'number' ? h.usd : null, tools: Array.isArray(h.tools) ? h.tools.length : (+h.tools || 0), ms: h.ms || null, agentId: h.agentId, at: sess.updatedAt || null };
       saveTests(); H.sfx('chime');
@@ -588,8 +594,10 @@ const WorkflowPanel = (() => {
   function paintTrigger(body, f, p) {
     const W = WL(), tr = triggers(f), c = comp();
     const docks = f ? f.order.map(pid => f.docks[pid]).filter(d => d.agentId) : [];
-    const entries = entryAgents(f);
-    if (!S.trgDock || !docks.some(d => d.agentId === S.trgDock)) S.trgDock = entries[0] || (docks[0] && docks[0].agentId) || null;
+    // FIRES AT a BAY (multi-bay): S.trgDock is the chosen dock's prop id — the writer's two bays are two choices
+    const entries = entryDocks(f);
+    if (!S.trgDock || !docks.some(d => d.propId === S.trgDock)) S.trgDock = entries[0] || (docks[0] && docks[0].propId) || null;
+    const trgAgent = () => { const d = docks.find(x => x.propId === S.trgDock); return d ? d.agentId : null; };
     const armed = !!(S.cron && S.cron.enabled && !S.cron.halted);
     const routines = tr.routines;
     const rtRows = !S.cron ? '<div class="wf-help dim">reading routines…</div>'
@@ -610,9 +618,9 @@ const WorkflowPanel = (() => {
         + (r.connected ? '' : ' · <span class="trg-warn">not connected</span>') + '</div></div>').join('');
     const feed = H.feedState();
     const feedTxt = !feed.known ? 'Checking what feeds this floor…' : feed.fed ? '✓ FED — a channel or an armed routine is wired to drop work on this floor.' : 'NO FEED — nothing is wired to drop work on this floor yet.';
-    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.agentId === S.trgDock ? ' active' : '') + '" data-aid="' + esc(d.agentId) + '">' + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
-    const dockHint = aid => { const order = docks.map(d => d.agentId), i = order.indexOf(aid); if (i <= 0) return 'starts at the first step — the whole line runs, ' + docks.length + ' step' + (docks.length === 1 ? '' : 's');
-      return 'skips ' + order.slice(0, i).map(nameOf).join(' and ') + ' — the line runs from ' + nameOf(aid) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
+    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
+    const dockHint = pid => { const order = docks.map(d => d.propId), i = order.indexOf(pid); if (i <= 0) return 'starts at the first step — the whole line runs, ' + docks.length + ' step' + (docks.length === 1 ? '' : 's');
+      return 'skips ' + order.slice(0, i).map(x => nameOf(docks[order.indexOf(x)].agentId)).join(' and ') + ' — the line runs from ' + nameOf(docks[i].agentId) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
     const LD = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_DEFAULTS) || { maxHops: 6, maxUsdPerMessage: 2, maxUsdPerDay: null };
     const LC = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_CEILINGS) || { maxHops: 24, maxUsdPerMessage: 50, maxUsdPerDay: 500 };
     const lim0 = (p.limits && typeof p.limits === 'object') ? p.limits : {};
@@ -630,7 +638,7 @@ const WorkflowPanel = (() => {
         + '<div class="rt-when trg-when" id="trg-when"><div class="trg-form-k">WHEN SHOULD IT RUN?</div>'
         + (typeof SchedPicker !== 'undefined' ? SchedPicker.html({ inputId: 'trg-sched' }) : '<input id="trg-sched" class="refit-input" type="text" maxlength="80" placeholder="schedule — every 30m · 0 9 * * * · in 2h" />')
         + '</div><div class="trg-preview" id="trg-preview"></div>'
-        + (docks.length > 1 ? '<details class="wf-more"><summary>Starting agent · ' + esc(nameOf(S.trgDock)) + '</summary><p class="wf-help">Usually, start with the first step. Choosing a later step skips the steps before it.</p><div class="wf-chips" id="trg-docks">' + docks.map(dockChip).join('') + '</div><div class="wf-help trg-dock-hint" id="trg-dock-hint">' + esc(dockHint(S.trgDock)) + '</div></details>'
+        + (docks.length > 1 ? '<details class="wf-more"><summary>Starting agent · ' + esc(nameOf(trgAgent())) + '</summary><p class="wf-help">Usually, start with the first step. Choosing a later step skips the steps before it.</p><div class="wf-chips" id="trg-docks">' + docks.map(dockChip).join('') + '</div><div class="wf-help trg-dock-hint" id="trg-dock-hint">' + esc(dockHint(S.trgDock)) + '</div></details>'
           : docks.length === 1 ? '<div class="wf-help">fires at <b>' + esc((docks[0].role ? docks[0].role + ' · ' : '') + nameOf(docks[0].agentId)) + '</b> — this line’s first step</div>'
           : '<div class="wf-warnline">Assign an agent to a connected BAY first. A schedule needs an agent to start the work.</div>')
         + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="trg-create"' + (docks.length ? '' : ' disabled') + '>▸ SAVE SCHEDULE</button><button type="button" class="bb sm" id="trg-cancel">CANCEL</button></div>'
@@ -706,10 +714,10 @@ const WorkflowPanel = (() => {
     // mount the WHEN picker AFTER the listener exists (it types its default schedule in on mount)
     if (typeof SchedPicker !== 'undefined') SchedPicker.mount($('#trg-when'), { onChange: () => H.sfx('click') });
     $$('.trg-dock').forEach(b => b.onclick = () => {
-      S.trgDock = b.dataset.aid; H.sfx('click');
-      $$('.trg-dock').forEach(x => x.classList.toggle('active', x.dataset.aid === S.trgDock));
+      S.trgDock = b.dataset.dock; H.sfx('click');
+      $$('.trg-dock').forEach(x => x.classList.toggle('active', x.dataset.dock === S.trgDock));
       const hintEl = $('#trg-dock-hint'); if (hintEl) hintEl.textContent = dockHint(S.trgDock);
-      b.closest('details').querySelector('summary').textContent = 'Starting agent · ' + nameOf(S.trgDock);
+      b.closest('details').querySelector('summary').textContent = 'Starting agent · ' + nameOf(b.dataset.aid);
     });
     const showForm = on => { S.trgOpen = on; S.trgMsg = null; const m = $('#trg-msg'); if (m) m.hidden = true; formEl.hidden = !on; newBtn.classList.toggle('active', on); newBtn.setAttribute('aria-expanded', on ? 'true' : 'false'); if (on) promptEl.focus(); else newBtn.focus(); };
     newBtn.onclick = () => { H.sfx('click'); showForm(formEl.hidden); };
@@ -723,7 +731,8 @@ const WorkflowPanel = (() => {
       const ln = lineName();
       const name = (ln ? ln + ' — ' : '') + (prompt.length > 48 ? prompt.slice(0, 45) + '…' : prompt);
       const refuse = m => { btn.disabled = false; H.sfx('bad'); say('✕ ' + m, true); };
-      api('/api/cron', 'POST', { name, prompt, schedule, agentId: S.trgDock, provider: H.provider(), tz, runsLine: true }).then(async ({ status, j: r }) => {
+      // FIRES AT a bay: the agent that runs + WHICH of its bays (multi-bay; cron-store keeps dockId additively)
+      api('/api/cron', 'POST', { name, prompt, schedule, agentId: trgAgent(), dockId: S.trgDock, provider: H.provider(), tz, runsLine: true }).then(async ({ status, j: r }) => {
         if (r && r.error) return refuse(r.error);
         if (r && r.declined) return refuse(r.message || 'this routine name was deleted before — reword the task');
         if (r && r.duplicate) return refuse('a similar routine already exists' + (r.job && r.job.name ? ' ("' + r.job.name + '")' : '') + ' — reword the task; nothing new was created');
@@ -874,7 +883,9 @@ const WorkflowPanel = (() => {
     }).catch(e => { S.sessionErr = String((e && e.message) || e); H.sfx('bad'); })
       .then(() => { S.busy = false; paint(true); poll(); });
   }
-  function hopDock(f, h) { if (!f || !h) return null; const pid = f.order.find(x => f.docks[x].agentId === h.agentId); return pid || null; }
+  // the BAY a hop ran at: its own dockId (multi-bay), else the first bay the agent crews on this line (older sessions)
+  function hopDock(f, h) { if (!f || !h) return null; if (h.dockId && f.docks[h.dockId]) return h.dockId; const pid = f.order.find(x => f.docks[x].agentId === h.agentId); return pid || null; }
+  const nextDockOf = (f, nx) => !f || !nx || nx.kind !== 'agent' ? null : ((nx.dockId && f.docks[nx.dockId]) ? nx.dockId : f.order.find(x => f.docks[x].agentId === nx.agentId) || null);
   function paintTest(body, f) {
     const W = WL(), s = S.session && S.session.lineId === S.lineKey ? S.session : null;
     const live = s && W.isLive(s);
@@ -932,7 +943,7 @@ const WorkflowPanel = (() => {
     if (S.handoffFor !== s.id + ':' + s.paused.afterHop + ':' + s.updatedAt) { S.handoffFor = s.id + ':' + s.paused.afterHop + ':' + s.updatedAt; S.handoff = s.paused.text; }
     const edited = S.handoff !== s.paused.text;
     const toOut = nx.kind === 'outbox';
-    const nextPid = nx.kind === 'agent' ? f && f.order.find(x => f.docks[x].agentId === nx.agentId) : null;
+    const nextPid = nextDockOf(f, nx);
     const v = (h.verdict ? '<div class="wf-verdict' + (h.verdict === 'revise' ? ' revise' : '') + '">VERDICT: ' + esc(h.verdict.toUpperCase()) + (nx.back ? ' — goes back for another pass' : '') + '</div>' : '')
       + (s.paused.next && s.paused.next.blocked ? '<div class="wf-warnline">⚠ Continuing will stop here: ' + esc(s.paused.next.blocked) + '</div>' : '');
     return '<section class="wf-sec"><h3>✓ ' + esc(nameOf(h.agentId)) + ' finished' + (h.pass > 1 ? ' (pass ' + h.pass + ')' : '') + '</h3>'
@@ -984,7 +995,7 @@ const WorkflowPanel = (() => {
     };
     $$('[data-addbay]').forEach(b => b.onclick = () => {
       const h = s.hops[s.paused.afterHop], from = hopDock(f, h);
-      const to = nx.kind === 'agent' ? f.order.find(x => f.docks[x].agentId === nx.agentId) : f.outbox.propId;
+      const to = nx.kind === 'agent' ? nextDockOf(f, nx) : f.outbox.propId;
       const res = insertStep(from, to, b.dataset.addbay);
       if (res && res.ok) {
         S.view = 'edit';   // the new BAY needs its agent: set it up, then ▶ STEP TEST · PAUSED returns here

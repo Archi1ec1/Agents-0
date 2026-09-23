@@ -73,6 +73,7 @@ const DeliverableTool = require('./tools/builtin/deliverable.js');   // delivera
 const { makeImageTools } = require('./tools/builtin/image.js');           // STUDIO: image_generate / image_analyze (OpenRouter multimodal)
 const { makeConnectorTools } = require('./tools/builtin/connectors.js');  // WEB: connectors.list — what the station HAS wired, and what it could (read-only, no secrets)
 const { makeVoiceTools } = require('./tools/builtin/voice.js');           // STUDIO: voice_generate — speech saved into the workspace as a playable clip
+const { makeResolveTools } = require('./tools/builtin/resolve.js');       // STUDIO: DaVinci Resolve — FCPXML timelines (free) + live Studio control (Hermes-plugin port)
 const { makeSpotifyTools } = require('./tools/builtin/spotify.js');       // JUKEBOX: control/query the user's Spotify
 const { makeSpotifyStore } = require('./spotify/store.js');               // Spotify OAuth (PKCE) token store + auto-refresh
 const spotifyPkce = require('./spotify/pkce.js');                          // pure PKCE helpers (verifier/challenge/urls)
@@ -4289,18 +4290,23 @@ const chainRunner = makeChainRunner({
   lineLimits: (lineId) => router.lineLimits(lineId),
   poolCap: () => (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null,
   daySpend: lineSpend,
-  stageBrief: (agentId) => router.stageBrief(agentId),   // the RECEIVING dock's standing brief rides each handoff turn (prompt text only)
+  stageBrief: (agentId, dockId) => router.stageBrief(agentId, dockId),   // the RECEIVING dock's standing brief rides each handoff turn (prompt text only)
   // the line a dock belongs to, so the runner can tell "this dock is terminal by design" from "this line
   // REFUSED this work" and say so honestly. Without it chain.js stays silent rather than guess (never a
   // false note) — which is exactly why the refusal was invisible before.
-  lineOfAgent: (agentId) => router.lineOfAgent(agentId),
+  lineOfAgent: (agentId, dockId) => router.lineOfAgent(agentId, dockId),
   // JOINER + LOOP (2026-08-21): the richer step reading (barriers, fan-out, bounded loops) and the fan-out
   // siblings of an entry dock. Parked join barriers are written beside the plan so a restart can REPORT a
   // line that died mid-join (fail-loud; see chain.js — nothing in-flight is durable, so nothing resumes).
   stepAgent: (agentId, ctx) => router.chainStep(agentId, ctx),
   fanSiblings: (agentId) => router.fanSiblings(agentId),
+  // THE DOCK KEY (multi-bay agents, 2026-09-22): the runner walks DOCKS — writer@A → editor@B → writer@C is three
+  // stages — so a seed's dock (or the agent's entry dock) is where the walk starts and every hop names its bay.
+  stepDock: (dockId, ctx) => router.chainStepDock(dockId, ctx),
+  fanSiblingsDock: (dockId) => router.fanSiblingsDock(dockId),
+  entryDockOf: (agentId) => router.entryDockOf(agentId),
   // LOOP VERDICTS (2026-08-22): a dock whose lane meets a verdict-keyed LOOP gate is told to end with the VERDICT line
-  loopGateAfter: (agentId, lineId) => router.loopGateAfter(agentId, lineId),
+  loopGateAfter: (agentId, lineId, dockId) => router.loopGateAfter(agentId, lineId, dockId),
   barrierStore: {
     load: () => { try { return loadResilient(path.join(WORKSPACES, 'join.barriers.json'), 'join-barriers'); } catch (_) { return null; } },
     save: (v) => { try { saveResilient(path.join(WORKSPACES, 'join.barriers.json'), v); } catch (e) { failNote('chain.barriers.save', e); } }
@@ -5105,7 +5111,7 @@ const cronEmitNotify = (name, payload) => { const r = cronEmit(name, payload); t
 // touched the shared queueDepth map — two stacked routine fires read as an empty queue on the HUD. Now a
 // cron/workshop item bumps the SAME per-agent queue a Telegram admit does and drains on its run's end.
 const cronItems = new Map();   // runId -> { agentId, workitemId } in-flight autonomous work-items
-function placeCronWorkitem(agentId, prompt, runId) {
+function placeCronWorkitem(agentId, prompt, runId, dockId) {
   try {
     const preview = String(prompt || '').replace(/\s+/g, ' ').slice(0, 40);
     const workitemId = crypto.randomUUID();
@@ -5115,7 +5121,9 @@ function placeCronWorkitem(agentId, prompt, runId) {
     // docked agent is that line running on schedule, so its crate carries the dock's lineId. Derived here from
     // the armed plan (server-side, never from a request body — a caller must not be able to NAME a line and so
     // unlock downstream spend). No dock / no armed plan -> absent -> terminal, exactly like a direct order.
-    chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'cron', lineId: router.lineOfAgent(agentId) || undefined, preview, queueDepth: depth, ts: Date.now() });
+    // dockId (additive, multi-bay): a routine FIRES AT one bay; its crate lands there, and its line is that bay's
+    const dk = dockId ? router.dockOf(agentId, dockId) : null;
+    chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'cron', lineId: router.lineOfAgent(agentId, dk || undefined) || undefined, dockId: dk || undefined, preview, queueDepth: depth, ts: Date.now() });
     chanEmit('queue.status', { queueId: agentId, depth, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
   } catch (_) {}
 }
@@ -5315,10 +5323,10 @@ const cronDriver = makeCronDriver({
   // B5 parity (2026-07-06 audit): routines were the ONE dispatch path that never passed a station — a
   // bay-docked agent's cron ran with the default office instead of its bay room's objects. Same resolver
   // the telegram/discord hubs use; null -> the default office, exactly like an unrouted chat.
-  resolveStation: (agentId) => router.stationFor(agentId),
+  resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
   // the dock's standing brief rides a scheduled entry run's system context exactly like a hub-routed
   // message's (inbox-trigger, 2026-08-05) — same router.stageBrief seam, prompt text only, never grants/tools.
-  stageBriefFor: (agentId) => router.stageBrief(agentId),
+  stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),
   // a fired routine rides its instruction onto the CONVEYOR as a CRON box bound for its agent — the SAME
   // workitem.placed plumbing a Telegram message uses (-> SSE -> the floor), so a scheduled fire is VISIBLE: a
   // crate arrives at the agent's bay and (with the run-lifecycle binding in world.js) the agent goes to work.
@@ -5335,7 +5343,7 @@ const cronDriver = makeCronDriver({
      same caps, same per-hop crates as a channel message — only the way a hop is executed differs (a routine has
      no chat transcript; its hops ride the routine's own stream so the session shows the whole line). */
   advanceChain: (o) => chainRunner.advance({
-    agentId: o.agentId, text: o.text, originalText: o.originalText, signal: o.signal,
+    agentId: o.agentId, dockId: o.dockId ? (router.dockOf(o.agentId, o.dockId) || undefined) : undefined, text: o.text, originalText: o.originalText, signal: o.signal,
     // the entry run's reconciled spend: MAX_CHAIN_USD bounds the WHOLE chain, and stage one is part of the
     // chain (2026-08-10 audit — the entry run rode outside its own line's $ ceiling on every path).
     entryUsd: o.entryUsd,
@@ -5345,7 +5353,7 @@ const cronDriver = makeCronDriver({
        or was made somewhere else, and it stays TERMINAL — one run, its own answer, no downstream spend. The
        LINE ITSELF is still looked up live from the compiled plan, never stored: a routine whose agent crews
        no dock resolves null here and is terminal too, and a floor edit can only ever narrow this. */
-    lineId: o.runsLine === true ? router.lineOfAgent(o.agentId) : null,
+    lineId: o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : null,
     runAgent: async (h) => {
       if (o.onHop) { try { o.onHop(); } catch (_) {} }
       /* A HOP RUNS AS THE TARGET AGENT ON THE TARGET'S OWN ROSTER CONFIG (2026-08-10 audit #3): a channel
@@ -5379,7 +5387,7 @@ const cronDriver = makeCronDriver({
           messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true,
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId,
           surface: 'autonomous', trigger: 'schedule', reflect: true,
-          station: router.stationFor(h.agentId) || undefined,
+          station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
           preloadSkills: o.preloadSkills, requiredPreloads: o.requiredPreloads, workdir: o.workdir, enabledToolsets: o.enabledToolsets,
           // GRANTS NEVER FLOW DOWN A LINE (2026-08-04): every runAgent call here is a DOWNSTREAM hop (stage one
           // ran in the driver, with the job's own grants). Whatever the caller passes, a hop runs ungranted —
@@ -7431,7 +7439,7 @@ const loopDriver = makeLoopDriver({
   providerForLoop: (loop) => cronProviderFor(loop),
   hasCredential: (provider, key) => cronHasCredential(provider, key),
   identityForAgent: (agentId) => cronIdentityFor(agentId),
-  stationFor: (agentId) => router.stationFor(agentId),
+  stationFor: (agentId, dockId) => router.stationFor(agentId, dockId),
   persona: () => cronSystemFor('agent'),
   defaultModel: CRON_DEFAULT_MODEL,
   maxParallel: LOOP_MAX_PARALLEL,
@@ -8426,12 +8434,12 @@ function startTelegram(token, key, model, agentCfg) {
     newId: () => crypto.randomUUID(), now: () => Date.now(), maxMessageLength: 4096, textBatchWaitMs: 350,
     // Phase B: the placed floor decides WHICH agent runs (resolveTarget); null -> the hub's own resolution
     // (configured agentId else tg_<chatId>), so a no-floor or mis-wired station never stalls real work.
-    resolveAgent: (ctx) => router.resolveTarget(ctx),
+    resolveAgent: (ctx) => router.resolveDock(ctx),   // { agentId, dockId }: the hub runs AT the dock the floor routed to (multi-bay)
     chain: chainRunner,                                                       // and the belts drawn PAST that dock run the rest of the line
-    lineOriginFor: (agentId) => router.lineOriginFor(agentId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
+    lineOriginFor: (agentId, dockId) => router.lineOriginFor(agentId, dockId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
     getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),   // B3 supplies the real classifier
-    resolveStation: (agentId) => router.stationFor(agentId),                    // B5: a bay's room objects = that agent's caps
-    stageBriefFor: (agentId) => router.stageBrief(agentId),                     // the dock's standing brief rides the run's context (prompt text only)
+    resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),                    // B5: a bay's room objects = that agent's caps
+    stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),                     // the dock's standing brief rides the run's context (prompt text only)
     // In-messenger control surface (channel-agnostic): list agents / switch agent / change the bound agent's model.
     // roster + setModel read/write the SAME agentRoster the browser dossier uses (POST /api/roster) — one source
     // of truth, no per-chat override. modelCatalog is the boot-warmed OpenRouter id snapshot (empty -> skip check).
@@ -8495,7 +8503,7 @@ function startTelegram(token, key, model, agentCfg) {
             // `lineId` (additive — obj() stanzas set no additionalProperties:false) stamps the crate with the
             // LINE this work entered on, or is absent for a direct order. The floor reads it to decide whether
             // the pipeline may animate the handoff (work belongs to a line, 2026-08-07).
-            chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'telegram', lineId: info.lineId || undefined, preview, queueDepth: depth, ts: Date.now() });
+            chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'telegram', lineId: info.lineId || undefined, dockId: info.dockId || undefined, preview, queueDepth: depth, ts: Date.now() });
             chanEmit('queue.status', { queueId: agentId, depth, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
           } else {
             const prior = activeItem.get(chatKey);
@@ -8682,11 +8690,11 @@ function startTelegramBot(botId) {
     // that agent's bay run here too; without this seam the same floor did less work depending on which bot
     // carried the message. getTag rides along so a FILTER downstream branches on the reply, station-bot style.
     chain: chainRunner,                                                       // and the belts drawn PAST that dock run the rest of the line
-    lineOriginFor: (agentId) => router.lineOriginFor(agentId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
+    lineOriginFor: (agentId, dockId) => router.lineOriginFor(agentId, dockId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
     resolveRunConfig: channelRunConfigFor,                                    // every downstream dock owns its roster provider/model/credential
     getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),   // B3 supplies the real classifier
-    resolveStation: (agentId) => router.stationFor(agentId),
-    stageBriefFor: (agentId) => router.stageBrief(agentId),   // a bound bot's agent still crews its dock — the standing brief applies
+    resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
+    stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),   // a bound bot's agent still crews its dock — the standing brief applies
     fetchMedia: (item) => adapterRef ? adapterRef.getFile(item.fileId, { maxBytes: item.maxBytes }) : Promise.resolve({ ok: false, error: 'no adapter' }),
     // VOICE NOTES: the same STT chain /api/stt uses (Groq whisper -> OpenAI whisper -> the chat-model
     // fallback), so a member can hold the button and talk to their agent from a phone. Never throws — a
@@ -8799,12 +8807,12 @@ function startDiscord(token, key, model, agentCfg) {
       },
       persona: DISCORD_PERSONA, classify: Classify.isTaskDirective, redact: redact, emit: chanEmit,
       newId: () => crypto.randomUUID(), now: () => Date.now(),
-      resolveAgent: (ctx) => router.resolveTarget(ctx),
+      resolveAgent: (ctx) => router.resolveDock(ctx),   // { agentId, dockId }: the hub runs AT the dock the floor routed to (multi-bay)
       chain: chainRunner,
-      lineOriginFor: (agentId) => router.lineOriginFor(agentId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
+      lineOriginFor: (agentId, dockId) => router.lineOriginFor(agentId, dockId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
       getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),
-      resolveStation: (agentId) => router.stationFor(agentId),
-      stageBriefFor: (agentId) => router.stageBrief(agentId),   // the dock's standing brief rides the run's context (prompt text only)
+      resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
+      stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),   // the dock's standing brief rides the run's context (prompt text only)
       // In-messenger control surface — identical to Telegram because it lives in the shared hub (roster/setModel/
       // modelCatalog are the SAME app roster + boot-warmed catalog; NO per-channel routing logic here).
       roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
@@ -8910,12 +8918,12 @@ function getDevHub() {
     briefFor: (key) => taskBriefStore.active(key),   // TASK BRIEF v2: same recommendation line on the dev channel
     groundedFor: (q) => taskBriefStore.groundedFor(q),   // provable history-backed suggestion outranks the model guess
     newId: () => crypto.randomUUID(), now: () => Date.now(),
-    resolveAgent: (ctx) => router.resolveTarget(ctx),
+    resolveAgent: (ctx) => router.resolveDock(ctx),   // { agentId, dockId }: the hub runs AT the dock the floor routed to (multi-bay)
     chain: chainRunner,                                                       // and the belts drawn PAST that dock run the rest of the line
-    lineOriginFor: (agentId) => router.lineOriginFor(agentId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
+    lineOriginFor: (agentId, dockId) => router.lineOriginFor(agentId, dockId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
     getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),
-    resolveStation: (agentId) => router.stationFor(agentId),
-    stageBriefFor: (agentId) => router.stageBrief(agentId),   // the dock's standing brief rides the run's context (prompt text only)
+    resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
+    stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),   // the dock's standing brief rides the run's context (prompt text only)
     roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
     setModel: (agentId, model) => setAgentModelFromChannel(agentId, model),
     modelCatalog: () => { maybeRewarmModelCatalog(); return orModelCatalogIds; },
@@ -8993,7 +9001,7 @@ async function handleDevInbound(req, res) {
         if (prior) chanEmit('workitem.superseded', { workitemId: prior.workitemId, agentId: prior.agentId, ts: Date.now() });
         activeItem.set(chatId, { agentId, workitemId });
         const depth = bumpQueue(agentId, +1);
-        chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'dev', lineId: devResolved.lineId || undefined, preview: text.replace(/\s+/g, ' ').slice(0, 40), queueDepth: depth, ts: Date.now() });
+        chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'dev', lineId: devResolved.lineId || undefined, dockId: devResolved.dockId || undefined, preview: text.replace(/\s+/g, ' ').slice(0, 40), queueDepth: depth, ts: Date.now() });
         chanEmit('queue.status', { queueId: agentId, depth, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
       }
     }
@@ -9084,12 +9092,12 @@ function startGenericChannel(id, token, key, model, agentCfg) {
       },
       persona: channelPersona(desc.label), classify: Classify.isTaskDirective, redact: redact, emit: chanEmit,
       newId: () => crypto.randomUUID(), now: () => Date.now(), maxMessageLength: desc.maxMessageLength,
-      resolveAgent: (ctx) => router.resolveTarget(ctx),
+      resolveAgent: (ctx) => router.resolveDock(ctx),   // { agentId, dockId }: the hub runs AT the dock the floor routed to (multi-bay)
       chain: chainRunner,
-      lineOriginFor: (agentId) => router.lineOriginFor(agentId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
+      lineOriginFor: (agentId, dockId) => router.lineOriginFor(agentId, dockId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
       getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),
-      resolveStation: (agentId) => router.stationFor(agentId),
-      stageBriefFor: (agentId) => router.stageBrief(agentId),   // the dock's standing brief rides the run's context (prompt text only)
+      resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
+      stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),   // the dock's standing brief rides the run's context (prompt text only)
       // In-messenger control surface — identical across channels because it lives in the shared hub.
       roster: () => [...agentRoster].map(([agentId, a]) => ({ agentId, name: a.name, model: a.model, provider: a.provider })),
       setModel: (agentId, model) => setAgentModelFromChannel(agentId, model),
@@ -10197,12 +10205,22 @@ function handleRoutingChain(req, res) {
   const agentId = String(u.searchParams.get('agentId') || '').trim();
   const tag = String(u.searchParams.get('tag') || '').trim() || undefined;
   const lineId = String(u.searchParams.get('lineId') || '').trim() || undefined;
-  let next = null;
-  try { next = agentId ? router.chainNext(agentId, { tag: tag, lineId: lineId }) : null; } catch (_) { next = null; }
+  /* `dockId` (additive, multi-bay agents 2026-09-22): WHICH bay the asking stage ran at. Absent -> the agent's
+     entry dock (the same default every dock-less caller reads). The answer names the next dock too
+     (`nextDock`) so a caller that walks on can ask for it next — writer@A's next is mira@B, whose next is
+     writer@C, not writer@A again. */
+  const qDock = String(u.searchParams.get('dockId') || '').trim() || undefined;
+  let next = null, nextDock = null;
+  try {
+    const from = agentId ? router.dockOf(agentId, qDock) : (qDock && router.agentOfDock(qDock) ? qDock : null);
+    const n = from ? router.chainNextDock(from, { tag: tag, lineId: lineId }) : null;
+    if (n) { next = n.agentId || null; nextDock = n.dockId || null; }
+    else if (agentId && !from) next = router.chainNext(agentId, { tag: tag, lineId: lineId });
+  } catch (_) { next = null; nextDock = null; }
   // `brief` (additive, step editor 2026-08-05): the NEXT dock's standing job brief, so the browser's COMMS
   // work line composes the SAME handoff turn the sidecar executor does (chat.js runWorkLine — must not drift).
   let brief = null;
-  if (next) { try { brief = router.stageBrief(next); } catch (_) { brief = null; } }
+  if (next) { try { brief = nextDock ? router.stageBrief(next, nextDock) : router.stageBrief(next); } catch (_) { brief = null; } }
   // `limits` (additive, LINE BUDGET 2026-08-21): the EFFECTIVE ceilings for the line this work entered on —
   // plan limits clamped to the global pool, plus today's ledger reading — so the browser's COMMS work line
   // bounds itself by the same numbers the sidecar executor would (chat.js runWorkLine reads them; absent =
@@ -10213,7 +10231,7 @@ function handleRoutingChain(req, res) {
     limits = { maxHops: lim.maxHops, maxUsd: lim.maxUsd, maxUsdPerDay: lim.maxUsdPerDay, clamped: lim.clamped, spentToday: lineId ? lineSpend.spentToday(lineId) : 0 };
   } catch (_) { limits = null; }
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-  res.end(JSON.stringify({ next: next || null, brief: brief || null, limits: limits }));
+  res.end(JSON.stringify({ next: next || null, nextDock: nextDock || null, brief: brief || null, limits: limits }));
 }
 
 /* ---- GET /api/routing/sample — inert feature discovery for the Build Mode finish-the-line card. ---- */
@@ -10288,12 +10306,12 @@ function getSampleHub() {
     persona: SAMPLE_PERSONA, classify: Classify.isTaskDirective, redact: redact, emit: chanEmit,
     newId: () => crypto.randomUUID(), now: () => Date.now(),
     // line scope rides the ctx (additive): resolveTarget walks ONLY the named line's doors when set
-    resolveAgent: (ctx) => router.resolveTarget(sampleLineScope ? Object.assign({}, ctx, { lineId: sampleLineScope }) : ctx),
+    resolveAgent: (ctx) => router.resolveDock(sampleLineScope ? Object.assign({}, ctx, { lineId: sampleLineScope }) : ctx),
     chain: chainRunner,                                                       // the belts drawn PAST the dock run the rest of the line
-    lineOriginFor: (agentId) => router.lineOriginFor(agentId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
+    lineOriginFor: (agentId, dockId) => router.lineOriginFor(agentId, dockId),   // work belongs to a line: which line does work ARRIVING at this dock belong to? (null = a direct order)
     getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),
-    resolveStation: (agentId) => router.stationFor(agentId),
-    stageBriefFor: (agentId) => router.stageBrief(agentId),   // sample runs inherit the dock's standing brief exactly like real dispatch
+    resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
+    stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),   // sample runs inherit the dock's standing brief exactly like real dispatch
     onResolved: (info) => { sampleResolved = info; },
     onLineOutcome: (info) => { sampleLineOutcome = info; },
     // every run of the line (entry dock + hops) records under the sample's OWN workstream, so the recorded
@@ -10385,7 +10403,7 @@ async function handleRoutingSample(req, res) {
           workitemId = crypto.randomUUID();
           sampleInFlight.workitemId = workitemId;
           const depth = bumpQueue(agentId, +1);
-          chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'sample', sample: true, lineId: sampleResolved.lineId || undefined, preview: text.replace(/\s+/g, ' ').slice(0, 40), queueDepth: depth, ts: Date.now() });
+          chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'sample', sample: true, lineId: sampleResolved.lineId || undefined, dockId: sampleResolved.dockId || undefined, preview: text.replace(/\s+/g, ' ').slice(0, 40), queueDepth: depth, ts: Date.now() });
           chanEmit('queue.status', { queueId: agentId, depth, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
         }
       }
@@ -10409,7 +10427,7 @@ async function handleRoutingSample(req, res) {
     const onLine = !line || entryLineId === line;
     const completed = onLine && runs.length > 0 && runs.every(r => r.reason === 'done')
       && !!sampleLineOutcome && !sampleLineOutcome.stopped
-      && router.chainShipsToOutbox(sampleLineOutcome.agentId);
+      && router.chainShipsToOutbox(sampleLineOutcome.agentId, sampleLineOutcome.dockId);
     const delivered = completed ? runs[0] : null;
     const totalUsd = runs.reduce((s, r) => s + ((typeof r.usd === 'number' && isFinite(r.usd)) ? r.usd : 0), 0);
     if (workitemId) {
@@ -10463,7 +10481,7 @@ async function stepTestRunDock(h) {
   if (!cfg.model || (!cfg.configured && !cfg.key)) return { text: '', usd: 0, error: 'no provider/model is configured for ' + h.agentId + ' — connect a provider and set a model first' };
   const persona = cfg.system || STEPTEST_PERSONA;
   let brief = null;
-  if (h.entry) { try { brief = router.stageBrief(h.agentId); } catch (e) { failNote('steptest.brief', e); brief = null; } }
+  if (h.entry) { try { brief = router.stageBrief(h.agentId, h.dockId); } catch (e) { failNote('steptest.brief', e); brief = null; } }
   const system = h.entry ? dockSystem(persona, brief, true) : persona;
   const runId = crypto.randomUUID();
   const st = { buf: '', err: null, usd: 0, tools: 0 };
@@ -10476,7 +10494,7 @@ async function stepTestRunDock(h) {
     else if (name === 'agent.run.end') { if (p && typeof p.usd === 'number' && isFinite(p.usd)) st.usd = Math.max(st.usd, p.usd); }
   };
   let station = null;
-  try { station = router.stationFor(h.agentId); } catch (e) { failNote('steptest.station', e); station = null; }
+  try { station = router.stationFor(h.agentId, h.dockId); } catch (e) { failNote('steptest.station', e); station = null; }
   const t0 = Date.now();
   try {
     await runOnce({
@@ -10487,7 +10505,7 @@ async function stepTestRunDock(h) {
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
       station: station || undefined,
-      taskKey: 'steptest:' + h.sessionId + ':' + h.agentId, taskSource: 'sample',
+      taskKey: 'steptest:' + h.sessionId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: 'sample',
       handoffEdited: h.edited === true   // the run row says the owner edited what this dock was handed
     });
   } catch (e) { st.err = st.err || ('run failed: ' + ((e && e.message) || e)); }
@@ -10501,17 +10519,21 @@ function getStepTest() {
       get: () => router.getPlan(),
       step: (a, ctx) => router.chainStep(a, ctx),      // CONTINUE: the executor's own counter-advancing read
       peek: (a, ctx) => router.chainPeek(a, ctx),      // PREVIEW: the same read, no splitter moves
+      // the DOCK readings (multi-bay agents, 2026-09-22): the walk keys on bays, startAt may name one
+      stepDock: (d, ctx) => router.chainStepDock(d, ctx),
+      peekDock: (d, ctx) => router.chainPeekDock(d, ctx),
+      dockRef: (ref, line) => router.dockRef(ref, line),
       // the entry dock: the SAME line-scoped unaddressed dispatch the sample route takes (one-resolver law), and
       // only a dock the line's own INBOX feeds counts as having ridden in through its door
       entryDock: (line, text) => {
-        const a = router.resolveTarget({ tag: Classify.getTag ? Classify.getTag(text) : undefined, text, lineId: line });
-        return (a && router.lineOriginFor(a) === line) ? a : null;
+        const r = router.resolveDock({ tag: Classify.getTag ? Classify.getTag(text) : undefined, text, lineId: line });
+        return (r && router.lineOriginFor(r.agentId, r.dockId) === line) ? r : null;
       },
-      lineOf: (a) => router.lineOfAgent(a),
-      stageBrief: (a) => router.stageBrief(a),
-      loopGateAfter: (a, l) => router.loopGateAfter(a, l),
+      lineOf: (a, d) => router.lineOfAgent(a, d),
+      stageBrief: (a, d) => router.stageBrief(a, d),
+      loopGateAfter: (a, l, d) => router.loopGateAfter(a, l, d),
       lineLimits: (l) => router.lineLimits(l),
-      shipsToOutbox: (a) => router.chainShipsToOutbox(a)
+      shipsToOutbox: (a, d) => router.chainShipsToOutbox(a, d)
     },
     preflight: (agentId) => {
       const c = sampleRunConfigFor(agentId);
@@ -12473,6 +12495,10 @@ async function createCronJobFromSpec(body) {
          routine stays terminal. cron-store normalizes with === true, so no truthy-ish body value can buy a
          line. Absent -> false -> byte-identical to the pre-arc single-run routine. */
       runsLine: body.runsLine,
+      /* FIRES AT a BAY (multi-bay agents, 2026-09-22): an optional dockId naming WHICH of the agent's bays the
+         routine fires at. cron-store keeps it only when it is a safe id; the fire resolves it against the live
+         plan (router.dockOf), so a stale dock falls back to the agent's entry dock — never to nothing. */
+      dockId: body.dockId,
       // R3: pass through the caller-supplied provenance bag ({ recipeId } from MAKE ROUTINE). cron-store normMeta
       // keeps only a plain object; absent → null. Additive — no existing caller sends it and old jobs load fine.
       meta: body.meta
@@ -12721,12 +12747,12 @@ async function handleCronRun(req, res) {
   // distinguishes it from a scheduled fire). The scheduled tick path records via cronEmitNotify; this route uses
   // the raw cronEmit, so record explicitly here so BOTH fire paths land in the durable decision trail.
   recordAutonomy({ source: 'cron', kind: 'fire', jobId: job.id, agentId: job.agentId, runId: runId, binding: 'run-now', reason: 'manual' });
-  placeCronWorkitem(job.agentId, job.prompt, runId);
+  placeCronWorkitem(job.agentId, job.prompt, runId, job.dockId);
   // the dock's standing brief rides Run Now's system context too (inbox-trigger, 2026-08-05): Run Now must
   // match the scheduled fire's posture exactly, brief included — same router.stageBrief seam, same section
   // header as the hub's entry runs. Prompt text only; a brief never changes grants/tools/routing.
   let runNowBrief = null;
-  try { runNowBrief = router.stageBrief(job.agentId); } catch (_) { runNowBrief = null; }
+  try { runNowBrief = router.stageBrief(job.agentId, job.dockId); } catch (_) { runNowBrief = null; }
   try {
     await runOnce({
       key: key, model: model,
@@ -12772,14 +12798,15 @@ async function handleCronRun(req, res) {
     if (!state.errMsg && String(state.buf || '').trim()) {
       try {
         const line = await chainRunner.advance({
-          agentId: job.agentId, text: state.buf, originalText: String(job.prompt || ''), signal: ac.signal,
+          agentId: job.agentId, dockId: job.dockId ? (router.dockOf(job.agentId, job.dockId) || undefined) : undefined,
+          text: state.buf, originalText: String(job.prompt || ''), signal: ac.signal,
           entryUsd: state.usd,   // stage one is part of the chain — its spend counts against MAX_CHAIN_USD (2026-08-10)
           // SAME ORIGIN AS THE SCHEDULED FIRE (work belongs to a line, 2026-08-07): Run Now is this routine's
           // own trigger pressed by hand, so it carries the dock's lineId and the line runs — but ONLY for a
           // routine that belongs to the line (the durable `runsLine` opt-in, read off the same job record the
           // driver reads). The two paths must not drift — a routine that runs four stages on schedule must run
           // four from the button, and a terminal routine must buy exactly one run from either.
-          lineId: job.runsLine === true ? router.lineOfAgent(job.agentId) : null,
+          lineId: job.runsLine === true ? router.lineOfAgent(job.agentId, job.dockId ? router.dockOf(job.agentId, job.dockId) : undefined) : null,
           runAgent: async (h) => {
             /* A HOP RUNS AS THE TARGET AGENT ON THE TARGET'S OWN ROSTER CONFIG (2026-08-10 audit #3) —
                mirrors the scheduled seam (cron driver advanceChain) and the channel hub's resolveRunConfig:
@@ -12811,7 +12838,7 @@ async function handleCronRun(req, res) {
                 messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true,
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId,
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
-                station: router.stationFor(h.agentId) || undefined,
+                station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
                 /* GRANTS NEVER FLOW DOWN A LINE (2026-08-04): the unattended grant was approved for the
                    routine's OWN agent (stage one, above) — a downstream hop is a DIFFERENT agent, and a drawn
                    belt must not silently widen its authority. Mirrors the scheduled fire (cron-driver.js). */
@@ -16090,6 +16117,9 @@ async function runOnceCore(o) {
   // workspace. It drives the SAME media-service ladder /api/tts does (keyed neural chain, then the
   // free keyless Edge floor), so it needs no voice-specific credential and a zero-key station can still record.
   makeVoiceTools({ synth: media.synthesizeForAgent, fsp, pathMod: path, root: WORKSPACES }).register(registry);
+  // STUDIO, the edit bay: DaVinci Resolve. Timeline FILES work with free Resolve; live control needs Resolve Studio and
+  // runs a fixed embedded Python bridge (never a shell). Media paths outside the workspace go through this run's path-trust.
+  makeResolveTools({ fsp, pathMod: path, root: WORKSPACES, spawn: childSpawn, pathTrust: runPathTrust, envFor: () => sanitizeChildEnv(process.env), config: { ffprobe: ENV('FFPROBE'), python: ENV('RESOLVE_PYTHON') } }).register(registry);
   // JUKEBOX (Spotify): registered every run, EXPOSED via a 'jukebox' object; no-op (clear error) until the user
   // connects Spotify in TOOLSETS. The OAuth session + auto-refresh live in the station-wide spotifyStore above.
   makeSpotifyTools({ store: spotifyStore }).register(registry);
