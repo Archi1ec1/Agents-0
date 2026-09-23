@@ -62,6 +62,84 @@ function effectiveLimits(raw, fallback, poolCap) {
   return out;
 }
 
+/* ---- PURE STEP HELPERS (2026-09-22) — factored out of advance() so the conveyor STEP-THROUGH TEST
+   (routing/steptest.js) runs one dock at a time on the SAME decisions, never a second dialect of them.
+   advance() calls each exactly where its inline code used to sit; behaviour is byte-for-byte unchanged. */
+
+/* loopDecision(step, ctx, n, visited, text) -> { again, target, text, exhausted } — THE ONE LOOP RULE
+   (2026-08-22, matches the LOOP card word for word):
+     when = a VERDICT word   -> the crate goes BACK while the reviewer's verdict is NOT that word
+                                (no verdict line = not that word); leaves on DONE the moment it is;
+     when = a classifier tag -> goes back while the output still READS as that kind of work;
+     no when                 -> every pass goes back;
+   and in every case MAX PASSES ends it on DONE. A `when` still unmet when the passes ran out marks the
+   done-lane handoff EXHAUSTED so the downstream stage knows nobody approved it. `n` = passes already taken
+   round this gate; `text` = the output about to be handed on (returned annotated). Pure: mutates nothing. */
+function loopDecision(step, ctx, n, visited, text) {
+  const byVerdict = Verdict.isVerdictWord(step.when);
+  const wants = !step.when ? true : byVerdict ? (ctx.verdict !== String(step.when).toLowerCase()) : (ctx.tag === step.when);
+  const again = step.backTo && n < step.max && wants;
+  if (again) {
+    return { again: true, target: step.backTo, exhausted: false,
+      text: '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n' + text };
+  }
+  // spent (or the verdict passed): leave on the done lane
+  let target = step.next, out = text, exhausted = false;
+  if (step.when && wants && n >= step.max) {
+    exhausted = true;
+    /* THE ESCALATION LANE (2026-08-30): a gate with a third wired lane sends verdict-exhausted
+       work THERE — a fresh dock (the fixer, the human-facing summarizer) instead of an apology
+       stapled to the done lane. The escalated dock is a real stage: its output continues down
+       ITS chain. `visited` still refuses a dock that already ran — then the honest done-lane
+       note stands, never a silent second run. */
+    if (step.esc && !visited[step.esc]) {
+      target = step.esc;
+      out = '[LOOP — escalated: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
+        + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
+        + ' — handed to the escalation lane]\n' + text;
+    } else {
+      out = '[LOOP — exhausted: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
+        + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
+        + ' — leaving on DONE unapproved]\n' + text;
+    }
+  }
+  return { again: false, target, text: out, exhausted };
+}
+
+/* preHopRefusal({ visited, target, loopHop, hop, loopHops, lim, spent, dayLedger, lineId, text, cur }) -> the
+   honest stop reason when the NEXT hop may not run, else null. The executor's pre-hop guards, in order:
+   a re-visit outside a loop, the hop ceiling, the $ ceiling (PRE-hop — a hop's cost is unknowable before it
+   runs, so it is enforced to within one hop's spend), the line's daily cap, and an empty crate. */
+function preHopRefusal(g) {
+  if (g.visited[g.target] && !g.loopHop) return 'the line loops back to ' + g.target;
+  if (g.hop - g.loopHops > g.lim.maxHops) return 'the line is longer than ' + g.lim.maxHops + ' stages';
+  if (g.spent >= g.lim.maxUsd) return 'the line reached its $' + g.lim.maxUsd.toFixed(2) + ' limit';
+  // THE DAILY CAP — same pre-hop posture, measured against the durable per-line day ledger (entry run and
+  // every earlier message today included). Only a line with a ledger AND a cap can refuse; a line with no
+  // cap, or no lineId (a direct order), never does — the executor does not invent a day it cannot prove.
+  if (g.dayLedger && g.lim.maxUsdPerDay != null) {
+    let today = 0; try { today = g.dayLedger.spentToday(g.lineId); } catch (_) { today = 0; }
+    if (today >= g.lim.maxUsdPerDay) return 'the line reached its $' + g.lim.maxUsdPerDay.toFixed(2) + ' daily limit';
+  }
+  // a stage that produced nothing has nothing to hand on — handing it an empty crate would buy a run that
+  // can only hallucinate its input (and the floor would draw a crate carrying nothing).
+  if (!String(g.text || '').trim()) return g.cur + ' produced no output to hand on';
+  return null;
+}
+
+/* hopTurn({ handoffText, stageBrief, loopGateAfter, originalText, from, upstream, hop, target, lineId }) -> the
+   handoff turn a RECEIVING dock is handed: the shared Pipeline.handoffPrompt (or an injected stand-in), the
+   receiver's standing brief (null-safe: no seam / no brief = the exact pre-brief prompt), and — when that
+   dock's lane meets a verdict-keyed LOOP gate — the VERDICT-line instruction (verdict.js). */
+function hopTurn(t) {
+  const compose = typeof t.handoffText === 'function' ? t.handoffText : Pipeline.handoffPrompt;
+  let brief = null;
+  if (typeof t.stageBrief === 'function') { try { brief = t.stageBrief(t.target); } catch (_) { brief = null; } }
+  let verdictWhen = null;
+  if (typeof t.loopGateAfter === 'function') { try { const g = t.loopGateAfter(t.target, t.lineId); verdictWhen = (g && Verdict.isVerdictWord(g.when)) ? g.when : null; } catch (_) { verdictWhen = null; } }
+  return compose(t.originalText, t.from, t.upstream, t.hop, brief, verdictWhen ? Verdict.verdictBrief(verdictWhen) : '');
+}
+
 function makeChainRunner(o) {
   o = o || {};
   const nextAgent = typeof o.nextAgent === 'function' ? o.nextAgent : null;
@@ -305,42 +383,12 @@ function makeChainRunner(o) {
           if (!step.next) { out.stopped = null; return out; }   // the joiner ships straight out: merged text IS the answer
           hop--; continue;
         } else if (step && step.loop) {
-          /* THE ONE LOOP RULE (2026-08-22, matches the LOOP card word for word):
-               when = a VERDICT word   -> the crate goes BACK while the reviewer's verdict is NOT that word
-                                          (no verdict line = not that word); leaves on DONE the moment it is;
-               when = a classifier tag -> goes back while the output still READS as that kind of work;
-               no when                 -> every pass goes back;
-             and in every case MAX PASSES ends it on DONE. A `when` still unmet when the passes ran out marks the
-             done-lane handoff EXHAUSTED (and out.loopExhausted) so the downstream stage knows nobody approved it. */
+          // THE ONE LOOP RULE — loopDecision (module level) holds it; the step-through test reads the same one
           const n = iter[step.loop] || 0;
-          const byVerdict = Verdict.isVerdictWord(step.when);
-          const wants = !step.when ? true : byVerdict ? (ctx.verdict !== String(step.when).toLowerCase()) : (ctx.tag === step.when);
-          const again = step.backTo && n < step.max && wants;
-          if (again) {
-            iter[step.loop] = n + 1; loopHop = true; looping = true;
-            target = step.backTo; fromTile = null;
-            out.text = '[LOOP — pass ' + (n + 1) + ' of ' + step.max + ' round the gate at ' + step.loop + ']\n' + out.text;
-          } else {
-            target = step.next; looping = false;   // spent (or the verdict passed): leave on the done lane
-            if (step.when && wants && n >= step.max) {
-              out.loopExhausted = true;
-              /* THE ESCALATION LANE (2026-08-30): a gate with a third wired lane sends verdict-exhausted
-                 work THERE — a fresh dock (the fixer, the human-facing summarizer) instead of an apology
-                 stapled to the done lane. The escalated dock is a real stage: its output continues down
-                 ITS chain. `visited` still refuses a dock that already ran — then the honest done-lane
-                 note stands, never a silent second run. */
-              if (step.esc && !visited[step.esc]) {
-                target = step.esc;
-                out.text = '[LOOP — escalated: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
-                  + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
-                  + ' — handed to the escalation lane]\n' + out.text;
-              } else {
-                out.text = '[LOOP — exhausted: ' + n + ' pass' + (n === 1 ? '' : 'es') + ' round the gate at ' + step.loop
-                  + (byVerdict ? ' without VERDICT: ' + String(step.when).toLowerCase() : ' while the output still read as ' + step.when)
-                  + ' — leaving on DONE unapproved]\n' + out.text;
-              }
-            }
-          }
+          const d = loopDecision(step, ctx, n, visited, out.text);
+          target = d.target; out.text = d.text;
+          if (d.again) { iter[step.loop] = n + 1; loopHop = true; looping = true; fromTile = null; }
+          else { looping = false; if (d.exhausted) out.loopExhausted = true; }
         } else if (step && step.agentId) {
           target = step.agentId;
         } else if (!stepAgent) {
@@ -356,20 +404,10 @@ function makeChainRunner(o) {
       if (looping) loopHop = true;
       if (visited[target] && !loopHop) { out.stopped = 'the line loops back to ' + target; return out; }
       if (loopHop) loopHops++;
-      if (hop - loopHops > lim.maxHops) { out.stopped = 'the line is longer than ' + lim.maxHops + ' stages'; return out; }
-      // PRE-hop because a hop's cost is unknowable before it runs: the ceiling is enforced to within one
-      // hop's spend. `spent` (never out.usd) is the guard — entry seeded, so stage one no longer rides free.
-      if (spent >= lim.maxUsd) { out.stopped = 'the line reached its $' + lim.maxUsd.toFixed(2) + ' limit'; return out; }
-      // THE DAILY CAP — same pre-hop posture, measured against the durable per-line day ledger (entry run and
-      // every earlier message today included). Only a line with a ledger AND a cap can refuse; a line with no
-      // cap, or no lineId (a direct order), never does — the executor does not invent a day it cannot prove.
-      if (dayLedger && lim.maxUsdPerDay != null) {
-        let today = 0; try { today = dayLedger.spentToday(lineId); } catch (_) { today = 0; }
-        if (today >= lim.maxUsdPerDay) { out.stopped = 'the line reached its $' + lim.maxUsdPerDay.toFixed(2) + ' daily limit'; return out; }
-      }
-      // a stage that produced nothing has nothing to hand on — handing it an empty crate would buy a run that
-      // can only hallucinate its input (and the floor would draw a crate carrying nothing).
-      if (!String(out.text || '').trim()) { out.stopped = cur + ' produced no output to hand on'; return out; }
+      // the remaining pre-hop guards (hop ceiling, $ ceiling measured on `spent` — entry seeded, so stage one
+      // no longer rides free — daily cap, empty crate) live in preHopRefusal, shared with the step-through test
+      const refused = preHopRefusal({ visited, target, loopHop: true, hop, loopHops, lim, spent, dayLedger, lineId, text: out.text, cur });
+      if (refused) { out.stopped = refused; return out; }
 
       if (!loopHop) visited[target] = true;
       const workitemId = newId(), t0 = now();
@@ -383,15 +421,10 @@ function makeChainRunner(o) {
       say('workitem.placed', { workitemId, queueId: target, agentId: target, kind: 'chain', from: entryBranch ? undefined : cur, lineId: lineId || undefined, preview: preview(out.text), ts: t0 });
 
       let r = null;
-      // the RECEIVING dock's standing brief rides the handoff turn (null-safe: no seam / no brief = the
-      // exact pre-brief prompt, byte for byte — Pipeline.handoffPrompt only appends when one is present).
-      let brief = null;
-      if (stageBrief) { try { brief = stageBrief(target); } catch (_) { brief = null; } }
-      // a dock whose lane meets a verdict-keyed LOOP gate is told to end with the verdict line (verdict.js)
-      let verdictWhen = null;
-      if (loopGateAfter) { try { const g = loopGateAfter(target, lineId); verdictWhen = (g && Verdict.isVerdictWord(g.when)) ? g.when : null; } catch (_) { verdictWhen = null; } }
-      // an ENTRY branch is stage one of its own lane: it gets the original message, not a handoff turn
-      const turn = entryBranch ? String(originalText || '') : handoffText(originalText, cur, out.text, hop, brief, verdictWhen ? Verdict.verdictBrief(verdictWhen) : '');
+      // the RECEIVING dock's standing brief + (a verdict-keyed LOOP gate ahead) the VERDICT-line instruction
+      // ride the handoff turn — hopTurn, shared with the step-through test. An ENTRY branch is stage one of
+      // its own lane: it gets the original message, not a handoff turn.
+      const turn = entryBranch ? String(originalText || '') : hopTurn({ handoffText, stageBrief, loopGateAfter, originalText, from: cur, upstream: out.text, hop, target, lineId });
       try { r = await runAgent({ agentId: target, text: turn, hop, from: entryBranch ? null : cur, signal: s.signal, workitemId }); }
       catch (e) { r = { error: (e && e.message) || String(e || 'stage failed') }; }
       r = r || {};
@@ -425,4 +458,4 @@ function makeChainRunner(o) {
   return { advance, stopNote, _limits: { maxHops, maxUsd }, _barrier: barrier };
 }
 
-module.exports = { makeChainRunner, effectiveLimits, MAX_HOPS, MAX_CHAIN_USD };
+module.exports = { makeChainRunner, effectiveLimits, loopDecision, preHopRefusal, hopTurn, MAX_HOPS, MAX_CHAIN_USD };
