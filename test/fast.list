@@ -602,6 +602,7 @@ test/canvas-loss-recovery.test.js
 test/stage-context-loss.test.js
 test/conveyor.test.js
 test/pipeline.test.js
+test/pipeline.multibay.test.js
 test/pipeline.join-loop.test.js
 test/blueprints.test.js
 test/guidedline.test.js
