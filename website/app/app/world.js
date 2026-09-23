@@ -446,6 +446,9 @@ const World = (() => {
   const DIR_HYST = 0.13;     // rad (~7.5°) a bucket holds PAST its own boundary before handing over
   const ACCEL = 150;         // world units/s² — spools up to hero pace in ~0.23s, and brakes at the same rate
   const CORNER_LOOK = 2.5;   // world units: hand over to the next waypoint this early (see the walk blocks)
+  const CORNER_PLANT = 1.95; // rad (~112°): past this a body plants and pivots; below it, it arcs (stepGait)
+  const CORNER_ARC = 1.75;   // rad (~100°): the widest heading error still travelled along the facing
+  const ARC_MIN_D = 1.5;     // world units: inside this (+ turn radius) of its target a body takes the chord
   const angNorm = a => Math.atan2(Math.sin(a), Math.cos(a));   // wrap to (-π, π]
   function bucketDir(a, cur) {
     if (cur && DIR_A[cur] != null && Math.abs(angNorm(a - DIR_A[cur])) < Math.PI / 4 + DIR_HYST) return cur;
@@ -460,11 +463,15 @@ const World = (() => {
      spools up and settles instead of skating off at full tilt, for free.
      `lastLeg` brakes into the FINAL stop only; intermediate waypoints are taken at pace so the body doesn't
      stutter at every corner. dx,dy = the vector it is stepping along, d = its length. */
-  function stepGait(b, dx, dy, d, top, lastLeg, dt) {
+  function stepGait(b, dx, dy, d, top, lastLeg, dt, plant) {
     // Art height controls rendering, not travel speed: 19 px skins share the normal station pace.
     const seconds=Math.max(0,Math.min(100,dt))/1000;
     const accel=ACCEL;
-    if(b.faceA==null||b.dir!==b.faceDir)b.faceA=DIR_A[b.dir]??Math.PI/2;
+    // Another system set b.dir (intent tell, glance, seat). Start from the facing the viewer actually SEES
+    // (assets.js eases the standing pose into _rA) rather than snapping to the new cardinal: that snap was
+    // the 90° pop at the first step of every walk. The slew below then turns the body onto its heading.
+    if(b.faceA==null||b.dir!==b.faceDir){const seen=b._rA,want=DIR_A[b.dir]??Math.PI/2;
+      b.faceA=seen!=null&&Math.abs(angNorm(seen-want))<Math.PI/2?seen:want;b.angW=0;}
     const t=typeof performance!=='undefined'?performance.now():Date.now();
     if(b.odo==null)b.odo=0;
     if(t-(b.odoAt||0)>150)b.spd=0;
@@ -476,18 +483,43 @@ const World = (() => {
     const curW=b.angW||0;
     b.angW=curW<target?Math.min(target,curW+TURN_ACCEL_A*seconds):Math.max(target,curW-TURN_ACCEL_A*seconds);
     b.faceA=angNorm(b.faceA+Math.sign(turn)*Math.min(remain,b.angW*seconds));
-    // Turn before travelling backwards. Gentle corners retain momentum; sharp turns plant first.
-    const error=Math.abs(angNorm(heading-b.faceA));
-    const alignment=error>=Math.PI/4?0:Math.cos(error*2)**2;
+    // WALK THROUGH CORNERS (2026-09-22, Andrew: "you can see the frames when they turn"). Any turn of 45°+
+    // used to halt the body dead, swap it to its single standing frame and pivot it on the spot — every
+    // path corner was stop · frozen pose · snap · go. Now the body keeps walking and ARCS: it travels
+    // along its eased facing, slowing through the bend (radius ≈ spd/TURN_RATE, ~1-3 units), so the
+    // walk cycle keeps running while the 8-way facing sweeps through the diagonal between the legs.
+    // Only a genuine about-face (past CORNER_PLANT) still plants and pivots.
+    // `plant`: traffic sidesteps keep the old plant-first rule — a yielder that arcs straight back reaches
+    // the passer's final tile before the passer does and the two deadlock (hallway-traffic 2-tile hall).
+    const error=Math.abs(angNorm(heading-b.faceA)),limit=plant?Math.PI/4:CORNER_PLANT;
+    const alignment=error>=limit?0:plant?Math.cos(error*2)**2:Math.cos(error*0.8)**1.5;
     const want=(lastLeg?Math.min(top,Math.sqrt(Math.max(0,d)*2*accel)):top)*alignment;
     const cur=b.spd||0,rate=accel*seconds;
     b.spd=cur<want?Math.min(want,cur+rate):Math.max(want,cur-rate);
     // Speed already eases with alignment. Applying it twice makes every corner drag.
-    const step=error>=Math.PI/4?0:Math.min(d,b.spd*seconds);
+    const step=error>=limit?0:Math.min(d,b.spd*seconds);
+    // Arc along the facing only while the leg is long enough to converge on its target; close to a
+    // waypoint (or badly misaligned) the chord wins so a body can never orbit what it is walking to.
+    const arc=!plant&&step>0&&error<CORNER_ARC&&d>ARC_MIN_D+(b.spd||0)/TURN_RATE;
+    b._stepDir=arc?{x:Math.cos(b.faceA),y:Math.sin(b.faceA)}:null;
     // Only translation advances the stride. Rotation used to add almost an entire fake cycle.
-    b.odo+=step;b._travelHeading=heading;b._travelStep=step;
+    b.odo+=step;b._travelHeading=arc?b.faceA:heading;b._travelStep=step;
     b.dir=b.faceDir=bucketDir(b.faceA,b.dir);
     return step;
+  }
+
+  /* Apply stepGait's step. The arc (along the eased facing) is taken only when BOTH the step and the
+     remaining leg from where it lands are clear; otherwise the validated chord, exactly as before —
+     so a curve can round a corner but never clip a jamb or leave a leg that is no longer walkable. */
+  function gaitMove(b, dx, dy, d, step) {
+    const u = b._stepDir;
+    if (u && step > 0 && geo && geo.clearFootSegment) {
+      const nx = b.px + u.x * step, ny = b.py + u.y * step;
+      if (geo.clearFootSegment(b.px, b.py, nx, ny, blocked) &&
+          geo.clearFootSegment(nx, ny, b.px + dx, b.py + dy, blocked)) { b.px = nx; b.py = ny; return; }
+    }
+    b._travelHeading = Math.atan2(dy, dx);
+    b.px += dx / d * step; b.py += dy / d * step;
   }
 
   function finishGait(b){
@@ -2402,7 +2434,11 @@ const World = (() => {
     }
     if(plan.phase==='hold'){
       const vx=plan.passTarget.x-plan.origin.x,vy=plan.passTarget.y-plan.origin.y,d=Math.hypot(vx,vy)||1;
-      const passed=!plan.passer.target||plan.passer.target!==plan.passTarget||((plan.passer.px-plan.origin.x)*vx+(plan.passer.py-plan.origin.y)*vy)/d>PERSONAL_TILES*T;
+      // Past the origin is not enough: a passer whose next waypoint lies beside the pocket cannot reach it
+      // while the yielder steps back out (personal space holds them apart and both stall until jam recovery
+      // drops both routes). Hold the pocket until the passer has ARRIVED or is clear of it by two radii.
+      const clearOfPocket=Math.hypot(plan.passer.px-b.px,plan.passer.py-b.py)>2*PERSONAL_TILES*T;
+      const passed=!plan.passer.target||clearOfPocket&&(plan.passer.target!==plan.passTarget||((plan.passer.px-plan.origin.x)*vx+(plan.passer.py-plan.origin.y)*vy)/d>PERSONAL_TILES*T);
       if(!passed){b.state='idle';b.spd=0;b.dir=dirToward(b.px,b.py,plan.passer.px,plan.passer.py);return true;}
       // Resume from the shoulder directly where safe; otherwise retrace the
       // validated refuge route before continuing the original waypoint.
@@ -2415,7 +2451,7 @@ const World = (() => {
       if(plan.idx>=plan.points.length){if(plan.phase==='back')clearTraffic(plan);else plan.phase='hold';}
       b.state='idle';return true;
     }
-    const step=stepGait(b,dx,dy,d,28,plan.idx===plan.points.length-1,dt);
+    const step=stepGait(b,dx,dy,d,28,plan.idx===plan.points.length-1,dt,true);
     const nx=b.px+dx/d*step,ny=b.py+dy/d*step;
     if(!geo.clearFootSegment(b.px,b.py,nx,ny,blocked)){clearTraffic(plan);return true;}
     b.px=nx;b.py=ny;b.state='walk';return true;
@@ -2585,7 +2621,7 @@ const World = (() => {
         else { b.px = b.target.x; b.py = b.target.y; b.target = null; }
       } else {
         const sp = stepGait(b, dx, dy, d, 28, !more, dt);
-        b.px += dx / d * sp; b.py += dy / d * sp; b.state = 'walk'; b.sitting = false;
+        gaitMove(b, dx, dy, d, sp); b.state = 'walk'; b.sitting = false;
       }
     }
   }
@@ -2650,7 +2686,7 @@ const World = (() => {
           else { self.px = self.target.x; self.py = self.target.y; arrive(now); }
         } else {
           const s = stepGait(self, dx, dy, d, SPEED, !more, dt);
-          self.px += dx / d * s; self.py += dy / d * s; self.state = 'walk';
+          gaitMove(self, dx, dy, d, s); self.state = 'walk';
         }
       }
     } else if (self.goal === 'social') {
@@ -6063,7 +6099,7 @@ const World = (() => {
           else { agent.px = agent.target.x; agent.py = agent.target.y; arrive(now); }
         } else {
           const s = stepGait(agent, dx, dy, d, SPEED, !more, dt);
-          agent.px += dx / d * s; agent.py += dy / d * s; agent.state = 'walk';
+          gaitMove(agent, dx, dy, d, s); agent.state = 'walk';
         }
       }
     } else if (agent.goal === 'use') {
