@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "7743696b8efbd197f35619833882e9981aa956ea",
+    "sourceCommit": "eb0e1a2fac8731c3c67bdd7c0b57054d0da12cbd",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -528,8 +528,8 @@
       },
       {
         "path": "frontend/app/industrialtextures.js",
-        "bytes": 32342,
-        "sha256": "7faebd25cadb764af99e2a67826a123fdb1b57af9deb9e25b99b384f90e73cf6"
+        "bytes": 32340,
+        "sha256": "01637db5431474ccbe53ca4c97f8f7ea1af8ce817082f7ee5213862c67f29770"
       },
       {
         "path": "frontend/app/intake.js",
@@ -1323,8 +1323,8 @@
       },
       {
         "path": "frontend/app/worldrenderer.js",
-        "bytes": 11364,
-        "sha256": "19db78668473c9a815b924416a3c4fa34a32f965e95561241a157b91584b8f17"
+        "bytes": 11370,
+        "sha256": "99296e30578bacb99e49d1023eacbdb58c69d8b3e9459155e2a9c29308adb129"
       },
       {
         "path": "frontend/app/worldsurface.js",
