@@ -875,3 +875,4 @@ test/checkpoint-restore-undoable.test.js
 test/provider.codex-quota-body.test.js
 test/journal-delta.test.js
 test/torn-final-journal-record-continuable.test.js
+test/continued-journal-retired.test.js

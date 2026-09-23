@@ -1301,6 +1301,16 @@ const runJournal = makeRunJournal({ dir: RUN_JOURNAL_DIR, fs, path, clock: { now
 // Recovery is intentionally lazy. Thousands of unresolved/failed journals are audit evidence and
 // must not be discarded, but parsing all of them synchronously before server.listen made startup
 // proportional to lifetime failures. GET /api/run-recoveries pages through the durable files.
+// INTERRUPTED-RUN HISTORY (2026-09-22): the journal files present NOW — before this process can begin any run —
+// all belong to an earlier process (one sidecar per workspace). They are only LISTED here (a readdir, no parse);
+// scanInterruptedRuns() walks them in the background after listen and gives every unfinished one its single
+// 'interrupted' run-history row. See syncInterruptedRunHistory.
+let bootRunJournalFiles = [];
+try { bootRunJournalFiles = runJournal.listFiles(); }
+catch (e) { failNote('run-journal.boot-list', e); }
+// Continuations whose OWN journal durably recorded its transcript acknowledgement (runOnceCore -> finishAndRetire)
+// in this process. settleRunRecoveryContinuation consumes the proof: only then may the SOURCE journal retire.
+const continuationTranscriptAcks = new Set();
 
 // H4: the agent's OWNED skill library — per-agent named procedure documents, append-only + fsync'd, a SIBLING of
 // the fs jail (the agent's fs.* tools can't reach it). Singleton (persists across runs); redacted on write.
@@ -9822,6 +9832,10 @@ server.listen(PORT, '127.0.0.1', () => {
   if (DEV_MODE) console.log('     ⚡ DEV SEED MODE — onboarding auto-skipped; the page resumes the seeded agent.');
   console.log(bar + '\n');
   try { openaiCompat.announce(); } catch (_) {}   // one honest boot line: is the /v1 external-harness API live?
+  // Interrupted runs -> run history (background, chunked; see scanInterruptedRuns). The list was captured at
+  // module load, before this process could begin a run, so every file in it belongs to a process that is gone.
+  scanInterruptedRuns(bootRunJournalFiles);
+  bootRunJournalFiles = [];
   // warm the key-independent /models catalog once so priceOf / contextLimit are live for every run. A boot-time
   // failure no longer disables channel /model validation for the session — maybeRewarmModelCatalog re-warms on
   // demand (throttled) the next time a /model command asks (see the channel-hub modelCatalog accessor).
@@ -17512,6 +17526,7 @@ async function runOnceCore(o) {
     try {
       runJournal.begin({
         runId, agentId, streamId: o.streamId || 'global', trigger, model,
+        provider: activeProviderId, surface, parentRunId: o.parentRunId || '',   // additive: lets an interrupted-run history row name them truthfully
         recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '',
         userTitle: o.syntheticTrigger ? '' : latestUserText(msgs), startedAt: Date.now(),
         cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '',
@@ -17703,7 +17718,9 @@ async function runOnceCore(o) {
         const fresh = Array.isArray(checkpointMessages)
           ? checkpointMessages.filter(m => m && typeof m === 'object' && !initialPromptSet.has(m))
           : [];
-        runJournal.checkpoint(runId, { phase, turn, messages: fresh });
+        // DELTA journal (journal-linear-growth): only messages not yet journaled are written; a rewritten working
+        // array (fold/elision/collapse/in-place edit) re-anchors with a full snapshot. See run-journal.js header.
+        runJournal.checkpointMessages(runId, { phase, turn, messages: fresh });
       } : null,
       agentId, runId, model, trigger: trigger,
       // rough initial estimate for the error classifier's context-overflow ratio; contextLimit is 0 until the
@@ -17820,7 +17837,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface });   // execution terminal stays separate from the neutral Task Brief outcome used by progression
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -17834,6 +17851,11 @@ async function runOnceCore(o) {
           reason: (result && result.reason) || 'error', turns: finalTurns, tokens: finalTokens, usd: finalUsd,
           transcriptAck: true
         });
+        // The finish record carrying transcriptAck is durable now (retired or retained for its own review). For a
+        // continuation that is the proof its SOURCE journal waits on (consumed by settleRunRecoveryContinuation).
+        if (o.recovery && retirement.state && retirement.state.finish && retirement.state.finish.transcriptAck === true) {
+          continuationTranscriptAcks.add(runId);
+        }
         if (!retirement.retired) {
           console.warn('[run-journal] retained unsettled run for review:', runId, retirement.state && retirement.state.status);
         }
@@ -20520,7 +20542,9 @@ function runContinuationToken(r) {
 }
 function markRunRecoveryForensic(r) {
   if (!r) return r;
-  r.forensicOnly = !!r.corrupt;
+  // analyze() separates a lone torn final record (damage 'torn_tail': actionable, its `.torn-*` copy kept) from
+  // real corruption (`forensic`). Only the latter — or a `.corrupt*` sibling from any earlier repair — is forensic.
+  r.forensicOnly = !!r.forensic;
   try {
     const file = r.file || path.join(RUN_JOURNAL_DIR, runJournal._internals.runFileName(r.runId));
     const base = path.basename(file);
@@ -20532,6 +20556,95 @@ function markRunRecoveryForensic(r) {
 }
 function inspectRunRecovery(runId) {
   return markRunRecoveryForensic(runJournal.inspect(String(runId || '')));
+}
+
+// ---- INTERRUPTED RUNS IN RUN HISTORY (2026-09-22) -------------------------------------------------------------
+// A run killed mid-flight never reaches runOnceCore's run-end runStore.record, so /api/runs never listed it. Its
+// journal is the proof it existed: every unfinished journal whose process is gone gets ONE history row with reason
+// 'interrupted', and that row is kept current as recovery proceeds (append-only; runstore collapses the chain —
+// see the INTERRUPTED RUNS note in runstore.js). A continuation keeps its own row, linked by recoveryOf.
+const activeRunContinuations = new Set();   // continuedRunIds between consume and settle in THIS process
+function interruptedRecoveryState(r) {
+  const c = r.continuation || null;
+  if (r.forensicOnly || r.forensic) return { status: 'forensic' };
+  if (c && c.state === 'finished') return { status: 'continued', continuedRunId: String(c.continuedRunId || ''), continuedReason: String(c.reason || '') };
+  if (c && c.state === 'started') {
+    const id = String(c.continuedRunId || '');
+    // A continuation still running here is recovering; one whose process is gone was itself interrupted (its own
+    // journal now carries the recovery and gets its own interrupted row).
+    return (activeRunContinuations.has(id) || runJournal.isOwned(id))
+      ? { status: 'recovering', continuedRunId: id }
+      : { status: 'continued', continuedRunId: id, continuedReason: 'interrupted' };
+  }
+  if (r.status === 'needs_review') return { status: 'needs_review' };
+  if (r.status === 'resolved') return { status: 'resolved' };
+  return { status: 'recoverable' };
+}
+const INTERRUPTED_HISTORY_LINES = {
+  recoverable: 'interrupted: StarNet stopped before this run finished; it can continue from its last durable step',
+  needs_review: 'interrupted: StarNet stopped mid-action; an action may already have happened and needs review before continuing',
+  resolved: 'interrupted: StarNet stopped mid-action; the outcome was reviewed',
+  recovering: 'interrupted: StarNet stopped before this run finished; a continuation is running',
+  continued: 'interrupted: StarNet stopped before this run finished; it was continued as another run',
+  forensic: 'interrupted: StarNet stopped before this run finished; its recovery journal is damaged and kept for inspection only'
+};
+// Idempotent: appends only when the run has no row yet, or its served interrupted row's recovery state differs.
+// Never for a run that reached run end (a finish record, or a real outcome row) or one still live in this process.
+function syncInterruptedRunHistory(r) {
+  if (!r || !r.runId || r.terminal || r.quarantinedTo || !r.records) return null;
+  if (runJournal.isOwned(r.runId)) return null;
+  const existing = runStore.latest(r.runId);
+  if (existing && existing.reason !== 'interrupted') return null;
+  const meta = r.meta || {};
+  const next = interruptedRecoveryState(r);
+  const continuedRunId = String(next.continuedRunId || '');
+  const continuedReason = String(next.continuedReason || '');
+  if (existing && existing.recoveryStatus === next.status && String(existing.continuedRunId || '') === continuedRunId
+    && String(existing.continuedReason || '') === continuedReason) return null;
+  const startedAt = Number(meta.startedAt || r.firstTs || 0) || 0;
+  const endedAt = Math.max(startedAt, Number(r.lastTs || 0) || 0);   // the last durable journal record = last proof of life
+  return runStore.record({
+    runId: r.runId, agentId: String(meta.agentId || 'agent'), provider: String(meta.provider || ''),
+    reason: 'interrupted', turns: Number((r.checkpoint && r.checkpoint.turn) || 0) || 0, tokens: 0, usd: 0, spendUnknown: true,
+    title: String(meta.userTitle || ''), streamId: String(meta.streamId || ''), model: String(meta.model || ''),
+    surface: meta.surface, recoveryOf: String(meta.recoveryOf || ''), parentRunId: String(meta.parentRunId || ''),
+    startedAt, endedAt, durationMs: endedAt - startedAt,
+    recoveryStatus: next.status, continuedRunId, continuedReason,
+    // `error` is the plain line consumers already surface for a run that did not complete (e.g. a cron session's
+    // "routine failed"). A continuation that finished the task clears it; the continuation's own row is the outcome.
+    error: (next.status === 'continued' && continuedReason === 'done') ? ''
+      : INTERRUPTED_HISTORY_LINES[next.status] + (continuedRunId ? ' (run ' + continuedRunId + (continuedReason ? ', ' + continuedReason : '') + ')' : '')
+  });
+}
+// Background, chunked walk of the journals that existed at boot: each unfinished one gets (or converges) its
+// interrupted row, and a settled one (finished, or a continuation source whose continuation durably finished) is
+// retired exactly as the recovery listing would. It yields between chunks, so thousands of retained journals never
+// block startup or a request. Forensic evidence never changes state, so already-recorded forensic runs are skipped.
+function scanInterruptedRuns(files) {
+  const settledForensic = new Set();
+  try {
+    for (const row of runStore.all()) {
+      if (row && row.reason === 'interrupted' && row.recoveryStatus === 'forensic') settledForensic.add(runJournal._internals.runFileName(row.runId));
+    }
+  } catch (e) { failNote('run-history.interrupted-index', e); }
+  const list = Array.isArray(files) ? files.slice() : [];
+  let at = 0, recorded = 0, retired = 0;
+  const step = () => {
+    const end = Math.min(list.length, at + 16);
+    for (; at < end; at++) {
+      if (settledForensic.has(path.basename(list[at]))) continue;
+      try {
+        if (!fs.existsSync(list[at])) continue;   // settled/retired since boot by a route of this process
+        const r = markRunRecoveryForensic(runJournal.recoverFile(list[at]));
+        if (!r || !r.runId) continue;   // quarantined: no identity to record
+        if (syncInterruptedRunHistory(r)) recorded++;
+        if (r.retirable && !r.forensicOnly && runJournal.remove(r.runId)) retired++;
+      } catch (e) { failNote('run-history.interrupted-scan', e); }
+    }
+    if (at < list.length) setImmediate(step);
+    else if (recorded || retired) console.log('  · run journal: ' + recorded + ' interrupted run history row(s) written, ' + retired + ' settled journal(s) retired');
+  };
+  setImmediate(step);
 }
 function canContinueRunRecovery(r) {
   if (!r || r.status !== 'resolved' || (r.continuation && r.continuation.state !== 'ready')) return false;
@@ -20572,11 +20685,13 @@ function runRecoveryDto(r) {
     status: r.status,
     corrupt: !!r.corrupt,
     repaired: !!r.repairedFrom,
+    // additive: 'none' | 'torn_tail' (only the final record was cut off by a crash; still actionable) | 'corrupt'
+    damage: String(r.damage || (r.corrupt ? 'corrupt' : 'none')),
     repairError: r.repairError ? String(r.repairError).slice(0, 500) : '',
     uncertain: (r.uncertain || []).map(x => ({ callId: String(x.callId || ''), name: String(x.name || '') })),
     recoveryToken: runRecoveryToken(r),
     forensicOnly: !!r.forensicOnly,
-    canResolve: r.status === 'needs_review' && !r.corrupt && !r.repairError && !r.forensicOnly,
+    canResolve: r.status === 'needs_review' && !r.forensic && !r.repairError && !r.forensicOnly,
     canContinue: canContinueRunRecovery(r),
     canAutoContinue: canAutoContinueRunRecovery(r),
     operationalState: runRecoveryOperationalState(r),
@@ -20611,13 +20726,16 @@ function serveRunRecoveries(req, res) {
   let page;
   try { page = runJournal.recoverPage({ offset, limit }); }
   catch (e) { return respondJson(res, 500, { error: 'could not read run recoveries' }); }
-  const rows = page.rows.filter(r => {
+  const rows = page.rows.map(markRunRecoveryForensic).filter(r => {
     if (!r) return false;
+    // Converge this run's interrupted-history row with its journal (idempotent; skips live and finished runs).
+    try { syncInterruptedRunHistory(r); } catch (e) { failNote('run-history.interrupted-sync', e); }
     // A durable transcript acknowledgement is the commit record. If the process died between that record and
-    // unlink, finish the idempotent retirement when its page is inspected; all other states remain visible.
-    if (r.status === 'finished') { try { runJournal.remove(r.runId); } catch (_) {} return false; }
+    // unlink, finish the idempotent retirement when its page is inspected; all other states remain visible. A
+    // continuation source whose continuation finished with its transcript acknowledgement retires the same way.
+    if (r.retirable && !r.forensicOnly) { try { runJournal.remove(r.runId); } catch (_) {} return false; }
     return true;
-  }).map(markRunRecoveryForensic).map(runRecoveryDto);
+  }).map(runRecoveryDto);
   respondJson(res, 200, { recoveries: rows, total: page.total, offset: page.offset, limit: page.limit, nextOffset: page.offset + page.limit < page.total ? page.offset + page.limit : null });
 }
 
@@ -20653,7 +20771,7 @@ async function handleRunRecoveryResolve(req, res) {
     } catch (e) { return json(409, { error: String((e && e.message) || e) }); }
   }
   if (body.confirmedNoReplay !== true) return json(400, { error: 'explicit no-replay confirmation is required' });
-  if (current.status !== 'needs_review' || current.corrupt || current.repairError || current.forensicOnly) {
+  if (current.status !== 'needs_review' || current.forensic || current.repairError || current.forensicOnly) {
     return json(409, { error: 'this recovery is not safely resolvable' });
   }
   if (!constantTimeTextEqual(body.recoveryToken, runRecoveryToken(current))) {
@@ -20670,6 +20788,7 @@ async function handleRunRecoveryResolve(req, res) {
     const next = markRunRecoveryForensic(runJournal.resolve(runId, {
       resolutionId, operator: 'local', resolvedAt: Date.now(), outcomes, note
     }));
+    try { syncInterruptedRunHistory(next); } catch (e) { failNote('run-history.interrupted-sync', e); }   // history: needs_review -> resolved
     return json(200, { ok: true, idempotent: false, replayed: false, recovery: runRecoveryDto(next) });
   } catch (e) {
     const code = e && e.code === 'RUN_RESOLUTION_CONFLICT' ? 409 : 500;
@@ -20740,7 +20859,15 @@ function consumeRunRecoveryContinuation(request, agentId, continuedRunId) {
   if (!sourceRunId || !continuationId || !isAgentId(String(agentId || ''))) return { ok: false, code: 400, error: 'invalid continuation identity' };
   let current;
   try { current = inspectRunRecovery(sourceRunId); }
-  catch (_) { return { ok: false, code: 404, error: 'recovery not found' }; }
+  catch (_) {
+    // A settled continuation retires its source journal; a retry of that consumed continuation is a conflict,
+    // not an unknown recovery (the source's history row records which run continued it).
+    const settled = runStore.latest(sourceRunId);
+    if (settled && settled.reason === 'interrupted' && settled.agentId === String(agentId) && settled.recoveryStatus === 'continued') {
+      return { ok: false, code: 409, error: 'continuation is not ready or was already consumed' };
+    }
+    return { ok: false, code: 404, error: 'recovery not found' };
+  }
   if (String((current.meta && current.meta.agentId) || '') !== String(agentId)) return { ok: false, code: 403, error: 'forbidden' };
   const c = current.continuation;
   if (!c || c.state !== 'ready' || c.continuationId !== continuationId) return { ok: false, code: 409, error: 'continuation is not ready or was already consumed' };
@@ -20756,20 +20883,38 @@ function consumeRunRecoveryContinuation(request, agentId, continuedRunId) {
     || String(plan.context || '') !== String(c.context || '')) {
     return { ok: false, code: 409, error: 'durable continuation plan no longer matches the recovery' };
   }
+  let started;
   try {
-    runJournal.startContinuation(sourceRunId, { continuationId, continuedRunId, startedAt: Date.now() });
+    started = runJournal.startContinuation(sourceRunId, { continuationId, continuedRunId, startedAt: Date.now() });
   } catch (e) { return { ok: false, code: 409, error: String((e && e.message) || e) }; }
+  activeRunContinuations.add(String(continuedRunId));
+  try { syncInterruptedRunHistory(markRunRecoveryForensic(started)); } catch (e) { failNote('run-history.interrupted-sync', e); }   // -> recovering
   return { ok: true, plan: Object.assign({}, plan, { sourceRunId, continuationId }) };
 }
 
+// Settles the SOURCE journal after its continuation run returned. Ordering mirrors finishAndRetire: the continued
+// run's transcript rows were fsync/read-back proven and its journal recorded that acknowledgement (proof consumed
+// from continuationTranscriptAcks) -> the source records continuation_finish with transcriptAck -> its history row
+// converges to 'continued' -> only then is the source journal removed. A crash anywhere leaves it discoverable and
+// the next listing/boot scan finishes the same idempotent retirement.
 function settleRunRecoveryContinuation(recovery, continuedRunId, reason) {
   const sourceRunId = String((recovery && recovery.sourceRunId) || '');
   const continuationId = String((recovery && recovery.continuationId) || '');
+  const transcriptAck = continuationTranscriptAcks.delete(String(continuedRunId || ''));
+  activeRunContinuations.delete(String(continuedRunId || ''));
+  let settled = null;
   try {
-    runJournal.finishContinuation(sourceRunId, { continuationId, continuedRunId, reason });
+    settled = runJournal.finishContinuation(sourceRunId, { continuationId, continuedRunId, reason, transcriptAck });
   } catch (e) {
     console.warn('[run-journal] could not settle continuation:', String((e && e.message) || e));
   }
+  if (!settled) return;
+  settled = markRunRecoveryForensic(settled);
+  try { syncInterruptedRunHistory(settled); } catch (e) { failNote('run-history.interrupted-sync', e); }
+  if (!settled.retirable || settled.forensicOnly) return;
+  try {
+    if (!runJournal.remove(sourceRunId)) console.warn('[run-journal] continued source retained:', sourceRunId);
+  } catch (e) { failNote('run-journal.continuation-retire', e); }
 }
 
 // GET /api/autonomy/ledger?limit=N&source=&kind= — NS-0: the recent AUTONOMY DECISION LEDGER (cron fire/skip/
