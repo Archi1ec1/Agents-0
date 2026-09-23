@@ -288,6 +288,41 @@
 .finale .cta-row{ justify-content:center; }
 .home .footer{ margin-top:0; }
 
+/* ---------- phones + touch (2026-09-23 mobile pass) ---------- */
+/* Full-screen blend-mode scanline drift + flicker are the costliest paints on a phone GPU: hold them still. */
+@media (max-width:760px), (hover:none){ .home .crt-scan, .home .crt-flicker{ animation:none; } }
+@media (max-width:760px){
+  /* styles.css turns the scrolled topbar transparent on phones, so content scrolled under the
+     sticky bar read through it. Keep it solid, and tuck the nav row while scrolling down. */
+  .home .topbar.scrolled{ background:rgba(10,8,6,.95); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); box-shadow:0 1px 0 var(--line), 0 10px 30px rgba(0,0,0,.45); }
+  .home .topbar .topnav{ max-height:44px; overflow:hidden; transition:max-height .25s ease, opacity .2s ease, margin .25s ease; }
+  .home .topbar.tuck .topnav{ max-height:0; opacity:0; margin-top:-14px; pointer-events:none; }
+  .console-tabs{ padding-right:48px; -webkit-mask-image:linear-gradient(90deg, #000 calc(100% - 56px), transparent); mask-image:linear-gradient(90deg, #000 calc(100% - 56px), transparent); }
+}
+@media (max-width:620px){
+  .home .tick{ display:none; }
+  .hero-eyebrow{ font-size:13px; letter-spacing:2px; padding:5px 11px; gap:8px; }
+  .home .hero .cta-row{ flex-direction:column; align-items:stretch; width:min(300px,100%); gap:12px; }
+  .home .hero .cta-row .btn{ text-align:center; }
+  .home .hero-meta{ font-size:14px; letter-spacing:.5px; line-height:1.6; }
+  .home .btn{ font-size:20px; padding:12px 20px; }
+  .big-lead{ font-size:19px; }
+  .manifesto{ padding:84px 20px 30px; }
+  .mf-line{ font-size:clamp(40px,12.5vw,64px); line-height:1.02; }
+  .mf-proofs{ margin-top:28px; gap:14px; }
+  .sch .lbl{ font-size:19px; } .sch .lbl.big{ font-size:27px; } .sch .sub{ font-size:17px; }
+  .cp-copy h3{ font-size:24px; }
+  .cp-copy p{ font-size:15px; }
+  .mq-row span{ font-size:19px; padding:14px 18px; }
+  .boot-steps li{ font-size:20px; padding:12px 14px; }
+  .finale{ min-height:0; padding:64px 20px 30vh; }
+  .finale .cta-row{ flex-direction:column; align-items:center; }
+}
+.console-hint{ display:none; }
+@media (max-width:900px), (hover:none){
+  .console-hint{ display:block; padding:10px 16px 12px; border-top:1px solid var(--line); text-align:center; font-size:14px; letter-spacing:3px; color:rgba(236,224,207,.38); }
+}
+
 /* ---------- reduced motion: a still, complete frame ---------- */
 @media (prefers-reduced-motion: reduce){
   .monitor{ transform:none !important; }

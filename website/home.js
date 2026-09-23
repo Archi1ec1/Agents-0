@@ -111,10 +111,19 @@
   /* ---------- scroll-driven: progress bar, monitor straightening, statement lighting ---------- */
   var prog = document.querySelector('.scroll-prog span');
   var stage = document.querySelector('.monitor-stage'), monitor = document.querySelector('.monitor');
-  var ticking = false;
+  var ticking = false, lastY = window.scrollY;
+  var topbar = document.getElementById('topbar');
+  var phone = window.matchMedia ? window.matchMedia('(max-width:760px)') : { matches:false };
   function onScroll(){
     ticking = false;
     var vh = window.innerHeight, de = document.documentElement;
+    var y = window.scrollY, dy = y - lastY;
+    if(topbar){
+      if(!phone.matches || y < 140) topbar.classList.remove('tuck');
+      else if(dy > 6) topbar.classList.add('tuck');
+      else if(dy < -6) topbar.classList.remove('tuck');
+    }
+    if(Math.abs(dy) > 6 || y < 140) lastY = y;
     if(prog){ var max = de.scrollHeight - vh; prog.style.setProperty('--sp', max > 0 ? (window.scrollY / max).toFixed(4) : '0'); }
     if(stage && monitor && !reduce){
       var r = stage.getBoundingClientRect();
@@ -149,7 +158,8 @@
     var tabs = Array.prototype.slice.call(root.querySelectorAll('[role="tab"]'));
     var panels = tabs.map(function(t){ return document.getElementById(t.getAttribute('aria-controls')); });
     var status = root.querySelector('[data-status]');
-    var DWELL = 7000, cur = 0, auto = !reduce, t = 0, lastT = 0, hover = false, focus = false, inView = false;
+    var touchy = window.matchMedia && window.matchMedia('(max-width:900px), (hover:none)').matches;
+    var DWELL = 7000, cur = 0, auto = !reduce && !touchy, t = 0, lastT = 0, hover = false, focus = false, inView = false;
 
     // clock ticks are generated, not hand-written
     var ticks = root.querySelector('.sch-clock .ticks');
@@ -216,6 +226,12 @@
         tb.style.setProperty('--p', on && !auto ? '1' : '0');
         panels[j].hidden = !on;
       });
+      var row = tabs[0].parentNode;
+      if(row.scrollWidth > row.clientWidth + 2){
+        var rb = row.getBoundingClientRect(), tbr = tabs[cur].getBoundingClientRect();
+        var left = row.scrollLeft + (tbr.left - rb.left) - (row.clientWidth - tbr.width) / 2;
+        try{ row.scrollTo({ left:left, behavior:reduce ? 'auto' : 'smooth' }); }catch(e){ row.scrollLeft = left; }
+      }
       var p = panels[cur];
       p.classList.remove('enter'); void p.offsetWidth; p.classList.add('enter');
       activate(p);
@@ -234,6 +250,15 @@
         e.preventDefault(); select(n, true); tabs[cur].focus();
       });
     });
+    var screen = root.querySelector('.console-screen'), sx = 0, sy = 0, swiping = false;
+    if(screen){
+      screen.addEventListener('touchstart', function(e){ var t = e.touches[0]; sx = t.clientX; sy = t.clientY; swiping = true; }, { passive:true });
+      screen.addEventListener('touchend', function(e){
+        if(!swiping) return; swiping = false;
+        var t = e.changedTouches[0], dx = t.clientX - sx, dyy = t.clientY - sy;
+        if(Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dyy) * 1.5) select(cur + (dx < 0 ? 1 : -1), true);
+      }, { passive:true });
+    }
     root.addEventListener('pointerenter', function(){ hover = true; });
     root.addEventListener('pointerleave', function(){ hover = false; });
     root.addEventListener('focusin', function(){ focus = true; });
