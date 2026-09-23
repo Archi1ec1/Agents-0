@@ -307,7 +307,10 @@
           }
           case 'response.failed': {
             const err = (ev.response && ev.response.error) || ev.error || {};
-            throw new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            const failed = new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            failed.body = { error: err };   // its code (e.g. usage_limit_reached) is what errorClass decides on
+            failed.ownMessage = true;
+            throw failed;
           }
           case 'error':
             throw new Error('codex stream error: ' + ((ev.error && ev.error.message) || ev.message || 'unknown'));
@@ -409,7 +412,8 @@
            of waiting fixes — while its message can read like any rate limit ('Codex quota exceeded'). Dropping the
            body classed it rate_limit, and once the loop's pre-stream ladder rode out transient 429s a spent plan was
            retried for ~100 s before failing. With the body, errorClass reads the code and fails fast (or falls over). */
-        if (errBody && typeof errBody === 'object') err.body = errBody;
+        // ownMessage: the sentence above (label + status) stays the reported message; the body is read for its code.
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         if (res.status === 401 && renew && !renewed) {
           renewed = true;
           try {

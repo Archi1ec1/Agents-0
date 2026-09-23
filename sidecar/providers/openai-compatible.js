@@ -95,7 +95,7 @@
     if (providerName) facts.push('provider ' + providerName);
     // Diagnostics deliberately clamps messages. Put correlation before the free-text detail so a
     // verbose upstream error cannot truncate the only identifiers support can trace.
-    return { detail: (facts.length ? '[' + facts.join('; ') + '] ' : '') + message, type, code, providerName, requestId };
+    return { detail: (facts.length ? '[' + facts.join('; ') + '] ' : '') + message, type, code, providerName, requestId, body: (data && typeof data === 'object') ? data : null };
   }
   function normalizeModel(m) {
     const id = (m && (m.id || m.name || m.model)) ? String(m.id || m.name || m.model) : '';
@@ -288,7 +288,12 @@
         try { return { json: JSON.parse(data) }; } catch (_) { return null; }
       }
       function* emitFrom(j) {
-        if (j.error) throw new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
+        if (j.error) {
+          const err = new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
+          err.body = j;   // the structured error (code/type) — errorClass reads it
+          err.ownMessage = true;
+          throw err;
+        }
         if (j.usage) yield { type: 'usage', usage: j.usage };
         const choice = j.choices && j.choices[0];
         if (!choice) return;
@@ -398,6 +403,11 @@
         err.requestId = upstreamError.requestId;
         err.providerCode = upstreamError.code;
         err.upstreamProvider = upstreamError.providerName;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js): errorClass reads error.code/type off it (an OpenAI
+           429 carrying code 'insufficient_quota' is an empty wallet, not a busy moment). The message stays this
+           adapter's own sentence — label + status, which the UI routes on ("Kimi For Coding http 401"); err.ownMessage tells
+           errorClass so. */
+        if (upstreamError.body) { err.body = upstreamError.body; err.ownMessage = true; }
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

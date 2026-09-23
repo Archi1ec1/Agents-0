@@ -261,7 +261,12 @@
       }
       // one decoded chunk -> 0..n normalized HarnessEvents (shared by the loop + end-of-stream flush)
       function* emitFrom(j) {
-        if (j.error) throw new Error((j.error && j.error.message) || 'openrouter stream error');
+        if (j.error) {
+          const err = new Error((j.error && j.error.message) || 'openrouter stream error');
+          err.body = j;   // the structured error (code, metadata) — errorClass reads it
+          err.ownMessage = true;
+          throw err;
+        }
         const choice = j.choices && j.choices[0];
         if (choice && choice.delta) {
           const d = choice.delta;
@@ -393,8 +398,8 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && j.error.message) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && j.error.message) || JSON.stringify(j); }
         catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         // LOW-CREDIT SELF-HEAL (402): with max_tokens unset, OpenRouter reserves the model's FULL output
         // ceiling against the account balance — a low-credit account gets "requires more credits, or fewer
@@ -415,6 +420,10 @@
         const err = new Error('openrouter http ' + res.status + ' — ' + detail);
         err.status = res.status;
         err.headers = res.headers;   // H6.1: let classifyApiError read Retry-After / X-RateLimit-Reset off the real response
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js): errorClass reads error.code off it (a 429 carrying
+           'insufficient_quota' is an empty wallet, not a busy moment). The message stays this adapter's own sentence
+           (label + status — what the UI routes on; err.ownMessage tells errorClass so). */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model: body.model });   // single source of truth for retryability
         err.transient = cls.retryable;                              // keep the field other code reads, now classifier-derived
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }   // honor the server-stated wait, capped at 60s

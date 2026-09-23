@@ -348,7 +348,12 @@
       }
       function* emitFrom(j) {
         if (!j || typeof j !== 'object') return;
-        if (j.error) throw new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+        if (j.error) {
+          const err = new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+          err.body = j;   // {error:{code, status:'RESOURCE_EXHAUSTED'|…}} — errorClass reads the status code
+          err.ownMessage = true;
+          throw err;
+        }
         const candidates = Array.isArray(j.candidates) ? j.candidates : [];
         let usageEmittedForFrame = false;   // usage rides the done-carrying frame; emit it exactly once, BEFORE done
         for (let ci = 0; ci < candidates.length; ci++) {
@@ -473,12 +478,17 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
         catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('gemini http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js). The message above keeps only error.message, but the
+           classifier's decisive signal can be the canonical status ({error:{status:'RESOURCE_EXHAUSTED'}}); dropping
+           the body left errorClass reading prose. The message stays the adapter's own sentence (label + status —
+           what the UI routes on; err.ownMessage tells errorClass so); the body rides alongside for its code. */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

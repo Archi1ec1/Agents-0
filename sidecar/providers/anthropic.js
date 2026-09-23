@@ -523,7 +523,12 @@
       }
       function* emitFrom(ev) {
         if (!ev || typeof ev !== 'object') return;
-        if (ev.error) throw new Error('anthropic stream error: ' + ((ev.error && (ev.error.message || ev.error.type)) || 'unknown'));
+        if (ev.error) {
+          const err = new Error('anthropic stream error: ' + ((ev.error && (ev.error.message || ev.error.type)) || 'unknown'));
+          err.body = ev;   // the typed error ({type:'error', error:{type:'overloaded_error'}}) — errorClass reads the type
+          err.ownMessage = true;
+          throw err;
+        }
         switch (ev.type) {
           case 'message_start':
             baseUsage = Object.assign({}, (ev.message && ev.message.usage) || {});
@@ -666,12 +671,17 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); }
         catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('anthropic http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js). The message above keeps only error.message, but the
+           classifier's decisive signal can be the typed error ({error:{type:'overloaded_error'|'rate_limit_error'|…}});
+           dropping the body left errorClass reading prose. The message stays the adapter's own sentence (label +
+           status — what the UI routes on; err.ownMessage tells errorClass so); the body rides alongside for its type. */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

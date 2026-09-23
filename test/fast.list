@@ -876,3 +876,4 @@ test/provider.codex-quota-body.test.js
 test/provider.wire-sanitize.test.js
 test/provider.toolschema.keys.test.js
 test/provider.moonshot-schema.test.js
+test/provider.error-body.test.js
