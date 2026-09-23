@@ -1451,12 +1451,19 @@
       // Resolution order: floor plan > this chat's explicit /talk binding > the connect-time configured agentId >
       // the per-chat tg_<chatId> fallback (an unbound chat still just works).
       const tag = getTag ? getTag(msg.text) : undefined;
-      const routed = resolveAgent ? resolveAgent({ tag, chatId, text: msg.text, boundAgentId }) : null;
+      /* resolveAgent may answer a bare agentId (every pre-dock seam) or { agentId, dockId } (router.resolveDock —
+         multi-bay agents, 2026-09-22): the DOCK the floor routed the work to is the one whose brief, room and line
+         the run gets. A binding/fallback resolution carries no dock and the seams read the agent's entry dock. */
+      const routedRaw = resolveAgent ? resolveAgent({ tag, chatId, text: msg.text, boundAgentId }) : null;
+      const routed = (routedRaw && typeof routedRaw === 'object') ? routedRaw.agentId : routedRaw;
+      const routedDock = (routedRaw && typeof routedRaw === 'object' && routedRaw.dockId != null && AID_RE.test(String(routedRaw.dockId))) ? String(routedRaw.dockId) : null;
       const agentId = (routed && AID_RE.test(String(routed))) ? String(routed)
         : boundAgentId
         ? boundAgentId
         : (sec.agentId && AID_RE.test(String(sec.agentId))) ? String(sec.agentId) : agentIdFor(chatId);
       const canonicalStreamId = resolvedStreamId(chatId);
+      // the dock this run is AT: only when the floor's own resolution picked this agent (never inferred)
+      const dockId = (routedDock && routed && String(routed) === agentId) ? routedDock : null;
 
       if (resolveEntryRunConfig) {
         try {
@@ -1495,8 +1502,9 @@
          the compiled plan stays the only authority; absent -> null -> every dock terminal, which is the
          safe direction. It rides `resolvedInfo` (so the host stamps the crate with it) and the chain seed
          below (so the gate can read it). */
-      const lineId = lineOriginFor ? (lineOriginFor(agentId) || null) : null;
+      const lineId = lineOriginFor ? ((dockId ? lineOriginFor(agentId, dockId) : lineOriginFor(agentId)) || null) : null;
       const resolvedInfo = { chatId: chatId, agentId: agentId, text: msg.text, isTask: isTask, lineId: lineId };
+      if (dockId) resolvedInfo.dockId = dockId;   // additive: the host lands the crate at THIS bay (multi-bay)
       if (onResolved) { try { onResolved(resolvedInfo); } catch (_) {} }
       if (intake && typeof intake.onResolved === 'function') { try { intake.onResolved(resolvedInfo); } catch (_) {} }
 
@@ -1602,12 +1610,12 @@
       // system context carries it — the SAME section header the chain handoff turn uses. Null-safe: no seam /
       // no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
-      if (stageBriefFor) { try { dockBrief = stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
+      if (stageBriefFor) { try { dockBrief = dockId ? stageBriefFor(agentId, dockId) : stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
       const system = dockSystem(persona, dockBrief, isTask);
 
       // B5: if this agent runs at a bound BAY, its tools are that bay room's objects (resolveStation), not the
       // default office — so a routed agent's reach is exactly what the floor granted it. null -> office default.
-      const bayStation = resolveStation ? resolveStation(agentId) : null;
+      const bayStation = resolveStation ? (dockId ? resolveStation(agentId, dockId) : resolveStation(agentId)) : null;
 
       // ---- run with bounded supersede-retry ------------------------------------------------------------------
       // ONE run per conversation: the prev.abort.abort() above told this chat's prior run to stop. But its host-side
@@ -1739,7 +1747,7 @@
          would be an unstoppable spend. The reply that finally leaves is the LAST stage's. */
       if (chain && !state.errMsg && !myRec.superseded && String(state.buf || '').trim()) {
         const line = await chain.advance({
-          agentId: agentId, text: state.buf, originalText: msg.text,
+          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: msg.text,
           // the entry run's reconciled spend: the chain's $ ceiling covers the whole line, stage one included
           // (2026-08-10 audit). `line.usd` stays hop-only, so onLineOutcome's accounting is unchanged.
           entryUsd: state.usd || 0,
@@ -1785,8 +1793,9 @@
                 streamId: canonicalStreamId || undefined,   // the whole line shares one canonical transcript
                 initialTaint: 'upstream agent output',
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
-                station: (resolveStation ? resolveStation(h.agentId) : null) || undefined,
-                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId, taskSource: channel
+                // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
+                station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
+                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
             if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(h.agentId, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
@@ -1794,7 +1803,7 @@
           }
         });
         if (onLineOutcome) {
-          try { onLineOutcome({ agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }); } catch (_) {}
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (_) {}
         }
         if (!myRec.superseded && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it
