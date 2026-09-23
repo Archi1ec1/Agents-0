@@ -12881,6 +12881,494 @@
       "../agent-demo/approved-motion/gothgirl/walk_south-west_6.png",
       "../agent-demo/approved-motion/gothgirl/walk_south-west_7.png",
       "../agent-demo/approved-motion/gothgirl/walk_south-west_8.png"
+    ],
+    "approved_bunnycutie.rot.south": [
+      "../agent-demo/approved-motion/bunnycutie/rot_south.png"
+    ],
+    "approved_bunnycutie.rot.south-east": [
+      "../agent-demo/approved-motion/bunnycutie/rot_south-east.png"
+    ],
+    "approved_bunnycutie.rot.east": [
+      "../agent-demo/approved-motion/bunnycutie/rot_east.png"
+    ],
+    "approved_bunnycutie.rot.north-east": [
+      "../agent-demo/approved-motion/bunnycutie/rot_north-east.png"
+    ],
+    "approved_bunnycutie.rot.north": [
+      "../agent-demo/approved-motion/bunnycutie/rot_north.png"
+    ],
+    "approved_bunnycutie.rot.north-west": [
+      "../agent-demo/approved-motion/bunnycutie/rot_north-west.png"
+    ],
+    "approved_bunnycutie.rot.west": [
+      "../agent-demo/approved-motion/bunnycutie/rot_west.png"
+    ],
+    "approved_bunnycutie.rot.south-west": [
+      "../agent-demo/approved-motion/bunnycutie/rot_south-west.png"
+    ],
+    "approved_bunnycutie.sit.north": [
+      "../agent-demo/approved-motion/bunnycutie/sit_north_4.png"
+    ],
+    "approved_bunnycutie.sit.south": [
+      "../agent-demo/approved-motion/bunnycutie/sit_south_4.png"
+    ],
+    "approved_bunnycutie.sit.east": [
+      "../agent-demo/approved-motion/bunnycutie/sit_east_4.png"
+    ],
+    "approved_bunnycutie.sit.west": [
+      "../agent-demo/approved-motion/bunnycutie/sit_west_4.png"
+    ],
+    "approved_bunnycutie.type.north": [
+      "../agent-demo/approved-motion/bunnycutie/type_north_1.png",
+      "../agent-demo/approved-motion/bunnycutie/type_north_2.png",
+      "../agent-demo/approved-motion/bunnycutie/type_north_3.png",
+      "../agent-demo/approved-motion/bunnycutie/type_north_4.png"
+    ],
+    "approved_baddie.rot.south": [
+      "../agent-demo/approved-motion/baddie/rot_south.png"
+    ],
+    "approved_baddie.rot.south-east": [
+      "../agent-demo/approved-motion/baddie/rot_south-east.png"
+    ],
+    "approved_baddie.rot.east": [
+      "../agent-demo/approved-motion/baddie/rot_east.png"
+    ],
+    "approved_baddie.rot.north-east": [
+      "../agent-demo/approved-motion/baddie/rot_north-east.png"
+    ],
+    "approved_baddie.rot.north": [
+      "../agent-demo/approved-motion/baddie/rot_north.png"
+    ],
+    "approved_baddie.rot.north-west": [
+      "../agent-demo/approved-motion/baddie/rot_north-west.png"
+    ],
+    "approved_baddie.rot.west": [
+      "../agent-demo/approved-motion/baddie/rot_west.png"
+    ],
+    "approved_baddie.rot.south-west": [
+      "../agent-demo/approved-motion/baddie/rot_south-west.png"
+    ],
+    "approved_baddie.sit.north": [
+      "../agent-demo/approved-motion/baddie/sit_north_4.png"
+    ],
+    "approved_baddie.type.north": [
+      "../agent-demo/approved-motion/baddie/type_north_1.png",
+      "../agent-demo/approved-motion/baddie/type_north_2.png",
+      "../agent-demo/approved-motion/baddie/type_north_3.png",
+      "../agent-demo/approved-motion/baddie/type_north_4.png"
+    ],
+    "approved_candyprincess.rot.south": [
+      "../agent-demo/approved-motion/candyprincess/rot_south.png"
+    ],
+    "approved_candyprincess.rot.south-east": [
+      "../agent-demo/approved-motion/candyprincess/rot_south-east.png"
+    ],
+    "approved_candyprincess.rot.east": [
+      "../agent-demo/approved-motion/candyprincess/rot_east.png"
+    ],
+    "approved_candyprincess.rot.north-east": [
+      "../agent-demo/approved-motion/candyprincess/rot_north-east.png"
+    ],
+    "approved_candyprincess.rot.north": [
+      "../agent-demo/approved-motion/candyprincess/rot_north.png"
+    ],
+    "approved_candyprincess.rot.north-west": [
+      "../agent-demo/approved-motion/candyprincess/rot_north-west.png"
+    ],
+    "approved_candyprincess.rot.west": [
+      "../agent-demo/approved-motion/candyprincess/rot_west.png"
+    ],
+    "approved_candyprincess.rot.south-west": [
+      "../agent-demo/approved-motion/candyprincess/rot_south-west.png"
+    ],
+    "approved_candyprincess.sit.north": [
+      "../agent-demo/approved-motion/candyprincess/sit_north_4.png"
+    ],
+    "approved_candyprincess.sit.south": [
+      "../agent-demo/approved-motion/candyprincess/sit_south_4.png"
+    ],
+    "approved_candyprincess.sit.east": [
+      "../agent-demo/approved-motion/candyprincess/sit_east_4.png"
+    ],
+    "approved_candyprincess.sit.west": [
+      "../agent-demo/approved-motion/candyprincess/sit_west_4.png"
+    ],
+    "approved_candyprincess.type.north": [
+      "../agent-demo/approved-motion/candyprincess/type_north_1.png",
+      "../agent-demo/approved-motion/candyprincess/type_north_2.png",
+      "../agent-demo/approved-motion/candyprincess/type_north_3.png",
+      "../agent-demo/approved-motion/candyprincess/type_north_4.png"
+    ],
+    "approved_baddie.sit.south": [
+      "../agent-demo/approved-motion/baddie/sit_south_4.png"
+    ],
+    "approved_baddie.sit.east": [
+      "../agent-demo/approved-motion/baddie/sit_east_4.png"
+    ],
+    "approved_baddie.sit.west": [
+      "../agent-demo/approved-motion/baddie/sit_west_4.png"
+    ],
+    "approved_tylerdurden.rot.south": [
+      "../agent-demo/approved-motion/tylerdurden/rot_south.png"
+    ],
+    "approved_tylerdurden.rot.south-east": [
+      "../agent-demo/approved-motion/tylerdurden/rot_south-east.png"
+    ],
+    "approved_tylerdurden.rot.east": [
+      "../agent-demo/approved-motion/tylerdurden/rot_east.png"
+    ],
+    "approved_tylerdurden.rot.north-east": [
+      "../agent-demo/approved-motion/tylerdurden/rot_north-east.png"
+    ],
+    "approved_tylerdurden.rot.north": [
+      "../agent-demo/approved-motion/tylerdurden/rot_north.png"
+    ],
+    "approved_tylerdurden.rot.north-west": [
+      "../agent-demo/approved-motion/tylerdurden/rot_north-west.png"
+    ],
+    "approved_tylerdurden.rot.west": [
+      "../agent-demo/approved-motion/tylerdurden/rot_west.png"
+    ],
+    "approved_tylerdurden.rot.south-west": [
+      "../agent-demo/approved-motion/tylerdurden/rot_south-west.png"
+    ],
+    "approved_tylerdurden.sit.north": [
+      "../agent-demo/approved-motion/tylerdurden/sit_north_4.png"
+    ],
+    "approved_tylerdurden.sit.south": [
+      "../agent-demo/approved-motion/tylerdurden/sit_south_4.png"
+    ],
+    "approved_tylerdurden.sit.east": [
+      "../agent-demo/approved-motion/tylerdurden/sit_east_4.png"
+    ],
+    "approved_tylerdurden.sit.west": [
+      "../agent-demo/approved-motion/tylerdurden/sit_west_4.png"
+    ],
+    "approved_tylerdurden.type.north": [
+      "../agent-demo/approved-motion/tylerdurden/type_north_1.png",
+      "../agent-demo/approved-motion/tylerdurden/type_north_2.png",
+      "../agent-demo/approved-motion/tylerdurden/type_north_3.png",
+      "../agent-demo/approved-motion/tylerdurden/type_north_4.png"
+    ],
+    "approved_baddie.walk.south": [
+      "../agent-demo/approved-motion/baddie/walk_south_1.png",
+      "../agent-demo/approved-motion/baddie/walk_south_2.png",
+      "../agent-demo/approved-motion/baddie/walk_south_3.png",
+      "../agent-demo/approved-motion/baddie/walk_south_4.png",
+      "../agent-demo/approved-motion/baddie/walk_south_5.png",
+      "../agent-demo/approved-motion/baddie/walk_south_6.png",
+      "../agent-demo/approved-motion/baddie/walk_south_7.png",
+      "../agent-demo/approved-motion/baddie/walk_south_8.png"
+    ],
+    "approved_baddie.walk.south-east": [
+      "../agent-demo/approved-motion/baddie/walk_south-east_1.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_2.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_3.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_4.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_5.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_6.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_7.png",
+      "../agent-demo/approved-motion/baddie/walk_south-east_8.png"
+    ],
+    "approved_baddie.walk.east": [
+      "../agent-demo/approved-motion/baddie/walk_east_1.png",
+      "../agent-demo/approved-motion/baddie/walk_east_2.png",
+      "../agent-demo/approved-motion/baddie/walk_east_3.png",
+      "../agent-demo/approved-motion/baddie/walk_east_4.png",
+      "../agent-demo/approved-motion/baddie/walk_east_5.png",
+      "../agent-demo/approved-motion/baddie/walk_east_6.png",
+      "../agent-demo/approved-motion/baddie/walk_east_7.png",
+      "../agent-demo/approved-motion/baddie/walk_east_8.png"
+    ],
+    "approved_baddie.walk.north-east": [
+      "../agent-demo/approved-motion/baddie/walk_north-east_1.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_2.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_3.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_4.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_5.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_6.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_7.png",
+      "../agent-demo/approved-motion/baddie/walk_north-east_8.png"
+    ],
+    "approved_baddie.walk.north": [
+      "../agent-demo/approved-motion/baddie/walk_north_1.png",
+      "../agent-demo/approved-motion/baddie/walk_north_2.png",
+      "../agent-demo/approved-motion/baddie/walk_north_3.png",
+      "../agent-demo/approved-motion/baddie/walk_north_4.png",
+      "../agent-demo/approved-motion/baddie/walk_north_5.png",
+      "../agent-demo/approved-motion/baddie/walk_north_6.png",
+      "../agent-demo/approved-motion/baddie/walk_north_7.png",
+      "../agent-demo/approved-motion/baddie/walk_north_8.png"
+    ],
+    "approved_baddie.walk.north-west": [
+      "../agent-demo/approved-motion/baddie/walk_north-west_1.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_2.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_3.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_4.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_5.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_6.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_7.png",
+      "../agent-demo/approved-motion/baddie/walk_north-west_8.png"
+    ],
+    "approved_baddie.walk.west": [
+      "../agent-demo/approved-motion/baddie/walk_west_1.png",
+      "../agent-demo/approved-motion/baddie/walk_west_2.png",
+      "../agent-demo/approved-motion/baddie/walk_west_3.png",
+      "../agent-demo/approved-motion/baddie/walk_west_4.png",
+      "../agent-demo/approved-motion/baddie/walk_west_5.png",
+      "../agent-demo/approved-motion/baddie/walk_west_6.png",
+      "../agent-demo/approved-motion/baddie/walk_west_7.png",
+      "../agent-demo/approved-motion/baddie/walk_west_8.png"
+    ],
+    "approved_baddie.walk.south-west": [
+      "../agent-demo/approved-motion/baddie/walk_south-west_1.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_2.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_3.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_4.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_5.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_6.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_7.png",
+      "../agent-demo/approved-motion/baddie/walk_south-west_8.png"
+    ],
+    "approved_candyprincess.walk.south": [
+      "../agent-demo/approved-motion/candyprincess/walk_south_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south_8.png"
+    ],
+    "approved_candyprincess.walk.south-east": [
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-east_8.png"
+    ],
+    "approved_candyprincess.walk.east": [
+      "../agent-demo/approved-motion/candyprincess/walk_east_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_east_8.png"
+    ],
+    "approved_candyprincess.walk.north-east": [
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-east_8.png"
+    ],
+    "approved_candyprincess.walk.north": [
+      "../agent-demo/approved-motion/candyprincess/walk_north_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north_8.png"
+    ],
+    "approved_candyprincess.walk.north-west": [
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_north-west_8.png"
+    ],
+    "approved_candyprincess.walk.west": [
+      "../agent-demo/approved-motion/candyprincess/walk_west_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_west_8.png"
+    ],
+    "approved_candyprincess.walk.south-west": [
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_1.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_2.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_3.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_4.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_5.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_6.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_7.png",
+      "../agent-demo/approved-motion/candyprincess/walk_south-west_8.png"
+    ],
+    "approved_bunnycutie.walk.south": [
+      "../agent-demo/approved-motion/bunnycutie/walk_south_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south_8.png"
+    ],
+    "approved_bunnycutie.walk.south-east": [
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-east_8.png"
+    ],
+    "approved_bunnycutie.walk.east": [
+      "../agent-demo/approved-motion/bunnycutie/walk_east_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_east_8.png"
+    ],
+    "approved_bunnycutie.walk.north-east": [
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-east_8.png"
+    ],
+    "approved_bunnycutie.walk.north": [
+      "../agent-demo/approved-motion/bunnycutie/walk_north_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north_8.png"
+    ],
+    "approved_bunnycutie.walk.north-west": [
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_north-west_8.png"
+    ],
+    "approved_bunnycutie.walk.west": [
+      "../agent-demo/approved-motion/bunnycutie/walk_west_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_west_8.png"
+    ],
+    "approved_bunnycutie.walk.south-west": [
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_1.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_2.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_3.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_4.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_5.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_6.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_7.png",
+      "../agent-demo/approved-motion/bunnycutie/walk_south-west_8.png"
+    ],
+    "approved_tylerdurden.walk.south": [
+      "../agent-demo/approved-motion/tylerdurden/walk_south_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south_8.png"
+    ],
+    "approved_tylerdurden.walk.south-east": [
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-east_8.png"
+    ],
+    "approved_tylerdurden.walk.east": [
+      "../agent-demo/approved-motion/tylerdurden/walk_east_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_east_8.png"
+    ],
+    "approved_tylerdurden.walk.north-east": [
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-east_8.png"
+    ],
+    "approved_tylerdurden.walk.north": [
+      "../agent-demo/approved-motion/tylerdurden/walk_north_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north_8.png"
+    ],
+    "approved_tylerdurden.walk.north-west": [
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_north-west_8.png"
+    ],
+    "approved_tylerdurden.walk.west": [
+      "../agent-demo/approved-motion/tylerdurden/walk_west_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_west_8.png"
+    ],
+    "approved_tylerdurden.walk.south-west": [
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_1.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_2.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_3.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_4.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_5.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_6.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_7.png",
+      "../agent-demo/approved-motion/tylerdurden/walk_south-west_8.png"
     ]
   }
 }
