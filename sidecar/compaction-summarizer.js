@@ -13,13 +13,49 @@
    loop can put it in agent.compact (truthful telemetry: a lossy fold says so).
 
    Contract consumed by loop.js maybeCompact: summarize(older, prevSummary, live) -> { summary, usd, tokens,
-   unpricedUsage?, chunks, truncatedChars }. An abort (signal.aborted) throws mid-chunk — the loop treats a
+   unpricedUsage?, chunks, truncatedChars, rejected? }. An abort (signal.aborted) throws mid-chunk — the loop treats a
    throw as a skipped fold, exactly as before. The aux-tier reliability floor (one retry on the run model when a
-   cheap aux model fails) is preserved per chunk. */
+   cheap aux model fails) is preserved per chunk.
+
+   A CUT-OFF OR REFUSED SUMMARY IS A FAILED SUMMARY. A fold REPLACES the raw turns with whatever text comes back,
+   so a fragment committed as "the summary" is a silent context drop dressed up as a success. Audit probe
+   (09-22, Hermes parity): history was folded into "Audit config files. VALUE_01=" (the generation hit its output
+   cap) and into "I'm sorry, but I can't provide the requested summary." (a refusal) — both committed, both
+   deleted the run's memory. Every adapter already normalizes WHY a stream stopped (providers/provider.js `done`):
+   'length' = the output cap cut it, 'content_filter' = the provider withheld it, `truncated:true` = the body
+   died with no terminal signal. Those are exactly the loop's own "cut" set (loop.js lastFinishReason), and any
+   of them in ANY chunk rejects the WHOLE fold: summary '' + `rejected` = the reason, so the loop keeps the
+   history and counts the failure toward its compactionFails breaker (after two, the deterministic fallback note
+   takes over). A later chunk merging onto an earlier good one would otherwise ship a summary that silently lost
+   the cut chunk. A cut/refused AUX-model output gets the same one retry on the run model as a thrown one. An
+   unrecognized upstream reason ('error') and a stream that never sent `done` are NOT treated as cut — same as
+   the loop — so a working provider never loses its folds to a guess. Spend is still reported on a rejection
+   (usd/tokens/unpricedUsage): the calls were made and billed. */
 'use strict';
 
 const DEFAULT_CHUNK_CHARS = 48000;
 const DEFAULT_MAX_CHUNKS = 12;
+
+/* REFUSAL HEURISTIC — deliberately conservative, because a false positive throws away a paid, correct fold.
+   ALL of: the text is short (<= REFUSAL_MAX chars); after stripping leading quote/emphasis marks it OPENS with a
+   first-person refusal/apology phrase; and it carries none of the "## <section>" headings the summary prompt
+   (context.js compactionSummaryPrompt) demands. A structured summary, a long one, or one that merely mentions an
+   apology later on is never rejected. */
+const REFUSAL_MAX = 400;
+const REFUSAL_OPEN = /^(?:i\s*['’]?m sorry|i am sorry|sorry[,.!\s]|i apologi[sz]e|my apologies|unfortunately,?\s+i\b|as an ai\b|i\s+(?:can['’]?t|cannot|can not|am unable|am not able|won['’]?t|will not|must decline)\b|i['’]m (?:unable|not able)\b)/i;
+function looksLikeRefusal(text) {
+  const t = String(text == null ? '' : text).trim();
+  if (!t || t.length > REFUSAL_MAX) return false;
+  if (/^##\s/m.test(t)) return false;                     // carries a summary section -> content, not a refusal
+  return REFUSAL_OPEN.test(t.replace(/^[\s"'“”‘’*_>]+/, ''));
+}
+// why one summarizer generation must not be committed, or null. `finish`/`truncated` come off the adapter's done event.
+function rejectReason(text, finish, truncated) {
+  if (finish === 'length' || finish === 'content_filter') return finish;
+  if (truncated) return 'truncated';
+  if (looksLikeRefusal(text)) return 'refusal';
+  return null;
+}
 
 function envInt(name, dflt) {
   const v = parseInt(String(process.env[name] || ''), 10);
@@ -100,7 +136,7 @@ function makeSummarizer(deps) {
     }
 
     let running = (typeof prevSummary === 'string' && prevSummary.trim()) ? prevSummary.trim() : '';
-    let usd = 0, tokens = 0, produced = false; const unpriced = [];
+    let usd = 0, tokens = 0, produced = false, rejected = null; const unpriced = [];
 
     async function attempt(useModel, userMsg, hasPrev) {
       const req = { model: useModel, stream: true, signal, messages: [
@@ -109,17 +145,19 @@ function makeSummarizer(deps) {
       ] };
       const effort = auxEffortFor(sProvider, useModel);
       if (effort) req.reasoningEffort = effort;
-      let out = '', usage = null;
+      let out = '', usage = null, finish = null, truncated = false;
       const it = deps.streamFn ? deps.streamFn(req, sProvider) : sProvider.stream(req);
       for await (const ev of it) {
         if (ev && ev.type === 'text') out += ev.delta;
         else if (ev && ev.type === 'usage') usage = ev.usage;
+        else if (ev && ev.type === 'done') { finish = ev.finishReason || null; truncated = !!ev.truncated; }   // WHY it stopped
       }
       const c = sCost ? sCost.reconcile(usage, useModel) : {};
       emit('agent.cost', { agentId: deps.agentId, runId: deps.runId, usd: c.usd || 0, model: useModel, reconciled: true });
       usd += c.usd || 0; tokens += (c.tokensIn || 0) + (c.tokensOut || 0);
       if (c.unpriced) unpriced.push({ model: useModel, tokensIn: c.tokensIn || 0, tokensOut: c.tokensOut || 0 });
-      return out.trim();
+      const text = out.trim();
+      return { text, rejected: rejectReason(text, finish, truncated) };
     }
 
     for (let n = 0; n < chunks.length; n++) {
@@ -131,17 +169,25 @@ function makeSummarizer(deps) {
       const prevBlock = hasPrev ? 'PREVIOUS SUMMARY (update this — merge the new turns in, drop anything now obsolete):\n' + running + '\n\n' : '';
       const part = chunks.length > 1 ? ' (part ' + (n + 1) + ' of ' + chunks.length + ')' : '';
       const userMsg = (memBlock ? memBlock + '\n\n' : '') + prevBlock + 'Summarize this earlier part of the conversation' + part + ' so it can replace the raw turns:\n\n' + transcript;
-      let out;
-      // AUX-TIER RELIABILITY FLOOR: retry ONCE on the run model; an abort is a cancel, never retried.
-      if (sModel === runModel) out = await attempt(sModel, userMsg, hasPrev);
+      let res;
+      // AUX-TIER RELIABILITY FLOOR: retry ONCE on the run model; an abort is a cancel, never retried. A cut or
+      // refused aux summary is a failed one too, so it gets the same single retry (never a second).
+      if (sModel === runModel) res = await attempt(sModel, userMsg, hasPrev);
       else {
-        try { out = await attempt(sModel, userMsg, hasPrev); }
-        catch (e) { if (signal.aborted) throw e; out = await attempt(runModel, userMsg, hasPrev); }
+        let retried = false;
+        try { res = await attempt(sModel, userMsg, hasPrev); }
+        catch (e) { if (signal.aborted) throw e; retried = true; res = await attempt(runModel, userMsg, hasPrev); }
+        if (!retried && res.rejected && !signal.aborted) res = await attempt(runModel, userMsg, hasPrev);
       }
-      if (out) { running = out; produced = true; }   // an empty chunk summary keeps the running one
+      // ONE cut/refused chunk rejects the whole fold: merging later chunks onto the pre-cut summary would ship a
+      // summary that silently lost this chunk's turns.
+      if (res.rejected) { rejected = res.rejected; break; }
+      if (res.text) { running = res.text; produced = true; }   // an empty chunk summary keeps the running one
     }
-    // every chunk came back empty -> '' so the loop refuses to drop history (never fold onto a stale prior summary)
-    const r = { summary: produced ? running : '', usd, tokens, chunks: chunks.length, truncatedChars };
+    // every chunk came back empty (or one was cut/refused) -> '' so the loop refuses to drop history (never fold
+    // onto a stale prior summary or a fragment)
+    const r = { summary: (produced && !rejected) ? running : '', usd, tokens, chunks: chunks.length, truncatedChars };
+    if (rejected) r.rejected = rejected;
     if (unpriced.length) r.unpricedUsage = unpriced;
     return r;
   }
@@ -149,4 +195,4 @@ function makeSummarizer(deps) {
   return summarize;
 }
 
-module.exports = { makeSummarizer, partition, renderMessage, DEFAULT_CHUNK_CHARS, DEFAULT_MAX_CHUNKS };
+module.exports = { makeSummarizer, partition, renderMessage, looksLikeRefusal, rejectReason, DEFAULT_CHUNK_CHARS, DEFAULT_MAX_CHUNKS };

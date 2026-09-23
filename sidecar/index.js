@@ -87,7 +87,6 @@ const { makeRunExecutionState, toolBytesCapFor } = require('./run-execution-stat
 const { recoverToolResult } = require('./tool-recovery.js'); // bounded retry for host-trusted transient reads only
 const transcriptStoreModule = require('./transcriptstore.js');
 const { makeTranscriptStore } = transcriptStoreModule;
-const TRANSCRIPT_PERSISTED = transcriptStoreModule._internals && transcriptStoreModule._internals.PERSISTED;
 const { makeRunJournal, DISPATCH_BOUNDARY_MODEL } = require('./run-journal.js');
 const { makeAffinityIndex } = require('./agent-affinity.js');   // idle-life social graph: which agents the run log proves work together
 const RunRecovery = require('./run-recovery.js');
@@ -243,6 +242,7 @@ const MemoryStore = require('./memory-store.js');                               
 const { makeMemoryStore, resetAgentMemory, restoreDeclined } = MemoryStore;
 const { makeWorkshopStore } = require('./workshop-store.js'); // durable per-agent away-workshop grant + backlog + discard denylist
 const { makeDeliverableStore } = require('./deliverable-store.js'); // durable kept/discarded/failed Workshop lifecycle index
+const { makeSteerBuffers } = require('./steer-buffer.js'); // h1: live-steer buffers + the run-end close (an honest 409 once a run can no longer apply a note)
 const { makeIdempotencyLedger } = require('./idempotency-ledger.js'); // SOP lane: durable connector-WRITE idempotency (no double-send on retry/resume)
 const TaskPostconditions = require('./task-postconditions.js');        // SOP lane: the typed acceptance authority (mid-run probe + end-of-run verdict)
 const RecipeDrift = require('./recipe-drift.js');                      // golden-run drift: latest recipe run vs its own good history (pure, from run rows)
@@ -634,6 +634,7 @@ function knobEnvLocked(envSuffix) { const e = envSuffix ? ENV(envSuffix) : null;
 // is blind to them). SKYNET_MAX_UNPRICED_TOKENS overrides; 0 disables. OAuth/unmetered providers are exempt.
 const CAPS = { maxIters: resolveKnob('MAX_ITERS', 'maxIters', 0), maxCostUsd: 1.00, maxRepeat: 3, toolTimeoutMs: 30000, maxToolBytes: resolveKnob('MAX_TOOL_BYTES', 'maxToolBytes', 120000), maxUnpricedTokens: resolveKnob('MAX_UNPRICED_TOKENS', 'maxUnpricedTokens', 2000000) };
 const MAX_TOOL_BYTES_PINNED = knobEnvLocked('MAX_TOOL_BYTES');
+const MCP_CALL_TIMEOUT_MS = 120000;   // default connector call/handshake budget (mcp/manager.js); per-connector timeoutMs overrides
 // Optional spend governance: per-run, per-agent, per-day, and global ceilings all default OFF.
 // num() passes a parsed value through (including 0 -> UNGOVERNED via budget.js capOf, e.g. SKYNET_BUDGET_PER_DAY=0
 // disables the day pool); only an empty/missing/negative/non-numeric value falls back to the default.
@@ -1464,21 +1465,23 @@ function formatRunHolderAge(ageMs) {
   const mins = Math.floor(ms / 60000);
   return mins + ' min ago';
 }
-// LIVE STEERING: runId -> [pending Commander notes]. POST /api/run/steer appends; the loop's injected steer()
-// drains once per iteration (see runAgentLoop o.steer). A note only lands while the run is IN-FLIGHT (its runId
-// is still in `runs`); once the run ends the entry is dropped, so a stale steer can never reach a later run.
-const steerBuffers = new Map();
-function drainSteer(runId) { const b = steerBuffers.get(runId); if (!b || !b.length) return []; steerBuffers.set(runId, []); return b; }
+// LIVE STEERING: runId -> [pending Commander notes] (sidecar/steer-buffer.js). POST /api/run/steer appends; the loop's
+// injected steer() drains once per iteration AND once more before a tool-free final turn ends the run (see runAgentLoop
+// o.steer); the loop's o.steerClose closes the buffer as the run ends, so a later POST is an honest 409 rather than a
+// 200 for a note nothing will read. A note only lands while the run is IN-FLIGHT (its runId is still in `runs`);
+// once the run ends the entry is dropped, so a stale steer can never reach a later run.
+const STEER_MAX_PENDING = 8;      // bound the buffer so a spammed steer can't grow unbounded between iterations
+const steerBufs = makeSteerBuffers({ maxPending: STEER_MAX_PENDING, maxNoteChars: 2000 });
+function drainSteer(runId) { return steerBufs.drain(runId); }
+function closeSteer(runId) { return steerBufs.close(runId); }
 // Teardown drop with diagnostics (GROUND_UP_AUDIT 2026-07-06 P2): at run end we drop any un-drained steering notes
 // so a stale correction can't leak to a later run. That drop was SILENT — a Commander whose steer arrived after the
 // run's last loop iteration saw nothing happen and no reason why. Log one honest line with the dropped count (the
 // note text is NOT logged — it can contain user content). ctx names the run path so the log is triageable.
 function dropSteer(runId, ctx) {
-  const b = steerBuffers.get(runId);
+  const b = steerBufs.drop(runId);
   if (b && b.length) console.log('[steer] dropped ' + b.length + ' un-applied steering note(s) at ' + (ctx || 'run') + ' teardown for run ' + runId + ' (arrived after the run finished)');
-  steerBuffers.delete(runId);
 }
-const STEER_MAX_PENDING = 8;      // bound the buffer so a spammed steer can't grow unbounded between iterations
 let lastSearchAt = 0;            // module-level web_search throttle (≥1.1s between DDG hits, any run)
 // Stage 2: the crew roster the browser pushes (POST /api/roster) so team.dispatch can run a WORKER as its
 // own identity (its composed system prompt + model/provider). agentId -> { system, name, model, provider }.
@@ -4496,7 +4499,9 @@ const connectors = makeConnectorManager({
       })
     }));
   },
-  clock: { now: () => Date.now() }, timeoutMs: CAPS.toolTimeoutMs,
+  // MCP connector calls get their OWN budget (120s), not the 30s fast-tool default: a connector write that is cut
+  // off at 30s still lands remotely (h1 audit 2026-09-22). Per-connector timeoutMs still overrides it.
+  clock: { now: () => Date.now() }, timeoutMs: MCP_CALL_TIMEOUT_MS,
   schemaCache: connectorSchemaCacheStore,
   validateConfig: cfg => cfg && cfg.transportKind === 'stdio' ? mcpStdioIsolationError(cfg) : '',
   fingerprintConfig: cfg => mcpSchemaCache.fingerprint(cfg, value => crypto.createHash('sha256').update(value).digest('hex')),
@@ -14172,7 +14177,11 @@ async function handleHooksAllow(req, res) {
 
 /* POST /api/checkpoint/restore { agentId, snapshotId } — the manual "rewind": hard-reset an agent's workspace to
    a recorded snapshot (and drop files created since). Only restores a snapshotId IN that agent's index (never an
-   arbitrary git ref); 127.0.0.1-bound. The auto-snapshots that feed this come from the opt-in dispatch hook. */
+   arbitrary git ref); 127.0.0.1-bound. The auto-snapshots that feed this come from the opt-in dispatch hook.
+   UNDOABLE (local backend): the store first records the current tree as a 'pre-restore' restore point and the
+   200 body additively names it ({ ok:true, preRestoreId }) — restoring that id undoes the rewind. If that undo
+   point cannot be saved the rewind is refused (500) with the tree untouched; a git failure after it is saved says
+   so honestly instead of claiming the snapshot does not exist. */
 async function handleCheckpointRestore(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
@@ -14184,13 +14193,21 @@ async function handleCheckpointRestore(req, res) {
   const operationId = 'restore-' + crypto.randomUUID();
   const lifecycle = await agentLifecycle.acquireMutation(agentId, operationId);
   if (!lifecycle.ok) return json(409, { error: lifecycle.deleting ? 'agent is being deleted' : 'workspace busy' });
-  let ok;
-  try { ok = remoteEnv && typeof remoteEnv.restoreCheckpoint === 'function' ? await remoteEnv.restoreCheckpoint(agentId, snapshotId) : await checkpointStore.restore(agentId, snapshotId); }
+  let out;
+  try {
+    out = remoteEnv && typeof remoteEnv.restoreCheckpoint === 'function'
+      ? { ok: !!(await remoteEnv.restoreCheckpoint(agentId, snapshotId)) }
+      : await checkpointStore.restoreDetailed(agentId, snapshotId);
+  }
   catch (e) { return json(500, { error: 'restore failed: ' + ((e && e.message) || e) }); }
   finally { lifecycle.release(); }
-  if (!ok) return json(404, { error: 'no such snapshot for that agent' });
+  if (!out || !out.ok) {
+    if (out && out.reason === 'pre_restore_failed') return json(500, { error: 'restore refused: the current workspace could not be saved as an undo point first, so nothing was changed' });
+    if (out && out.reason === 'git_failed') return json(500, { error: 'restore did not complete; the workspace as it was just before is saved as restore point ' + String(out.preRestoreId || '').slice(0, 12), preRestoreId: out.preRestoreId || '' });
+    return json(404, { error: 'no such snapshot for that agent' });
+  }
   try { checkpointEmit('checkpoint.restored', { agentId: agentId, runId: '', toSnapshotId: snapshotId, reason: 'manual' }); } catch (_) {}
-  json(200, { ok: true });
+  json(200, out.preRestoreId ? { ok: true, preRestoreId: out.preRestoreId } : { ok: true });
 }
 
 // GET /api/checkpoint?agent=<id> — the read-only snapshot index a "rewind" affordance lists from.
@@ -16598,12 +16615,24 @@ async function runOnceCore(o) {
   // The summarizer body lives in compaction-summarizer.js (chunked full-slice fold; no 16k input truncation).
   // This is thin wiring: the run's provider/model/cost fallbacks, the aux tier, the STRICT transcript drain and
   // the durable-memory prepend are injected; `live` still overrides provider/model/cost per call (fallback-safe).
+  /* THE DIRECTIVE GOES FIRST. The triggering user turn is in the prompt (so it carries the persisted marker) and is
+     written to the transcript explicitly at run end. A MID-RUN drain (every compaction tier saves the slice it is
+     about to fold or elide) used to land the run's early assistant/tool rows BEFORE that run-end directive row, so
+     a restart replayed the agent answering a question it had not been asked yet. The first mid-run drain writes the
+     directive (text captured pre-loop, see transcriptDirective.text below) and run end then skips it. */
+  const transcriptDirective = { text: '', written: false };
   const summarize = makeSummarizer({
     provider, model, cost, signal, emit, agentId, runId,
     auxModelFor: resolveAuxModel,
     auxEffortFor: auxReasoningEffort,
     summaryPrompt: compactionSummaryPrompt,
-    transcriptDrain: (older) => transcriptStore.appendNewStrict(o.streamId, agentId, older, { sourceRunId: runId }),
+    transcriptDrain: (older) => {
+      if (!transcriptDirective.written && transcriptDirective.text) {
+        transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: transcriptDirective.text, sourceRunId: runId });
+        transcriptDirective.written = true;
+      }
+      return transcriptStore.appendNewStrict(o.streamId, agentId, older, { sourceRunId: runId });
+    },
     memoryBlockFor: (transcript) => {
       // on_pre_compress (MEMORY-CORTEX): rank durable memory against the slice being folded and PREPEND it.
       // '' when nothing to preserve. Fail-open: a memory hiccup must never block the summary.
@@ -16709,13 +16738,15 @@ async function runOnceCore(o) {
     // SUCCEEDED for this work item is not sent again: the model gets the recorded result, plainly labelled. This sits
     // with the recovery barrier — before capability withholding and before the journal's intent boundary — because a
     // replayed write is not a dispatch at all. Fail-open on a ledger read error (the write executes as before).
-    let idemKey = null;
-    if (idempotencyScope && idempotencyLedger.isWrite(c.name)) {
+    // UNCERTAIN (h1 audit 2026-09-22): an identical write that earlier TIMED OUT / was cancelled after it was sent may
+    // have landed, so its re-send is HELD until a successful read on that connector has verified. The whole rule lives
+    // in idempotency-ledger.js before()/after() so its unit test drives exactly this decision.
+    let idemGate = null;
+    if (idempotencyScope) {
       try {
-        idemKey = idempotencyLedger.keyFor(idempotencyScope, c.name, c.argsRaw || JSON.stringify(c.args || {}));
-        const prior = idempotencyLedger.lookup(idemKey);
-        if (prior) return idempotencyLedger.replayResult(prior);   // the loop's own agent.tool_result carries summary 'idempotent-replay'
-      } catch (e) { failNote('idempotency.lookup', e); idemKey = null; }
+        idemGate = idempotencyLedger.before(idempotencyScope, c.name, c.argsRaw || JSON.stringify(c.args || {}));
+        if (idemGate.result) return idemGate.result;   // replay ('idempotent-replay') or hold ('held-uncertain') — the loop's agent.tool_result carries the summary
+      } catch (e) { failNote('idempotency.lookup', e); idemGate = null; }
     }
     if (fromWire.has(c.name)) c = Object.assign({}, c, { name: realName });   // wire -> real (dotted) name
     else if (!grantedSet.has(c.name) && registry.get(allWire.get(c.name) || c.name)) {
@@ -16941,8 +16972,10 @@ async function runOnceCore(o) {
       // in the durable-store mutex when the process died — the retry then missed on lookup and RE-SENT the
       // write (the exact double-send this ledger exists to prevent). The loop may not advance past a
       // protected mutation until its receipt is on disk. Still fail-open on ledger errors.
-      if (idemKey && r && r.ok && !r.isError) {
-        try { await idempotencyLedger.record(idemKey, { scope: idempotencyScope, runId, tool: c.name, summary: r.summary, content: r.content }); }
+      // An effectUnknown write (timed out / cancelled after it was sent) is recorded as UNCERTAIN under the same rule, so
+      // the model's very next identical retry is held; a successful connector read releases it (noteObserved).
+      if (idemGate) {
+        try { await idempotencyLedger.after(idemGate, r, { runId, tool: c.name }); }
         catch (e) { failNote('idempotency.record', e); }
       }
     } catch (e) {
@@ -17467,6 +17500,14 @@ async function runOnceCore(o) {
   // rebuilds the same array in place and SHORTER, leaving the index past the end and dropping the entire run's
   // dialogue with no error. See the PERSISTED marker in transcriptstore.js.
   transcriptStore.markPersisted(msgs);
+  // The run journal's delta checkpoints exclude exactly THESE objects (the base checkpoint below already holds
+  // them). Identity, not the persisted marker: a mid-run compaction drain also marks messages persisted while they
+  // stay in the working set (the micro tier keeps elided copies, a refused fold keeps the whole slice), and those
+  // must still reach the provider-resumable checkpoint.
+  const initialPromptSet = new WeakSet(msgs.filter(m => m && typeof m === 'object'));
+  // the directive a mid-run drain writes first (same rule as the run-end title write; captured before the loop can
+  // append its own user-role messages, e.g. a screen-capture turn)
+  if (!retryDirective && !o.syntheticTrigger) transcriptDirective.text = latestUserText(msgs);
   if (!internal) {
     try {
       runJournal.begin({
@@ -17649,14 +17690,18 @@ async function runOnceCore(o) {
       },
       todoNote: () => Todo.formatForInjection(notebookStore, agentId),   // re-inject the active task plan after a compaction
       steer: typeof o.steer === 'function' ? o.steer : () => drainSteer(runId),   // live parent or generation-bound worker steering
-      signal: signal, clock: { now: () => Date.now() },
+      // the parent's buffer closes as the loop ends (a worker's generation-bound steer has its own running gate)
+      steerClose: typeof o.steer === 'function' ? null : () => closeSteer(runId),
+      signal: signal, clock: { now: () => Date.now() }, random: Math.random,   // retry-ladder jitter source (loop.js never reads ambient randomness)
       onCheckpoint: execution.journalStarted() ? ({ phase, messages: checkpointMessages, turn }) => {
-        // Initial prompt messages carry transcriptStore's non-enumerable PERSISTED marker. Everything without it
-        // was created by this run, so compaction cannot invalidate the boundary and recovery avoids duplicating
-        // the historical seed. System continuation/guard messages remain included because provider resumption
-        // must receive a valid context, even though the user-facing transcript later omits them.
+        // Initial prompt messages (initialPromptSet — the exact objects the base checkpoint recorded) are excluded;
+        // everything else was created by this run, so compaction cannot invalidate the boundary and recovery avoids
+        // duplicating the historical seed. System continuation/guard messages remain included because provider
+        // resumption must receive a valid context, even though the user-facing transcript later omits them. This
+        // used to test the transcript's PERSISTED marker, which a mid-run compaction drain ALSO sets on messages
+        // that stay live (micro-elided turns, a refused fold's slice) — dropping them from the resumable context.
         const fresh = Array.isArray(checkpointMessages)
-          ? checkpointMessages.filter(m => m && typeof m === 'object' && (!TRANSCRIPT_PERSISTED || !m[TRANSCRIPT_PERSISTED]))
+          ? checkpointMessages.filter(m => m && typeof m === 'object' && !initialPromptSet.has(m))
           : [];
         runJournal.checkpoint(runId, { phase, turn, messages: fresh });
       } : null,
@@ -17783,7 +17828,7 @@ async function runOnceCore(o) {
       if (execution.journalStarted()) {
         // Retirement is ordered strictly: each transcript row is fsync/read-back proven, then the journal records
         // that acknowledgement, then (and only then) is the recovery copy removed. A throw leaves it discoverable.
-        if (title && !retryDirective && !o.syntheticTrigger) transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: title, sourceRunId: runId });
+        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.appendStrict({ streamId: o.streamId, agentId, role: 'user', content: title, sourceRunId: runId });
         if (result && Array.isArray(result.messages)) transcriptStore.appendNewStrict(o.streamId, agentId, result.messages, { sourceRunId: runId });
         const retirement = runJournal.finishAndRetire(runId, {
           reason: (result && result.reason) || 'error', turns: finalTurns, tokens: finalTokens, usd: finalUsd,
@@ -17793,7 +17838,7 @@ async function runOnceCore(o) {
           console.warn('[run-journal] retained unsettled run for review:', runId, retirement.state && retirement.state.status);
         }
       } else {
-        if (title && !retryDirective && !o.syntheticTrigger) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
+        if (title && !retryDirective && !o.syntheticTrigger && !transcriptDirective.written) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
         if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages);
       }
     } catch (_) {}
@@ -18719,19 +18764,16 @@ async function handleCancel(req, res) {
 // POST /api/run/steer { runId, text } — LIVE MID-RUN STEERING. Append a Commander note to an IN-FLIGHT run's steer
 // buffer; the loop's injected steer() drains it before the NEXT model call and folds it in as a <steering_note>.
 // Only a run whose id is still in `runs` (i.e. actually in flight) accepts a steer — a stale/unknown runId is a
-// clean 404, so a note can never queue against a finished run. Bounded to STEER_MAX_PENDING pending notes per run.
+// clean 404, so a note can never queue against a finished run. A run whose LOOP has already ended (post-run work is
+// still settling) answers 409 {ok:false, applied:false}: a 200 there would promise a fold-in nothing will perform.
+// Bounded to STEER_MAX_PENDING pending notes per run. The success shape {ok:true, pending} is unchanged.
 async function handleRunSteer(req, res) {
   const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
   let body; try { body = JSON.parse(await readBody(req, 1 << 16)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
   const runId = String(body.runId || '');
   const text = String(body.text == null ? '' : body.text).trim();
-  if (!text) return json(400, { error: 'empty steering note' });
-  if (!runId || !runs.has(runId)) return json(404, { error: 'no in-flight run for that id' });
-  const buf = steerBuffers.get(runId) || [];
-  if (buf.length >= STEER_MAX_PENDING) return json(429, { error: 'steer buffer full', pending: buf.length });
-  buf.push(text.slice(0, 2000));   // clamp a single note so one steer can't blow up the prompt
-  steerBuffers.set(runId, buf);
-  json(200, { ok: true, pending: buf.length });
+  const out = steerBufs.post(runId, text, !!runId && runs.has(runId));
+  json(out.status, out.body);
 }
 
 // GET /api/version — the honest build/version surface for /version. Resolves the harness build id and the Tauri
