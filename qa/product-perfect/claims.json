@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "65452a9b3c7ea73dc250bf4ffb73466f4e491505",
+    "sourceCommit": "4538e16c61c28b5838e793e9dc88487636a77d2e",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -1103,8 +1103,8 @@
       },
       {
         "path": "frontend/app/toolprops.js",
-        "bytes": 4400,
-        "sha256": "7863c703ec7a546ef1c58fab13f93382185f5366c45b443762c8aeda2132e51a"
+        "bytes": 4604,
+        "sha256": "af6cd0cedef3e03c7749b8e09609c33849bafbd3323822cf21e707ada6cc8334"
       },
       {
         "path": "frontend/app/tooltip.js",
