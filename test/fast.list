@@ -897,3 +897,4 @@ test/loop.stall-giveup.test.js
 test/context.image-estimate.test.js
 test/registry.window-scaled-cap.test.js
 test/dispatch.fair-share.test.js
+test/loop.image-eviction.test.js
