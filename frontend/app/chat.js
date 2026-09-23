@@ -8209,17 +8209,18 @@ const Chat = (() => {
   // drawing, but the SIDECAR's plan is the one that authorizes spend, so it is the one that decides. Returns
   // { next, brief } — `brief` is the NEXT dock's standing job brief (step editor; the same router fact the
   // sidecar's chain runner injects), so both surfaces compose one handoff turn. null = terminal stage.
-  async function nextStageOf(agentId, tag, lineId) {
+  // (multi-bay, 2026-09-22) dockId = WHICH bay the asking stage ran at; the answer names the next bay (nextDock)
+  async function nextStageOf(agentId, tag, lineId, dockId) {
     try {
       const h = {}, tok = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) || '';
       if (tok) h['X-StarNet-Token'] = String(tok);
       // `lineId` = the line this work ENTERED on (work belongs to a line, 2026-08-07). The sidecar's plan is
       // still the decider — it refuses any id that is not this dock's own line — so this only ever narrows.
       const r = await fetch('/api/routing/chain?agentId=' + encodeURIComponent(agentId) + '&tag=' + encodeURIComponent(tag || '')
-        + '&lineId=' + encodeURIComponent(lineId || ''), { cache: 'no-store', headers: h });
+        + '&lineId=' + encodeURIComponent(lineId || '') + (dockId ? '&dockId=' + encodeURIComponent(dockId) : ''), { cache: 'no-store', headers: h });
       if (!r || !r.ok) return null;
       const j = await r.json();
-      return (j && j.next) ? { next: String(j.next), brief: (typeof j.brief === 'string' && j.brief) ? j.brief : null } : null;
+      return (j && j.next) ? { next: String(j.next), nextDock: (typeof j.nextDock === 'string' && j.nextDock) ? j.nextDock : null, brief: (typeof j.brief === 'string' && j.brief) ? j.brief : null } : null;
     } catch (_) { return null; }   // no floor, no sidecar, no line — the single-stage reply already stands
   }
 
@@ -8232,8 +8233,10 @@ const Chat = (() => {
     // WORK BELONGS TO A LINE (2026-08-07): a line advances only for work that entered through ITS OWN
     // trigger. `seed.lineId` is that origin; without one this dock is terminal and nothing downstream runs.
     if (!seed.lineId) return out;
-    const visited = {}; visited[seed.fromAgentId] = true;
-    let cur = seed.fromAgentId;
+    // NEVER RUN A DOCK TWICE (multi-bay): visited keys on the bay when the sidecar names one — a writer crewing
+    // two bays of this line runs at each — else on the agent (an older sidecar answers no nextDock)
+    const visited = {}; visited[seed.fromDock || seed.fromAgentId] = true;
+    let cur = seed.fromAgentId, curDock = seed.fromDock || null;
     // LINE BUDGET (2026-08-21): the sidecar answers each /api/routing/chain ask with the EFFECTIVE ceilings
     // for this line (its INBOX's limits, clamped to the global pool) — the browser bounds itself by the same
     // numbers the sidecar executor would. An older sidecar answers none: the mirrored constants hold.
@@ -8241,9 +8244,9 @@ const Chat = (() => {
     for (let hop = 1; hop <= maxHops + 1; hop++) {   // +1 so a stage PAST the ceiling is named, as the sidecar names it
       if (seed.signal && seed.signal.aborted) return out;
       if (interrupted.has(ws.id)) return out;                       // the Commander pressed Stop — the line stops
-      const nxr = await nextStageOf(cur, lineTag(out.text), seed.lineId);
-      const nx = nxr && nxr.next;
-      if (!nx || visited[nx]) return out;                           // terminal stage, or a loop the plan let through
+      const nxr = await nextStageOf(cur, lineTag(out.text), seed.lineId, curDock);
+      const nx = nxr && nxr.next, nxDock = (nxr && nxr.nextDock) || null;
+      if (!nx || visited[nxDock || nx]) return out;                 // terminal stage, or a loop the plan let through
       const lim = nxr && nxr.limits;
       if (lim && typeof lim === 'object') {
         if (typeof lim.maxHops === 'number' && lim.maxHops >= 0) maxHops = lim.maxHops;
@@ -8270,7 +8273,7 @@ const Chat = (() => {
       }
       const sys = (typeof App !== 'undefined' && App.systemFor) ? App.systemFor(nx) : null;
       if (!sys) return out;                                         // a dock bound to an agent this roster doesn't have
-      visited[nx] = true;
+      visited[nxDock || nx] = true;
 
       const who = (typeof App !== 'undefined' && App.agentName && App.agentName(nx)) || nx;
       const wiHop = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('wi-' + Date.now() + '-' + (++wiSeq));
@@ -8278,7 +8281,10 @@ const Chat = (() => {
       // the floor draws the handoff exactly like a channel line's: a crate leaves this dock for the next.
       // `from` = the PRODUCER dock (mirrors chain.js's placed event — must not drift): world.js spawns the
       // crate at THIS dock instead of guessing the upstream dock from the compiled plan.
-      wiEmit('workitem.placed', { workitemId: wiHop, queueId: nx, agentId: nx, kind: 'chain', from: cur, lineId: seed.lineId, preview: String(out.text).replace(/\s+/g, ' ').slice(0, 40), ts: hopStart });
+      const placed = { workitemId: wiHop, queueId: nx, agentId: nx, kind: 'chain', from: cur, lineId: seed.lineId, preview: String(out.text).replace(/\s+/g, ' ').slice(0, 40), ts: hopStart };
+      if (nxDock) placed.dockId = nxDock;          // additive (multi-bay): the bay the crate lands at…
+      if (curDock) placed.fromDock = curDock;      // …and the bay it left
+      wiEmit('workitem.placed', placed);
       if (isActiveWs(ws)) { breakLive(); toolLine('▸ ' + who + ' — stage ' + (hop + 1) + ' of the work line'); }
 
       // the RECEIVING dock's standing brief rides the shared handoff turn — the same 5th param the sidecar's
@@ -8323,7 +8329,7 @@ const Chat = (() => {
       ws.history.push({ role: 'assistant', content: hopText, agentId: nx, ts: Date.now() });   // agentId = the ACTUAL speaker (renderHistory names it)
       capHistory(ws);
       out.text = hopText; out.agentId = nx; out.hops++;
-      cur = nx;
+      cur = nx; curDock = nxDock;
     }
     return out;
   }

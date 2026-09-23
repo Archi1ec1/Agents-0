@@ -2408,8 +2408,13 @@ const WorldModel = (() => {
        its legacy scope — hero station-wide, summoned worker lead-conferred), but the room resolved is the
        agent's own SEAT_WORKSTATIONS desk room first, falling back to the bay's room only when the agent has
        no desk (a desk-less bay behaves byte-for-byte as before). */
-    function agentRoomId(agentId) {
-      const bay = doc.props.find(p => p.t === 'bay' && p.agentId === agentId);
+    /* MULTI-BAY (2026-09-22 — Andrew's ruling): an agent may crew several bays. `dockId` names the bay THIS run
+       is at: a deskful agent still resolves its desk room (the remote-bay ruling holds on every bay), a desk-less
+       one gets the room of THAT bay — never the union of its bays' rooms. No dockId = its first bay (the
+       pre-multi-bay reading; the router passes the entry dock whenever it knows one). */
+    function agentRoomId(agentId, dockId) {
+      const bay = (dockId != null && doc.props.find(p => p.t === 'bay' && p.agentId === agentId && p.id === dockId))
+        || doc.props.find(p => p.t === 'bay' && p.agentId === agentId);
       if (!bay) return null;
       const desk = doc.props.find(p => SEAT_WORKSTATIONS[p.t] && p.agentId === agentId);
       if (desk) { const r = roomAt(desk.x, desk.y); if (r) return r; }
@@ -2422,13 +2427,14 @@ const WorldModel = (() => {
     // it (agentId match), or (back-compat) an UNBOUND computer when the room holds a single agent. So a SHARED
     // room (3-4 agents passing work) demands a distinct PC per agent, while a solo room still runs unbound. Every
     // OTHER cap (cabinet/dish/notebook/connector) stays room-based — a shared room's files/web/memory are shared.
-    function bayObjects(agentId) {
-      const room = agentRoomId(agentId);
+    function bayObjects(agentId, dockId) {
+      const room = agentRoomId(agentId, dockId);
       if (!room) return [];
       // solo = ONE agent resolves its capability room here (remote bays mean the occupant census must count
-      // agents by their CAPABILITY room, not by which room their bay prop happens to stand in)
+      // agents by their CAPABILITY room, not by which room their bay prop happens to stand in). Per BAY
+      // (multi-bay): an agent counts in every room one of its bays resolves to.
       const owners = {};
-      for (const p of doc.props) if (p.t === 'bay' && p.agentId && agentRoomId(p.agentId) === room) owners[p.agentId] = true;
+      for (const p of doc.props) if (p.t === 'bay' && p.agentId && agentRoomId(p.agentId, p.id) === room) owners[p.agentId] = true;
       const soloRoom = Object.keys(owners).length <= 1;   // one agent in the room -> an unbound PC is unambiguously this agent's
       const seen = {}, out = [];
       for (const p of doc.props) {

@@ -1002,7 +1002,8 @@ const World = (() => {
     if (!station || !aid || (agent && aid === agent.id)) return true;
     if (typeof station.agentRoomId !== 'function' || typeof station.bayObjects !== 'function') return true;
     if (!station.agentRoomId(aid)) return true;   // no bay -> not room-resolved -> can't honestly call it dark
-    return station.bayObjects(aid).some(o => (o && typeof o === 'object' ? o.objectType : o) === 'computer');
+    const hb = homeBayOf(aid);   // (multi-bay) the room of the agent's HOME bay (its desk room when it has a desk)
+    return station.bayObjects(aid, hb ? hb.id : undefined).some(o => (o && typeof o === 'object' ? o.objectType : o) === 'computer');
   }
   function computeOkFor(aid) {
     if (!computeOkCache.has(aid)) computeOkCache.set(aid, agentComputeOK(aid));
@@ -1237,9 +1238,22 @@ const World = (() => {
   }
   // the hero's ASSIGNED conveyor: a walkable tile beside the BAY bound to this agent (agentId match, so it never
   // reacts to another agent's bay). null = this agent has no conveyor → no fetch leg (straight to work).
+  /* THE HOME DOCK (multi-bay agents, 2026-09-22 — Andrew's ruling: one body, anchored at its home dock, no
+     walking between docks). An agent crewing several bays lives at its ENTRY dock (the compiled plan's
+     entryDock: the oldest bay an INBOX reaches, else its oldest); its other bays light up when work lands
+     there, but the body never walks to them. One bay = that bay, exactly as before. */
+  function homeBayOf(aid) {
+    if (!geo || !geo.props || !aid) return null;
+    const home = routingPlan && routingPlan.entryDock ? routingPlan.entryDock[aid] : null;
+    const bays = geo.props.filter(p => p.t === 'bay' && p.agentId === aid);
+    if (!bays.length) return null;
+    return (home && bays.find(p => p.id === home)) || bays[0];
+  }
+  // does this agent crew MORE than one bay? (the nameplate + dock-glow rules only change when it does)
+  function multiDock(aid) { const ds = routingPlan && routingPlan.docksOfAgent && routingPlan.docksOfAgent[aid]; return !!(ds && ds.length > 1); }
   function assignedConveyorTile(aid) {
     if (!geo || !geo.props || !aid) return null;
-    const bay = geo.props.find(p => p.t === 'bay' && p.agentId === aid);
+    const bay = homeBayOf(aid);
     if (!bay) return null;
     const bw = bay.w || 1, bh = bay.h || 1;
     for (let yy = bay.y - 1; yy <= bay.y + bh; yy++)
@@ -2202,7 +2216,7 @@ const World = (() => {
     const aid = body && body.id;
     const dp = aid && deskPropFor(aid);
     if (dp) return { x: dp.x, y: dp.y, assigned: true };
-    if (aid && geo.props) { const bay = geo.props.find(p => p.t === 'bay' && p.agentId === aid); if (bay) return { x: bay.x, y: bay.y, assigned: true }; }
+    if (aid && geo.props) { const bay = homeBayOf(aid); if (bay) return { x: bay.x, y: bay.y, assigned: true }; }
     if (body === agent && seat) return { x: seat.tx, y: seat.ty, assigned: true };   // hero on the synthetic auto-desk
     // A2 leash fallback: a PLACED crew body with no workstation/bay (the common freshly-summoned worker
     // before the user assigns it a PC) anchors on its OWN foot tile, so zoneFor yields a bounded leash
@@ -6383,7 +6397,8 @@ const World = (() => {
       if (!convey) convey = Conveyor.create({ onDeliver: onWorkitemDeliver });
       // stops = bound-bay hookup tiles (crate-physics truth: an inbound crate is CONSUMED at its dock,
       // never riding past it toward the outbox — an addressed crate stops only at its OWNER's dock)
-      convey.tick(dt, now, geo.belts, junctions, routingPlan ? routingPlan.bayTileToAgent : null);
+      // (multi-bay) stops name the DOCK too: a crate addressed to bay C rides past the same agent's bay A
+      convey.tick(dt, now, geo.belts, junctions, routingPlan ? dockStops() : null);
       /* GHOST PROJECTION (Phase 3): stands down while the tutorial coaches and the INSTANT any
          real crate rides (real telemetry owns the belt); resumes when the line goes incomplete
          again. Same belts + junction decisions as the real sim, on its own dedicated engine. */
@@ -6464,7 +6479,9 @@ const World = (() => {
         // frame (never persisted — the doc keeps only agentId, so renames and reassignment stay truthful)
         if (p.t === 'bay' && p.agentId) {
           const db = bodyForAgent(p.agentId);
-          if (db && db.name) dp = Object.assign(dp === p ? Object.assign({}, p) : dp, { dockName: db.name });
+          // (multi-bay) the agent's OTHER bays say where its body lives: "NAME ↔ home"
+          const away = multiDock(p.agentId) && routingPlan.entryDock && routingPlan.entryDock[p.agentId] !== p.id;
+          if (db && db.name) dp = Object.assign(dp === p ? Object.assign({}, p) : dp, { dockName: db.name + (away ? ' ↔ home' : '') });
           if (propOnScreen(dp)) bayLabels.push(dp);
         }
         // OCCUPIED BED: the base pass holds the quilt back so the sleeper can be drawn between the
@@ -7854,7 +7871,7 @@ const World = (() => {
     if (routingPlan.dockBays && station && typeof station.bayObjects === 'function') {
       for (const b of routingPlan.dockBays) {
         let objs = [];
-        try { objs = station.bayObjects(b.agentId) || []; } catch (_) {}
+        try { objs = station.bayObjects(b.agentId, b.propId) || []; } catch (_) {}   // THIS dock's room (multi-bay)
         if (objs.indexOf('computer') >= 0) continue;
         out.push({ x: b.x, y: b.y, w: b.w || 1, h: b.h || 1, label: 'NO COMPUTE — ADD A PC', warn: true });
       }
@@ -8536,8 +8553,11 @@ const World = (() => {
     // tools to exactly what the floor placed there (the bay->agent binding decides WHO; the room decides WHAT).
     // dockBays too — a LONE bay (no belt) is a complete dock and isolates identically (sense pass 2026-07-05).
     if (routingPlan && station && typeof station.bayObjects === 'function') {
-      for (const b of (routingPlan.bays || [])) b.objects = station.bayObjects(b.agentId);
-      for (const b of (routingPlan.dockBays || [])) b.objects = station.bayObjects(b.agentId);
+      // PER DOCK (multi-bay, 2026-09-22): each bay record carries ITS room's objects (a deskful agent's desk room
+      // on every one of its bays — worldmodel.bayObjects prefers the desk), so a hop runs with the room of the
+      // bay it is AT, never the union of the agent's bays.
+      for (const b of (routingPlan.bays || [])) b.objects = station.bayObjects(b.agentId, b.propId);
+      for (const b of (routingPlan.dockBays || [])) b.objects = station.bayObjects(b.agentId, b.propId);
     }
     postRoutingPlan(routingPlan);
   }
@@ -8637,7 +8657,14 @@ const World = (() => {
       // enrich each junction with its lanes' reachable OWNERS so addressed crates ride home (a shallow
       // copy — never mutate the plan object itself; the sidecar-posted plan/hash stays untouched)
       const owners = (typeof Pipeline !== 'undefined' && Pipeline.junctionLaneOwners) ? Pipeline.junctionLaneOwners(routingPlan) : {};
-      for (const k in routingPlan.junctions) (j = j || new Map()).set(k, owners[k] ? Object.assign({}, routingPlan.junctions[k], { owners: owners[k] }) : routingPlan.junctions[k]);
+      // …and by DOCK (multi-bay): a crate addressed to ONE bay of a multi-dock agent steers to THAT bay
+      const docks = (typeof Pipeline !== 'undefined' && Pipeline.junctionLaneDocks) ? Pipeline.junctionLaneDocks(routingPlan) : {};
+      for (const k in routingPlan.junctions) {
+        const extra = {};
+        if (owners[k]) extra.owners = owners[k];
+        if (docks[k]) extra.ownerDocks = docks[k];
+        (j = j || new Map()).set(k, Object.keys(extra).length ? Object.assign({}, routingPlan.junctions[k], extra) : routingPlan.junctions[k]);
+      }
       return j;
     }
     // fallback (Pipeline unavailable): the original splitter-only scan keeps belts animating
@@ -8660,13 +8687,31 @@ const World = (() => {
      overwrote whose-line-is-this for a run that started earlier. Each dock now keeps a bounded FIFO
      of placed work-items' line identity; the ship decision consumes the OLDEST entry (runs end in
      roughly placement order — the same pairing basis the queue gauge runs on). */
-  const dockLineWork = new Map();   // agentId -> [lineId|null, ...] per placed work-item, oldest first
+  /* (multi-bay, 2026-09-22) each entry also remembers WHICH bay the work-item landed at (the crate's additive
+     dockId), so the run it pairs with ships its product from THAT bay — quill's run at bay C leaves bay C,
+     not quill's first bay. */
+  const dockLineWork = new Map();   // agentId -> [{ lineId|null, dockId|null }, ...] per placed work-item, oldest first
   function dockLineTake(aid) {
     const q = dockLineWork.get(aid);
     if (!q || !q.length) return null;
     const v = q.shift();
     if (!q.length) dockLineWork.delete(aid);
     return v;
+  }
+  const lineOfWork = w => (w && w.lineId) || null;
+  function dockWorkPeek(aid) { const q = dockLineWork.get(aid); return (q && q.length) ? q[0] : null; }
+  // the bay an agent's CURRENT work is at (its newest placed item), for the dock glow — null = no dock named
+  const activeDock = new Map();     // agentId -> dockId
+  /* conveyor stops by DOCK: { "x,y": { agentId, dockId } } — rebuilt only when the plan object changes */
+  let stopsFor = null, stopsMap = null;
+  function dockStops() {
+    if (!routingPlan) return null;
+    if (stopsFor === routingPlan) return stopsMap;
+    const byTile = routingPlan.bayTileToAgent || {}, dockAt = routingPlan.bayTileToDock || {};
+    const m = {};
+    for (const k in byTile) m[k] = dockAt[k] ? { agentId: byTile[k], dockId: dockAt[k] } : byTile[k];
+    stopsFor = routingPlan; stopsMap = m;
+    return m;
   }
   function intakeMessage(payload) {
     const p = payload || {};
@@ -8679,9 +8724,11 @@ const World = (() => {
     // tag the box with its content kind (the same getTag the sidecar routes by) so a FILTER sorts it visibly
     if (p.agentId) {
       const q = dockLineWork.get(p.agentId) || [];
-      q.push(p.lineId ? String(p.lineId) : null);          // a direct order queues NULL — "this one is nobody's line"
+      // a direct order queues lineId NULL — "this one is nobody's line"; dockId = the bay it landed at (or null)
+      q.push({ lineId: p.lineId ? String(p.lineId) : null, dockId: p.dockId ? String(p.dockId) : null });
       if (q.length > 8) q.shift();                          // bounded like every floor latch
       dockLineWork.set(p.agentId, q);
+      if (p.dockId) activeDock.set(p.agentId, String(p.dockId)); else activeDock.delete(p.agentId);
     }
     if (!p.tag && typeof Classify !== 'undefined' && Classify.getTag) p.tag = Classify.getTag(p.preview || p.text || '');
     // ride inbound work as ORE — a UNIFORM raw chunk: every incoming request is one identical piece of raw
@@ -8706,17 +8753,22 @@ const World = (() => {
        produced — see conveyor.js tick / pipeline.js chain layer). */
     if (p.kind === 'chain' && routingPlan && routingPlan.chains) {
       p.box = 'product';
+      // (multi-bay) the producing BAY rides the event (additive fromDock): the crate leaves THAT bay's ship
+      // tile and carries fromDockId so the conveyor never feeds it back into the bay that made it
+      const dChains = routingPlan.dockChains || {};
+      const fromDockRec = (p.fromDock && dChains[p.fromDock]) ? dChains[p.fromDock] : null;
       const upAid = (p.from && routingPlan.chains[p.from]) ? p.from
         : Object.keys(routingPlan.chains).filter(a => (routingPlan.chains[a].next || []).indexOf(p.agentId) >= 0).sort()[0];
-      const from = upAid ? routingPlan.chains[upAid] : null;
+      const from = fromDockRec || (upAid ? routingPlan.chains[upAid] : null);
       if (upAid) p.fromAgentId = upAid;
+      if (fromDockRec) p.fromDockId = String(p.fromDock);
       if (from && from.tile) { convey.enqueueAt(from.tile.x, from.tile.y, p); return; }
       dockArrival(p); return;                                       // no drawn lane between them — land it at the dock
     }
     let t = null;
     if (p.kind !== 'directive') {
       t = (p.agentId && routingPlan && typeof Pipeline !== 'undefined' && Pipeline.sourceFor)
-        ? Pipeline.sourceFor(routingPlan, p.agentId)
+        ? Pipeline.sourceFor(routingPlan, p.agentId, p.dockId || undefined)   // the door that leads to THIS bay
         : intakeTile();
     }
     if (t) convey.enqueueAt(t.x, t.y, p);
@@ -8740,7 +8792,8 @@ const World = (() => {
     const docks = (routingPlan && routingPlan.dockBays) || [];
     // ADDRESSED work flashes ONLY its own agent's dock — never another agent's (that's a wrong-agent
     // reaction, the exact confusion this lane kills). Only UNADDRESSED work falls back to the first dock.
-    const dock = aid ? docks.find(d => d.agentId === aid) : docks[0];
+    // (multi-bay) the crate names its bay: flash THAT one, never the agent's other bay
+    const dock = aid ? ((p.dockId && docks.find(d => d.propId === p.dockId && d.agentId === aid)) || docks.find(d => d.agentId === aid)) : docks[0];
     if (!dock) return;                                             // no (matching) bay → nothing to show (today's behavior)
     dockFlashes.set(dock.propId, fnow);
     const body = bodyForAgent(aid);
@@ -8770,12 +8823,16 @@ const World = (() => {
   // a belt tile to ship an outbound box from — beside the PRODUCING agent's own bay, not always the hero's.
   // The hero ships from its desk (byte-identical); a crew/summoned agent ships from a belt tile beside ITS
   // body; an unknown agent falls back to the hero desk. (WIRING_AUDIT P3: kill the single-hero-desk assumption.)
-  function outboundBeltTile(aid) {
+  function outboundBeltTile(aid, dockId) {
     // 1) the PRODUCING agent's own BAY hookup — finished work leaves from the dock, riding the bay→OUTBOX
     //    lane exactly like a ▸ TEST crate (2026-07-05 fix: the old desk-first order meant a hero with a
     //    belted BAY never shipped a riding crate, because no belt runs to the desk by design).
+    //    (multi-bay) from the bay the run was AT when one is known, else the agent's home dock.
     if (aid && routingPlan && routingPlan.bays) {
-      const b = routingPlan.bays.find(x => x.agentId === aid);
+      const home = routingPlan.entryDock ? routingPlan.entryDock[aid] : null;
+      const b = (dockId && routingPlan.bays.find(x => x.agentId === aid && x.propId === dockId))
+        || (home && routingPlan.bays.find(x => x.agentId === aid && x.propId === home))
+        || routingPlan.bays.find(x => x.agentId === aid);
       const cand = b ? ((b.tiles && b.tiles.length) ? b.tiles : (b.tile ? [b.tile] : [])) : [];
       // a dock can touch several lanes (inbound + outbound): prefer the hookup whose ONWARD flow ships
       // to an OUTBOX — probe from the tile past it, since the hookup itself reads as the bay
@@ -8853,9 +8910,9 @@ const World = (() => {
     const w = (typeof Conveyor !== 'undefined' && Conveyor.weightForUsd) ? Conveyor.weightForUsd(runUsdRecon.get((p && p.runId) || '')) : 0;
     return { outbound: true, box: 'product', weight: w, workitemId: (p && p.workitemId) || '' };
   }
-  function emitProductCrate(aid, spec) {
+  function emitProductCrate(aid, spec, dockId) {
     if (!convey) return;
-    const t = outboundBeltTile(aid);
+    const t = outboundBeltTile(aid, dockId);
     if (t) convey.enqueueAt(t.x, t.y, spec);
   }
   function shipProductCrate(p) {
@@ -8875,27 +8932,35 @@ const World = (() => {
     // crate mid-weight regardless of spend. Conveyor.weightForUsd maps reconciled usd -> 0..1; a run with
     // no reconciled cost ships weight 0 (the back-compat light look), never an estimate.
     const spec = productCrateSpec(p);
-    const ch = (cAid && routingPlan && routingPlan.chains) ? routingPlan.chains[cAid] : null;
+    // (multi-bay) the bay THIS run was at: its oldest placement entry. A run at a terminal bay consumes its
+    // entry too, so quill's next run at bay A never inherits bay C's slot.
+    const work = dockWorkPeek(cAid);
+    const runDock = work && work.dockId ? work.dockId : null;
+    const dch = (runDock && routingPlan && routingPlan.dockChains) ? routingPlan.dockChains[runDock] : null;
+    const ch = dch || ((cAid && routingPlan && routingPlan.chains) ? routingPlan.chains[cAid] : null);
+    const hasNext = !!(ch && ch.next && ch.next.length);
     // consume THIS run's placement entry (oldest first) — never cancel a sibling run's held crate
-    if (ch && ch.next && ch.next.length && dockLineTake(cAid)) {
+    if (hasNext && lineOfWork(dockLineTake(cAid))) {
       const q = deferredShip.get(cAid) || [];
       const entry = {};
       entry.t = setTimeout(() => {
         const l = deferredShip.get(cAid);
         if (l) { const i = l.indexOf(entry); if (i >= 0) l.splice(i, 1); if (!l.length) deferredShip.delete(cAid); }
-        emitProductCrate(cAid, spec);
+        emitProductCrate(cAid, spec, runDock);
       }, HANDOFF_GRACE_MS);
       q.push(entry);
       deferredShip.set(cAid, q);
       return;
     }
-    emitProductCrate(cAid, spec);
+    if (!hasNext && runDock) dockLineTake(cAid);   // a terminal BAY's run consumes its entry too (multi-bay)
+    emitProductCrate(cAid, spec, runDock);
   }
   // an unproductive run produced no deliverable — ride a red-hot SLAG crate off the PRODUCING agent's bay
   // carrying its post-mortem one-liner, so the failed outcome is visible leaving the line.
   function enqueueSlag(diag, aid) {
     if (!convey) return;
-    const t = outboundBeltTile(aid);
+    const w = dockWorkPeek(aid);
+    const t = outboundBeltTile(aid, w && w.dockId ? w.dockId : null);
     const clean = s => String(s || '').replace(/\bspend\b/ig, 'run resources').replace(/\bdollars?\b/ig, 'limits');
     if (t) convey.enqueueAt(t.x, t.y, { outbound: true, box: 'slag', postmortem: (diag && (clean(diag.title) + ' - ' + clean(diag.fix))) || 'unproductive run' });
   }
@@ -8955,8 +9020,14 @@ const World = (() => {
       sweepAgentMaps(); return;
     }
     const want = new Map();
+    // ONE BODY PER AGENT, AT ITS HOME DOCK (multi-bay, 2026-09-22): a multi-dock agent stands at its entry dock
+    // (the plan's entryDock) — it used to be "the last bay wins"; its other bays never pull the body over.
+    const homeOf = aid => (routingPlan.entryDock && routingPlan.entryDock[aid]) || null;
     for (const bay of routingPlan.bays) {
       if (agent && bay.agentId === agent.id) continue;                 // the hero already represents its own bay
+      const h = homeOf(bay.agentId);
+      if (h && routingPlan.bays.some(x => x.propId === h)) { if (bay.propId !== h) continue; }   // stand at HOME
+      else if (want.has(bay.agentId)) continue;                        // no hooked home: the first bay
       const p = geo.props && geo.props.find(pp => pp.id === bay.propId);
       if (!p) continue;
       // foot IN FRONT of the bay (south approach, PropAnchor side-fallback) — never inside the bay's own
@@ -9213,6 +9284,8 @@ const World = (() => {
   // is a BAY prop's bound agent actively working (so the bay lights up)?
   function bayLit(p, now) {
     if (!p.agentId) return false;
+    // (multi-bay) an agent crewing several bays lights the bay its CURRENT work is at — never all of them
+    if (multiDock(p.agentId)) { const d = activeDock.get(p.agentId) || (routingPlan.entryDock && routingPlan.entryDock[p.agentId]); if (d && d !== p.id) return false; }
     if (agent && p.agentId === agent.id) return !!agent.working;
     const b = crew.find(x => x.agentId === p.agentId);
     return !!(b && !crewIsAwaiting(b) && b.workUntil > now);

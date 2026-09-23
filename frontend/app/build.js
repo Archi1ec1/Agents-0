@@ -2100,17 +2100,21 @@ const Build = (() => {
     const bays = (comp && comp.bays) || [];
     const chains = (plan && plan.chains) || {};
     const names = id => String(nameOf(id) || id);
+    // PER DOCK (multi-bay, 2026-09-22): a step is a BAY — the writer's two bays are two steps with their own
+    // onward route. A plan without the dock layer keeps the agent reading.
+    const dch = (plan && plan.dockChains) || null, aod = (plan && plan.agentOfDock) || {}, rd = (plan && plan.reachDock) || null;
+    const recOf = b => b.agentId ? (dch ? dch[b.propId] : chains[b.agentId]) : null;
     const steps = bays.map(b => {
-      const ch = b.agentId && chains[b.agentId];
-      const destinations = ch ? (ch.next || []).map(names) : [];
+      const ch = recOf(b);
+      const destinations = ch ? (ch.next || []).map(n => names(dch ? (aod[n] || n) : n)) : [];
       if (ch && ch.outbox) destinations.push('Results outbox');
       if (ch && ch.deadEnd) destinations.push('Disconnected end — connect a destination');
       return { propId: b.propId, label: b.role || (b.agentId ? names(b.agentId) : 'Unassigned step'),
         agent: b.agentId ? names(b.agentId) : 'Choose an agent',
-        receives: b.agentId && plan && plan.reach && plan.reach[b.agentId] ? 'Receives incoming work' : '',
+        receives: b.agentId && plan && (rd ? rd[b.propId] : (plan.reach && plan.reach[b.agentId])) ? 'Receives incoming work' : '',
         sends: destinations.length ? destinations.join(' / ') : 'No confirmed onward route' };
     });
-    const exits = bays.filter(b => b.agentId && chains[b.agentId] && chains[b.agentId].outbox).length;
+    const exits = bays.filter(b => { const ch = recOf(b); return !!(ch && ch.outbox); }).length;
     return { steps,
       start: comp && comp.intakes.length ? 'Inbox — configure what starts this workflow below' : 'No inbox on this line',
       result: exits ? 'Connected to a results outbox' : 'No confirmed route to an outbox',
@@ -2122,8 +2126,14 @@ const Build = (() => {
      upstream dock's chain edge (plan.chains[..].next), null = unknowable (unbound dock / no compiled plan /
      a lone dock off the belt graph). Read from the SAME compiled plan the sidecar routes by — never guessed
      from geometry. reach wins when both hold: a dock intakes feed directly is an entry stage first. */
-  function stepPositionOf(agentId) {
+  function stepPositionOf(agentId, dockId) {
     if (!agentId || !valPlan) return null;
+    // (multi-bay) a named BAY answers for itself: the writer's first bay is 'entry', its second is 'chain'
+    if (dockId && valPlan.dockChains && valPlan.agentOfDock && valPlan.agentOfDock[dockId] === agentId) {
+      if (valPlan.reachDock && valPlan.reachDock[dockId]) return 'entry';
+      for (const d in valPlan.dockChains) if (((valPlan.dockChains[d] || {}).next || []).indexOf(dockId) >= 0) return 'chain';
+      return null;
+    }
     if (valPlan.reach && valPlan.reach[agentId]) return 'entry';
     const chains = valPlan.chains || {};
     for (const a in chains) { const nx = (chains[a] && chains[a].next) || []; if (nx.indexOf(agentId) >= 0) return 'chain'; }
@@ -2281,7 +2291,8 @@ const Build = (() => {
       if (p) drawPropSelection(p, t, 'rgba(255,211,74,' + (0.55 + 0.35 * Math.sin(now / 260)).toFixed(2) + ')');
     }
     if (!wfPaused || !valPlan || !cacheGeo) return;
-    const ch = valPlan.chains && valPlan.chains[wfPaused.agentId];
+    // (multi-bay) the marker names the BAY the paused hop ran at — its own ship tile, never the agent's other bay
+    const ch = (wfPaused.dockId && valPlan.dockChains && valPlan.dockChains[wfPaused.dockId]) || (valPlan.chains && valPlan.chains[wfPaused.agentId]);
     if (!ch || !ch.tile) return;
     const o = cacheGeo.origin || { tx: 0, ty: 0 }, x = (ch.tile.x + o.tx) * t, y = (ch.tile.y + o.ty) * t;
     const k = 0.5 + 0.5 * Math.sin(now / 220);
@@ -5062,9 +5073,12 @@ const Build = (() => {
     // never a window. A beltless dock has no chain record and gains no line.
     let t2 = null, ch = null;
     if (isBay && bound && valPlan && valPlan.chains) {
-      ch = valPlan.chains[p.agentId];
+      // PER BAY (multi-bay): the writer's first bay hands off to the editor, its second ships out
+      const dRec = valPlan.dockChains && valPlan.dockChains[p.id];
+      ch = dRec || valPlan.chains[p.agentId];
+      const nx = dRec ? (dRec.next || []).map(d => (valPlan.agentOfDock && valPlan.agentOfDock[d]) || d) : ((ch && ch.next) || []);
       t2 = !ch ? null
-        : (ch.next && ch.next.length) ? '▸ HANDS OFF TO ' + ch.next.map(agentLabelFor).join(' + ')
+        : (nx.length) ? '▸ HANDS OFF TO ' + nx.map(agentLabelFor).join(' + ')
         : ch.outbox ? '▸ SHIPS TO OUTBOX'
         : ch.deadEnd ? '▸ OUTPUT DEAD-ENDS' : null;
     }
@@ -5508,9 +5522,11 @@ const Build = (() => {
         assign = '<div class="pc-assign ok">▸ AGENT ' + esc(agentLabel(placed.agentId)) + '</div>';
         // the dock→dock line the canvas tag used to carry — the card is the ONE hover voice now
         // (one-voice law), so the chain fact rides here, from the same compiled valPlan.chains.
-        const ch = valPlan && valPlan.chains && valPlan.chains[placed.agentId];
+        const dRec = valPlan && valPlan.dockChains && valPlan.dockChains[placed.id];   // PER BAY (multi-bay)
+        const ch = dRec || (valPlan && valPlan.chains && valPlan.chains[placed.agentId]);
+        const nx = dRec ? (dRec.next || []).map(d => (valPlan.agentOfDock && valPlan.agentOfDock[d]) || d) : ((ch && ch.next) || []);
         const t2 = !ch ? null
-          : (ch.next && ch.next.length) ? '▸ HANDS OFF TO ' + ch.next.map(agentLabelFor).join(' + ')
+          : (nx.length) ? '▸ HANDS OFF TO ' + nx.map(agentLabelFor).join(' + ')
           : ch.outbox ? '▸ SHIPS TO OUTBOX'
           : ch.deadEnd ? '▸ OUTPUT DEAD-ENDS' : null;
         if (t2) assign += '<div class="pc-assign' + ((ch.next && ch.next.length) || ch.outbox ? ' ok' : '') + '">' + esc(t2) + '</div>';
@@ -5719,22 +5735,31 @@ const Build = (() => {
      fires), never a guess from prop adjacency. The ROUTINES rows use it to say "runs the <NAME> line from
      <dock> (N docks)" for a routine whose record carries runsLine — the line itself is looked up live, so a
      floor edit that drops the dock honestly returns null and the row falls back to "runs as". */
-  function lineOfAgentInfo(agentId) {
+  /* (multi-bay, 2026-09-22) the walk is by DOCK: `order` lists the agent crewing each dock in run order (an agent
+     crewing two bays appears twice), `dockOrder` the bays themselves, and `index` is the position of the named
+     dock (a routine's job.dockId), else of the agent's ENTRY dock. */
+  function lineOfAgentInfo(agentId, dockId) {
     try {
       const st = station || (opts && typeof opts.getStation === 'function' ? opts.getStation() : null);
       if (!st || !agentId || typeof Pipeline === 'undefined' || !Pipeline.lineComponents) return null;
       const geo = st.projectGeometry();
       const plan = Pipeline.compileRoutingPlan(geo);
-      const comp = (Pipeline.lineComponents(geo) || []).find(c => c.bays.some(b => b.agentId === agentId));
+      const L = Pipeline.dockLayer ? Pipeline.dockLayer(plan) : null;
+      const want = (dockId && L && L.agentOfDock[dockId] === agentId) ? dockId : (L && L.entryDock[agentId]) || null;
+      const comp = (Pipeline.lineComponents(geo) || []).find(c => c.bays.some(b => b.agentId === agentId && (!want || b.propId === want)))
+        || (Pipeline.lineComponents(geo) || []).find(c => c.bays.some(b => b.agentId === agentId));
       if (!comp) return null;
       let name = null;
       for (const iid of comp.intakes) { const ip = st.propById(iid); if (ip && ip.label) { name = ip.label; break; } }
-      const ids = comp.bays.filter(b => b.agentId).map(b => b.agentId), seen = {}, order = [];
-      const q = ids.filter(a => plan && plan.reach && plan.reach[a]);
-      const chains = (plan && plan.chains) || {};
-      while (q.length) { const a = q.shift(); if (seen[a] || ids.indexOf(a) < 0) continue; seen[a] = true; order.push(a); for (const n of ((chains[a] && chains[a].next) || [])) q.push(n); }
-      for (const a of ids) if (!seen[a]) { seen[a] = true; order.push(a); }
-      return { lineId: comp.key, name, docks: ids.length, index: order.indexOf(agentId), order };
+      const bound = comp.bays.filter(b => b.agentId), pids = bound.map(b => b.propId), seen = {}, dockOrder = [];
+      const reach = (L && L.reachDock) || {}, chains = (L && L.dockChains) || {};
+      const q = pids.filter(d => reach[d]);
+      while (q.length) { const d = q.shift(); if (seen[d] || pids.indexOf(d) < 0) continue; seen[d] = true; dockOrder.push(d); for (const n of ((chains[d] && chains[d].next) || [])) q.push(n); }
+      for (const d of pids) if (!seen[d]) { seen[d] = true; dockOrder.push(d); }
+      const agentOf = {}; for (const b of bound) agentOf[b.propId] = b.agentId;
+      const order = dockOrder.map(d => agentOf[d]);
+      const at = want && dockOrder.indexOf(want) >= 0 ? dockOrder.indexOf(want) : order.indexOf(agentId);
+      return { lineId: comp.key, name, docks: bound.length, index: at, order, dockOrder };
     } catch (e) { return null; }
   }
   // Optional authored skins arrive after the UI scripts. Refresh only the art

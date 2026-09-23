@@ -167,7 +167,7 @@
     function runsLine(j) {
       const who = esc(agentLabel(j.agentId || 'agent'));
       if (j.runsLine !== true) return 'runs as ' + who;
-      const info = (typeof Build !== 'undefined' && Build.lineOfAgentInfo) ? Build.lineOfAgentInfo(j.agentId) : null;
+      const info = (typeof Build !== 'undefined' && Build.lineOfAgentInfo) ? Build.lineOfAgentInfo(j.agentId, j.dockId) : null;   // (multi-bay) the bay it FIRES AT
       if (!info) return 'runs as ' + who;
       return 'runs the <b>' + esc((info.name || 'unnamed').toUpperCase()) + '</b> line from ' + who + ' (' + info.docks + ' dock' + (info.docks === 1 ? '' : 's') + ')';
     }
