@@ -33,14 +33,20 @@
    • FAN-OUT / JOINER lines are refused honestly mid-walk: the step test carries ONE crate at a time, and a
      parallel branch set cannot pause hop by hop without inventing an order the floor does not have.
 
+   • DOCK-KEYED (multi-bay agents, 2026-09-22). One agent may crew several bays, so a stage is a DOCK: startAt
+     may name a dockId OR an agentId (an agentId reads its entry dock on this line), the walk and the visited set
+     key on docks, every hop records its dockId, and a pause edge may be "<fromDock>><toDock>" — the old
+     "<fromAgent>><toAgent>" form is still honoured. A plan seam set without the dock readings (stepDock/peekDock)
+     runs the agent-keyed walk exactly as before.
+
    PURE + INJECTED (sidecar determinism law): no require of index.js, no ambient clock, no ids of its own.
-     runDock({ agentId, entry, text, streamId, sessionId, signal, edited, lineId }) -> { text, usd, tools, runId, error }
-     plan  { get, step, peek, entryDock, lineOf, stageBrief, loopGateAfter, lineLimits, shipsToOutbox }
+     runDock({ agentId, dockId?, entry, text, streamId, sessionId, signal, edited, lineId }) -> { text, usd, tools, runId, error }
+     plan  { get, step, peek, stepDock?, peekDock?, dockRef?, entryDock, lineOf, stageBrief, loopGateAfter, lineLimits, shipsToOutbox }
      store { load() -> array|null, save(array) }   poolCap() -> $|null   daySpend { spentToday, note }
      getTag(text)   now()   newId()   label(agentId) -> display name|null */
 'use strict';
 const Verdict = require('./verdict.js');
-const { effectiveLimits, loopDecision, preHopRefusal, hopTurn, lineRefusalNote } = require('./chain.js');
+const { effectiveLimits, loopDecision, preHopRefusal, hopTurn, lineRefusalNote, asNode, nodeKey } = require('./chain.js');
 const { note: failNote } = require('../failopen.js');
 
 const KEEP = 10;                // sessions kept on disk (active + most recent finished)
@@ -70,7 +76,13 @@ function normPause(p) {
   return out;
 }
 const edgeKey = (from, next) => String(from) + '>' + ((next && next.kind === 'agent') ? next.agentId : 'outbox');
-function pausesOn(rule, key) { return rule === 'every' ? true : rule === 'none' ? false : (Array.isArray(rule) && rule.indexOf(key) >= 0); }
+// the DOCK form of an edge (multi-bay): "<fromDock>><toDock|outbox>"; null when either end has no dock
+const dockEdgeKey = (fromDock, next) => (fromDock && (!next || next.kind !== 'agent' || next.dockId)) ? String(fromDock) + '>' + ((next && next.kind === 'agent') ? next.dockId : 'outbox') : null;
+function pausesOn(rule, key, alt) {
+  if (rule === 'every') return true;
+  if (rule === 'none') return false;
+  return Array.isArray(rule) && (rule.indexOf(key) >= 0 || (alt != null && rule.indexOf(alt) >= 0));
+}
 
 function makeStepTest(o) {
   o = o || {};
@@ -147,7 +159,8 @@ function makeStepTest(o) {
       sessions.splice(i, 1);
     }
   }
-  const passFor = (s, agentId) => 1 + s.hops.filter(h => h.agentId === agentId && !h.rerun).length;
+  // passes are counted per DOCK when the hop has one (writer@A and writer@C are two stages, not two passes)
+  const passFor = (s, agentId, dockId) => 1 + s.hops.filter(h => (dockId ? h.dockId === dockId : h.agentId === agentId) && !h.rerun).length;
 
   /* resolveNext(s, editedText, advance) — what the last dock's output meets NEXT on the current plan. PREVIEW
      (advance=false) reads chainPeek and moves nothing; CONTINUE (advance=true) reads chainStep, the same
@@ -155,31 +168,34 @@ function makeStepTest(o) {
      preHopRefusal for the guards. An owner edit is what the routing reads (a FILTER/verdict gate judges the text
      that is really handed on) and is handed on verbatim — the loop annotation it was shown is already in it. */
   function resolveNext(s, editedText, advance) {
-    const W = s._w, cur = W.cur, raw = W.out || '';
+    const W = s._w, cur = W.cur, curDock = W.curDock || null, raw = W.out || '';
     const basis = editedText != null ? editedText : raw;
     const ctx = { tag: getTag(basis), verdict: getVerdict(basis), lineId: s.lineId, fromTile: null, via: null };
-    const step = call(advance ? plan.step : plan.peek, cur, ctx);
+    const dockFn = advance ? plan.stepDock : plan.peekDock;
+    const step = (curDock && typeof dockFn === 'function') ? call(dockFn, curDock, ctx) : call(advance ? plan.step : plan.peek, cur, ctx);
     if (step && step.branches) return { next: { kind: 'end', reason: FANOUT }, text: raw, halt: FANOUT };
     if (step && step.join) return { next: { kind: 'end', reason: JOINER }, text: raw, halt: JOINER };
     let target = null, text = raw, again = false, loopKey = null, n = 0, exhausted = false, looping = W.looping;
     if (step && step.loop) {
       loopKey = step.loop; n = W.iter[step.loop] || 0;
       const d = loopDecision(step, ctx, n, W.visited, raw);
-      target = d.target; text = d.text; again = d.again; exhausted = d.exhausted; looping = d.again;
-    } else if (step && step.agentId) target = step.agentId;
+      target = asNode(d.target); text = d.text; again = d.again; exhausted = d.exhausted; looping = d.again;
+    } else if (step && (step.dockId || step.agentId)) target = asNode(step);
     if (!target) {
-      if (call(plan.shipsToOutbox, cur)) return { next: { kind: 'outbox' }, text };
-      const why = lineRefusalNote(plan.lineOf, cur, s.lineId)
+      if (curDock ? call(plan.shipsToOutbox, cur, curDock) : call(plan.shipsToOutbox, cur)) return { next: { kind: 'outbox' }, text };
+      const why = lineRefusalNote(plan.lineOf, cur, s.lineId, curDock)
         || (call(plan.get) ? 'the belt from ' + cur + ' does not reach the OUTBOX — the line ends at this bay' : 'no work line is armed any more — the line ends at this bay');
       return { next: { kind: 'end', reason: why }, text, end: why };
     }
     const loopHop = !!looping;
     const lim = limitsNow(s);
-    const refusal = preHopRefusal({ visited: W.visited, target, loopHop, hop: W.hop + 1, loopHops: W.loopHops + (loopHop ? 1 : 0),
+    const targetKey = nodeKey(target);
+    const refusal = preHopRefusal({ visited: W.visited, target: target.agentId, targetKey, loopHop, hop: W.hop + 1, loopHops: W.loopHops + (loopHop ? 1 : 0),
       lim, spent: s._spent || 0, dayLedger: daySpend, lineId: s.lineId, text: editedText != null ? editedText : text, cur });
-    const next = { kind: 'agent', agentId: target, back: !!again };
+    const next = { kind: 'agent', agentId: target.agentId, back: !!again };
+    if (target.dockId) next.dockId = target.dockId;   // additive: WHICH bay the crate goes to (multi-bay)
     if (refusal) next.blocked = refusal;   // additive: continuing here will stop, and this is why
-    return { next, text, target, again, loopKey, n, exhausted, looping, loopHop, refusal };
+    return { next, text, target: target.agentId, targetDock: target.dockId || null, targetKey, again, loopKey, n, exhausted, looping, loopHop, refusal };
   }
 
   /* advanceFrom(s, editedText) — CONTINUE: resolve the real next step, stamp the last hop's handoff, commit the
@@ -200,17 +216,19 @@ function makeStepTest(o) {
     const W = s._w;
     last.sent = edited ? editedText : nx.text; last.edited = edited;
     W.hop += 1;
-    if (nx.loopHop) W.loopHops += 1; else W.visited[nx.target] = true;
+    if (nx.loopHop) W.loopHops += 1; else W.visited[nx.targetKey] = true;
     if (nx.again) W.iter[nx.loopKey] = nx.n + 1;
     W.looping = nx.looping;
     if (nx.exhausted) W.loopExhausted = true;
-    return { agentId: nx.target, input: last.sent, entry: false, from: W.cur, hop: W.hop, edited, rerun: false };
+    const job = { agentId: nx.target, input: last.sent, entry: false, from: W.cur, hop: W.hop, edited, rerun: false };
+    if (nx.targetDock) { job.dockId = nx.targetDock; job.fromDock = W.curDock || null; }
+    return job;
   }
 
   /* kick(s, job) — start running one dock in the background; the route answers at once and the panel polls. */
   function kick(s, job) {
     s.state = 'running'; s.paused = null; s.error = null; s.final = null; s.ended = null;
-    s.running = { agentId: job.agentId, since: now() };
+    s.running = job.dockId ? { agentId: job.agentId, dockId: job.dockId, since: now() } : { agentId: job.agentId, since: now() };
     s._pending = { job: clone(job), before: clone(s._w) };
     touch(s); persist();
     const p = drive(s).catch(e => {
@@ -231,15 +249,17 @@ function makeStepTest(o) {
 
       const W = s._w;
       const turn = job.entry ? String(job.input) : hopTurn({ handoffText: o.handoffPrompt, stageBrief: plan.stageBrief, loopGateAfter: plan.loopGateAfter,
-        originalText: W.original, from: job.from, upstream: job.input, hop: job.hop, target: job.agentId, lineId: s.lineId });
-      const pass = job.rerun && job.pass ? job.pass : passFor(s, job.agentId);
+        originalText: W.original, from: job.from, upstream: job.input, hop: job.hop, target: job.agentId, targetDock: job.dockId || null, lineId: s.lineId });
+      const pass = job.rerun && job.pass ? job.pass : passFor(s, job.agentId, job.dockId || null);
       const ac = new AbortController();
       const rec = { abort: ac, superseded: false, halted: false, agentId: job.agentId, startedAt: now() };
       inflight.set(s.id, rec);
       const t0 = now();
       let r = null;
       try {
-        r = await runDock({ agentId: job.agentId, entry: !!job.entry, text: turn, streamId: s.streamId, sessionId: s.id, signal: ac.signal, edited: !!job.edited, lineId: s.lineId });
+        const dr = { agentId: job.agentId, entry: !!job.entry, text: turn, streamId: s.streamId, sessionId: s.id, signal: ac.signal, edited: !!job.edited, lineId: s.lineId };
+        if (job.dockId) dr.dockId = job.dockId;
+        r = await runDock(dr);
       } catch (e) { r = { error: (e && e.message) || String(e || 'run failed') }; }
       if (inflight.get(s.id) === rec) inflight.delete(s.id);
       r = r || {};
@@ -250,7 +270,7 @@ function makeStepTest(o) {
       const stoppedBy = rec.halted ? 'E-STOP was pressed — the test stopped mid-run' : (s._stop ? 'stopped by you mid-run' : null);
       const err = stoppedBy || (r.error ? job.agentId + ' failed: ' + r.error : (!output.trim() ? job.agentId + ' returned nothing' : null));
       s.hops.push({
-        i: s.hops.length, agentId: job.agentId, agentLabel: call(label, job.agentId) || null, pass,
+        i: s.hops.length, agentId: job.agentId, dockId: job.dockId || null, agentLabel: call(label, job.agentId) || null, pass,
         input: String(job.input), output, usd: round6(usd), ms: Math.max(0, (typeof r.ms === 'number' && isFinite(r.ms)) ? r.ms : now() - t0),
         tools: (typeof r.tools === 'number' && r.tools > 0) ? r.tools : 0, runId: r.runId || null, streamId: s.streamId,
         verdict: getVerdict(output), rerun: !!job.rerun, edited: false, sent: null, error: err,
@@ -263,7 +283,7 @@ function makeStepTest(o) {
         return;
       }
       if (err) { finish(s, 'failed', err); return; }
-      W.cur = job.agentId; W.out = output;
+      W.cur = job.agentId; W.curDock = job.dockId || null; W.out = output;
 
       const nx = resolveNext(s, null, false);
       const afterHop = s.hops.length - 1;
@@ -273,14 +293,14 @@ function makeStepTest(o) {
         s.preview = { afterHop, text: nx.text, next: nx.next };
         finish(s, 'done', null); return;
       }
-      if (nx.halt || pausesOn(s.pause, edgeKey(job.agentId, nx.next))) {
+      if (nx.halt || pausesOn(s.pause, edgeKey(job.agentId, nx.next), dockEdgeKey(job.dockId, nx.next))) {
         s.state = 'paused'; s.running = null;
         s.paused = { afterHop, text: nx.text, next: nx.next };
         touch(s); persist(); return;
       }
       const job2 = advanceFrom(s, null);
       if (!job2) return;
-      s.running = { agentId: job2.agentId, since: now() };
+      s.running = job2.dockId ? { agentId: job2.agentId, dockId: job2.dockId, since: now() } : { agentId: job2.agentId, since: now() };
       s._pending = { job: clone(job2), before: clone(s._w) };
       touch(s); persist();
     }
@@ -312,30 +332,43 @@ function makeStepTest(o) {
     if (!((Array.isArray(p.lines) ? p.lines : []).some(l => l && String(l.lineId) === line))) {
       return refuse('no armed work line is named "' + line + '" — the floor changed since this panel was drawn; re-open the line and try again.');
     }
-    let agentId = null, entry = true;
+    let agentId = null, dockId = null, entry = true;
     if (b.startAt != null && String(b.startAt).trim()) {
-      agentId = String(b.startAt).trim();
-      if (String(call(plan.lineOf, agentId) || '') !== line) return refuse(agentId + ' does not crew a dock on line "' + line + '".');
-      entry = !!(p.reach && p.reach[agentId]);   // a dock the line's INBOX feeds runs as stage one; any later dock is handed the text
+      /* startAt names a DOCK or an AGENT (multi-bay). dockRef resolves either: a dockId is that bay; an agentId
+         is its entry dock — or its oldest dock ON this line when the entry dock sits elsewhere. */
+      const ref = String(b.startAt).trim();
+      const node = typeof plan.dockRef === 'function' ? asNode(call(plan.dockRef, ref, line)) : null;
+      agentId = node && node.agentId ? node.agentId : ref;
+      dockId = node && node.dockId ? node.dockId : null;
+      const onLine = dockId ? call(plan.lineOf, agentId, dockId) : call(plan.lineOf, agentId);
+      if (String(onLine || '') !== line) return refuse((dockId && dockId === ref ? 'bay ' + ref : agentId) + ' does not crew a dock on line "' + line + '".');
+      // a dock the line's INBOX feeds runs as stage one; any later dock is handed the text
+      entry = dockId && p.reachDock ? !!p.reachDock[dockId] : !!(p.reach && p.reach[agentId]);
     } else {
-      agentId = call(plan.entryDock, line, text);
+      const node = asNode(call(plan.entryDock, line, text));
+      agentId = node ? node.agentId : null; dockId = node ? node.dockId : null;
       if (!agentId) return refuse('line "' + line + '" routes this job to no dock — crew a bay on that line (bind an agent to it) and try again.');
     }
     const pre = call(preflight, agentId);
     if (pre) return refuse(String(pre));
     const id = String(newId());
-    const upstream = entry ? null : (Object.keys(p.chains || {}).sort().find(k => ((p.chains[k] || {}).next || []).indexOf(agentId) >= 0) || 'the upstream stage');
+    // the stage that hands this dock its input: by DOCK when the plan has the dock layer (never the other bay of a
+    // multi-dock agent's own name by accident), else the agent-keyed chains
+    const upDock = (!entry && dockId && p.dockChains) ? Object.keys(p.dockChains).sort().find(k => ((p.dockChains[k] || {}).next || []).indexOf(dockId) >= 0) : null;
+    const upstream = entry ? null : ((upDock && p.agentOfDock && p.agentOfDock[upDock]) || Object.keys(p.chains || {}).sort().find(k => ((p.chains[k] || {}).next || []).indexOf(agentId) >= 0) || 'the upstream stage');
     const original = entry ? text : ((typeof b.original === 'string' && b.original.trim()) ? b.original.slice(0, TEXT_MAX) : null);
     const s = {
-      id, lineId: line, state: 'running', createdAt: now(), updatedAt: now(), input: text, single, pause, startAt: agentId,
+      id, lineId: line, state: 'running', createdAt: now(), updatedAt: now(), input: text, single, pause, startAt: agentId, startDock: dockId || null,
       hops: [], running: null, paused: null, preview: null, final: null, ended: null,
       totalUsd: 0, droppedUsd: 0, limits: null, error: null, streamId: 'steptest-' + id,
       _spent: 0,
-      _w: { cur: null, out: null, visited: { [agentId]: true }, iter: {}, looping: false, loopHops: 0, hop: entry ? 0 : 1, original, loopExhausted: false }
+      _w: { cur: null, curDock: null, out: null, visited: { [dockId || agentId]: true }, iter: {}, looping: false, loopHops: 0, hop: entry ? 0 : 1, original, loopExhausted: false }
     };
     limitsNow(s);
     sessions.push(s); trim();
-    kick(s, { agentId, input: text, entry, from: upstream, hop: entry ? 0 : 1, edited: false, rerun: false });
+    const job0 = { agentId, input: text, entry, from: upstream, hop: entry ? 0 : 1, edited: false, rerun: false };
+    if (dockId) job0.dockId = dockId;
+    kick(s, job0);
     return answer(s);
   }
 

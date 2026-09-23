@@ -27,7 +27,7 @@ const runOnceBlock = sliceBetween(src, /async function runOnce\(/, /\/\/ ---- co
 
 A.ok(/function placeCronWorkitem\s*\(/.test(src), 'shared cron workitem helper exists');
 A.ok(/placeWorkitem:\s*placeCronWorkitem/.test(driverBlock), 'scheduled cron uses the shared workitem helper');
-A.ok(/placeCronWorkitem\s*\(\s*job\.agentId\s*,\s*job\.prompt\s*,\s*runId\s*\)/.test(runNowBlock), 'manual Run Now places a cron workitem');
+A.ok(/placeCronWorkitem\s*\(\s*job\.agentId\s*,\s*job\.prompt\s*,\s*runId\s*(,\s*job\.dockId\s*)?\)/.test(runNowBlock), 'manual Run Now places a cron workitem');
 A.ok(/broadcast:\s*true/.test(runNowBlock), 'manual Run Now opts into SSE lifecycle broadcast');
 A.ok(/manual[\s/]+Run Now[\s/]+opts into broadcast/i.test(runOnceBlock), 'runOnce comment documents manual cron broadcast reason');
 

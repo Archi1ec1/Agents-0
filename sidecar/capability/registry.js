@@ -284,7 +284,14 @@
       // image_generate is: it writes into the workspace. It rides the station's existing TTS ladder (the keyed
       // neural chain, then the free keyless Edge floor), so it needs no studio-specific credential — but it
       // does reach the network on the keyed legs. (see tools/builtin/voice.js)
-      { capId: 'studio', tool: 'voice_generate', scope: 'write', requiresConsent: true, network: true }
+      { capId: 'studio', tool: 'voice_generate', scope: 'write', requiresConsent: true, network: true },
+      // DAVINCI RESOLVE (the edit bay, tools/builtin/resolve.js — a native port of the Hermes plugin). The timeline
+      // FILE writes an FCPXML into the workspace (consent, like every studio write) and works with free Resolve.
+      // resolve_status only reads. resolve_control drives a running Resolve Studio through its scripting API —
+      // imports, timelines, markers, renders — so it is execute + consent. All local: no network.
+      { capId: 'studio', tool: 'resolve_timeline_file', scope: 'write', requiresConsent: true, network: false },
+      { capId: 'studio', tool: 'resolve_status', scope: 'read', requiresConsent: false, network: false },
+      { capId: 'studio', tool: 'resolve_control', scope: 'execute', requiresConsent: true, network: false }
     ],
     // JUKEBOX (Spotify): querying playback/library is consent-free (read); CONTROLLING playback is an outward
     // action on the user's account/device, so it is execute + consent-gated. The OAuth session (PKCE, no secret)

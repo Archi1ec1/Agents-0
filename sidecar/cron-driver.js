@@ -419,7 +419,7 @@
       try { emit('cron.fire', { jobId: job.id, runId: runId, scheduledFor: scheduledFor }); } catch (_) {}
       // ride the routine's instruction onto the CONVEYOR as a box bound for this agent — only NOW (past the
       // capability gate, lease taken), so a crate appears on the floor iff a run is genuinely firing.
-      try { placeWorkitem(job.agentId, assembledPrompt, runId); } catch (e) { failNote('cron.placeWorkitem', e); }
+      try { placeWorkitem(job.agentId, assembledPrompt, runId, job.dockId || undefined); } catch (e) { failNote('cron.placeWorkitem', e); }
 
       // in-process emit sink: assemble the reply from agent.token deltas (the SAME contract harness.js/hub.js use —
       // there is no agent.message event), capture the end reason / error / transient flag off the RAW payload
@@ -454,7 +454,8 @@
       // runs use (hub.js), so a routine's agent is briefed exactly like a routed message's agent. Null-safe:
       // no seam / no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
-      if (stageBriefFor) { try { dockBrief = stageBriefFor(job.agentId); } catch (_) { dockBrief = null; } }
+      // (multi-bay) a routine that FIRES AT one of several bays is briefed with THAT bay's brief (job.dockId)
+      if (stageBriefFor) { try { dockBrief = job.dockId ? stageBriefFor(job.agentId, job.dockId) : stageBriefFor(job.agentId); } catch (_) { dockBrief = null; } }
       const system = ((ident.system && String(ident.system)) || personaOf(job.agentId, job))
         + (dockBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(dockBrief).slice(0, 2000) : '');
 
@@ -502,7 +503,7 @@
           recipeId: (job.meta && job.meta.recipeId) || undefined,
           // per-bay capability isolation (B5): a bay-docked agent's routine runs with ITS room's objects,
           // never the default office — same contract as a routed channel message. undefined -> office.
-          station: (resolveStation ? resolveStation(job.agentId) : null) || undefined
+          station: (resolveStation ? (job.dockId ? resolveStation(job.agentId, job.dockId) : resolveStation(job.agentId)) : null) || undefined
         });
       } catch (e) { p = Promise.reject(e); }
       Promise.resolve(p).then(
@@ -515,7 +516,7 @@
           // hops ride the ROUTINE'S OWN stream so its session reads as one multi-stage job, and each hop renews
           // the lease — a line that outran the heartbeat would be declared a zombie and re-fired mid-work.
           Promise.resolve(advanceChain({
-            agentId: job.agentId, text: state.buf, originalText: String(job.prompt || ''),
+            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: String(job.prompt || ''),
             signal: ac.signal, streamId: 'cron-' + runId, key: key, model: model, provider: provider,
             // the entry run's reconciled spend: the chain's $ ceiling covers the WHOLE line, stage one
             // included (2026-08-10 audit — the entry run rode outside its own line's cap on every path).
