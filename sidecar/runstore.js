@@ -30,7 +30,18 @@
    work a run PRODUCES can be filed under the thing the Commander was working ON. Same additive-provenance shape as
    `recipeId`: old rows lack it and default ''. The caller records it ONLY when the root is still a standing path
    grant — an unblessed/revoked root files nothing, because the station must never assert a project relationship the
-   grant layer can't prove. */
+   grant layer can't prove.
+
+   INTERRUPTED RUNS (ADDITIVE, 2026-09-22): a run whose process died mid-flight never reached run end, so it left no
+   row at all. The host's boot scan of the run journal now records ONE row for it with reason 'interrupted' (the
+   ORIGINAL run's execution terminal — true forever) plus a `recoveryStatus` (recoverable | needs_review | resolved |
+   recovering | continued | forensic), `continuedRunId`/`continuedReason` once a continuation settled, `spendUnknown`
+   (the ledger books spend at run end, so an interrupted run's spend is NOT known — never read its usd:0 as "free"),
+   and a plain `error` line. A continuation run's own row carries `recoveryOf` = the interrupted runId.
+   Representation: the log stays append-only. When the recovery status changes the host appends a newer row for the
+   SAME runId, and every read (list/all/count/latest) collapses a chain whose first row is 'interrupted' into ONE row:
+   the newest row's content at the first row's position and ts. So history never shows a stale "recoverable" beside
+   the continuation's outcome; the interrupted run and its continuation stay two linked rows (two real runs). */
 'use strict';
 (function (root, factory) {
   const api = factory();
@@ -43,7 +54,9 @@
 
   // Sets, not object literals: `({a:1})['constructor']` is truthy, so an object-literal allowlist
   // silently admits every Object.prototype key — and these keys come off persisted/model-supplied data.
-  const REASONS = new Set(['done', 'max_iters', 'budget', 'cancelled', 'error', 'empty', 'refusal', 'clarifying']);
+  const REASONS = new Set(['done', 'max_iters', 'budget', 'cancelled', 'error', 'empty', 'refusal', 'clarifying', 'interrupted']);
+  const RECOVERY_STATUSES = new Set(['recoverable', 'needs_review', 'resolved', 'recovering', 'continued', 'forensic']);
+  const ERROR_MAX = 240;
   const DEFAULT_LIMIT = 200;        // a sane cap so list() never returns an unbounded history
   const TITLE_MAX = 120;
   const UNKNOWN_MODEL = '(unknown)';
@@ -213,6 +226,25 @@
     catch (e) { rows = []; }
     if (rows.length > ramMax) rows = rows.slice(rows.length - ramMax);   // bound even a large bounded-boot load
 
+    // Interrupted-run chains: runId -> { first, latest } for every runId whose FIRST retained row is 'interrupted';
+    // `updates` holds the later rows of those chains, which are never served on their own (see header).
+    let chains = new Map();
+    let updates = new Set();
+    function track(r) {
+      const id = r && r.runId;
+      if (!id) return;
+      const c = chains.get(id);
+      if (c) { c.latest = r; updates.add(r); return; }
+      if (r.reason === 'interrupted') chains.set(id, { first: r, latest: r });
+    }
+    function reindex() { chains = new Map(); updates = new Set(); for (const r of rows) track(r); }
+    reindex();
+    function view(r) {
+      const c = r.runId ? chains.get(r.runId) : null;
+      if (!c || c.first !== r || c.latest === r) return Object.assign({}, r);
+      return Object.assign({}, c.latest, { ts: r.ts });
+    }
+
     function record(e) {
       e = e || {};
       const entry = {
@@ -248,11 +280,22 @@
         startedAt: nonnegative(e.startedAt), endedAt: nonnegative(e.endedAt), durationMs: nonnegative(e.durationMs),
         ts: num(e.ts) || clock.now()
       };
+      // Interrupted-run/recovery provenance (additive; set only when present so ordinary rows keep their shape).
+      if (RECOVERY_STATUSES.has(e.recoveryStatus)) entry.recoveryStatus = e.recoveryStatus;
+      const continuedRunId = str(e.continuedRunId).slice(0, 100);
+      if (continuedRunId) entry.continuedRunId = continuedRunId;
+      if (REASONS.has(e.continuedReason)) entry.continuedReason = e.continuedReason;
+      const recoveryOf = str(e.recoveryOf).slice(0, 100);
+      if (recoveryOf) entry.recoveryOf = recoveryOf;
+      if (e.spendUnknown === true) entry.spendUnknown = true;
+      const error = str(e.error).replace(/\s+/g, ' ').trim().slice(0, ERROR_MAX);
+      if (error) entry.error = error;
       rows.push(entry);
       // bound the RAM mirror: splice the oldest off past the ceiling. Disk keeps the full append-only log; only
       // this in-process array is capped so a long-lived process doesn't leak. The cap is well above every served
       // query horizon (≤1000), so no list()/insights query is ever short-changed within the window it reads.
-      if (rows.length > ramMax) rows.splice(0, rows.length - ramMax);
+      if (rows.length > ramMax) { rows.splice(0, rows.length - ramMax); reindex(); }
+      else track(entry);
       try { io.append(entry); } catch (e) { failNote('runstore.append', e); }
       return entry;
     }
@@ -267,23 +310,35 @@
       const out = [];
       let afterCursor = !beforeRunId;
       for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {   // newest-first
-        const row = rows[i];
+        const raw = rows[i];
+        if (updates.has(raw)) continue;   // served through its chain's first row, never on its own
         if (!afterCursor) {
-          if (row.runId === beforeRunId) afterCursor = true;
+          if (raw.runId === beforeRunId) afterCursor = true;
           continue;
         }
+        const row = view(raw);
         if (want != null && row.agentId !== want) continue;
         if (since > 0 && num(row.ts) <= since) continue;
         if (through > 0 && num(row.ts) > through) continue;
-        out.push(Object.assign({}, row));
+        out.push(row);
       }
       return out;
     }
 
+    // The one served row for a runId (collapsed chain view), or null.
+    function latest(runId) {
+      const id = str(runId);
+      if (!id) return null;
+      const c = chains.get(id);
+      if (c) return view(c.first);
+      for (let i = rows.length - 1; i >= 0; i--) if (rows[i].runId === id) return Object.assign({}, rows[i]);
+      return null;
+    }
+
     return {
-      record, list,
-      all() { return rows.map(r => Object.assign({}, r)); },
-      count() { return rows.length; }
+      record, list, latest,
+      all() { return rows.filter(r => !updates.has(r)).map(view); },
+      count() { return rows.length - updates.size; }
     };
   }
 
