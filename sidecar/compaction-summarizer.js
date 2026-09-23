@@ -4,7 +4,7 @@
    `.slice(0, 16000)` — so on a fold that is routinely 300-500k chars the model saw only the OLDEST ~16k and the
    rest of the run's memory was silently discarded. The loop's contract was fine; the INPUT was truncated.
 
-   CHUNKED FOLD. The slice is rendered to text exactly as before, partitioned into chunks of `chunkChars`
+   CHUNKED FOLD. The slice is rendered to text (see PIXELS ARE NOT TEXT below), partitioned into chunks of `chunkChars`
    (default 48000, env STARNET_COMPACT_CHUNK_CHARS), never splitting an assistant tool_call from its tool
    results; chunk 1 is folded against the caller's prevSummary and chunk N against the running summary from
    N-1 (the existing H5.2 MERGE prompt) — SEQUENTIALLY, never in parallel, so each call sees the summary so
@@ -31,10 +31,22 @@
    unrecognized upstream reason ('error') and a stream that never sent `done` are NOT treated as cut — same as
    the loop — so a working provider never loses its folds to a guess. Spend is still reported on a rejection
    (usd/tokens/unpricedUsage): the calls were made and billed. */
+/* PIXELS ARE NOT TEXT (Step 2 wave 2, audit F4). Messages used to be rendered with JSON.stringify, so a screenshot's
+   `image_url` part went to the summarizer as its base64 data URL — one 300k-char capture per turn, and a single
+   turn-group bigger than a chunk was never split, so three screenshots became six paid summarizer calls carrying
+   900,000 base64 chars that no model can read as text (audit probe 09-22). Rendering is now TEXT: text parts
+   verbatim, an image part as "[image ...]" (alt/caption, or the tool that captured it), an inline data URL or a
+   long raw base64 run as a sized marker (compaction-fidelity.js contentText), and an assistant's tool calls as
+   "→ called name(args)" with bounded args so the summary knows what was done. A turn-group still bigger than a
+   chunk is BOUNDED (head + tail of each oversized message, with an explicit marker) instead of forcing its own
+   chunk, and what that cut is added to `truncatedChars` — a lossy fold says so in agent.compact. */
 'use strict';
+
+const fidelity = require('./compaction-fidelity.js');
 
 const DEFAULT_CHUNK_CHARS = 48000;
 const DEFAULT_MAX_CHUNKS = 12;
+const TOOL_ARGS_MAX = 1000;
 
 /* REFUSAL HEURISTIC — deliberately conservative, because a false positive throws away a paid, correct fold.
    ALL of: the text is short (<= REFUSAL_MAX chars); after stripping leading quote/emphasis marks it OPENS with a
@@ -62,32 +74,75 @@ function envInt(name, dflt) {
   return (Number.isFinite(v) && v > 0) ? v : dflt;
 }
 
-// one message -> one text line, byte-identical to the pre-extraction rendering
-function renderMessage(mm) {
-  const c = (mm && typeof mm.content === 'string') ? mm.content : JSON.stringify((mm && mm.content) || '');
+// one message -> one text line: role + its text (see PIXELS ARE NOT TEXT). String content without binary is unchanged.
+function renderMessage(mm, imageLabel) {
+  let c = fidelity.contentText(mm && mm.content, imageLabel);
+  if (mm && Array.isArray(mm.tool_calls)) {
+    for (const t of mm.tool_calls) {
+      const fn = (t && t.function) || {};
+      let args = fidelity.scrubBinary(String(fn.arguments == null ? '' : fn.arguments));
+      if (args.length > TOOL_ARGS_MAX) args = args.slice(0, TOOL_ARGS_MAX) + '…[' + (args.length - TOOL_ARGS_MAX) + ' more chars]';
+      c += (c ? '\n' : '') + '→ called ' + (fn.name || 'tool') + '(' + args + ')';
+    }
+  }
   return (mm && mm.role ? mm.role : 'msg') + ': ' + c;
+}
+
+// head + tail of an oversized text with an explicit marker naming what was cut; { text, cut }
+function bound(text, max) {
+  if (text.length <= max) return { text, cut: 0 };
+  const probe = '\n[… ' + text.length + ' chars of an oversized message omitted from the summarizer input …]\n';
+  const room = Math.max(0, max - probe.length);
+  const head = Math.floor(room * 0.6), tail = room - head;
+  const cut = text.length - head - tail;
+  return { text: text.slice(0, head) + '\n[… ' + cut + ' chars of an oversized message omitted from the summarizer input …]\n' + (tail > 0 ? text.slice(text.length - tail) : ''), cut };
+}
+// a turn-group over the chunk size: small messages keep their full text, the big ones share what is left equally
+function fitGroup(lines, max) {
+  let remaining = Math.max(0, max - (lines.length - 1));
+  const order = lines.map((_, i) => i).sort((a, b) => lines[a].length - lines[b].length);
+  const alloc = new Array(lines.length);
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k];
+    alloc[i] = Math.min(lines[i].length, Math.floor(remaining / (order.length - k)));
+    remaining -= alloc[i];
+  }
+  let cut = 0;
+  const out = lines.map((l, i) => { const b = bound(l, Math.max(400, alloc[i])); cut += b.cut; return b.text; });
+  let text = out.join('\n');
+  if (text.length > max) { const b = bound(text, max); cut += b.cut; text = b.text; }
+  return { text, cut };
 }
 
 /* Partition messages into chunks by rendered size. A chunk boundary may only fall at a "turn-group start":
    never directly before a role:'tool' message (its owning assistant tool_call would be on the other side).
-   A single turn-group larger than chunkChars becomes its own oversized chunk (never split). Pure. */
-function partition(messages, chunkChars) {
-  const lines = messages.map(renderMessage);
-  const groups = [];   // [{ text, chars }]
+   A single turn-group larger than chunkChars is bounded to one chunk (fitGroup) instead of being sent whole.
+   Pure. partitionDetailed also reports the characters the bounding cut. */
+function partitionDetailed(messages, chunkChars) {
+  const max = Math.max(1000, Math.floor(Number(chunkChars) || DEFAULT_CHUNK_CHARS));
+  const groups = [];   // arrays of rendered lines
+  let callNames = '';
   for (let i = 0; i < messages.length; i++) {
-    const isTool = messages[i] && messages[i].role === 'tool';
-    if (isTool && groups.length) { const g = groups[groups.length - 1]; g.text += '\n' + lines[i]; g.chars = g.text.length; }
-    else groups.push({ text: lines[i], chars: lines[i].length });
+    const m = messages[i];
+    if (m && m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) callNames = m.tool_calls.map(t => (t && t.function && t.function.name) || 'tool').join(', ');
+    const label = (m && m.role === 'user' && fidelity.isScreenCapture(m) && callNames) ? 'screen capture from ' + callNames : '';
+    const line = renderMessage(m, label);
+    if (m && m.role === 'tool' && groups.length) groups[groups.length - 1].push(line);
+    else groups.push([line]);
   }
+  let truncatedChars = 0;
   const chunks = [];
   let cur = '';
-  for (const g of groups) {
-    if (cur && cur.length + 1 + g.chars > chunkChars) { chunks.push(cur); cur = ''; }
-    cur = cur ? cur + '\n' + g.text : g.text;
+  for (const lines of groups) {
+    let text = lines.join('\n');
+    if (text.length > max) { const f = fitGroup(lines, max); text = f.text; truncatedChars += f.cut; }
+    if (cur && cur.length + 1 + text.length > max) { chunks.push(cur); cur = ''; }
+    cur = cur ? cur + '\n' + text : text;
   }
   if (cur) chunks.push(cur);
-  return chunks;
+  return { chunks, truncatedChars };
 }
+function partition(messages, chunkChars) { return partitionDetailed(messages, chunkChars).chunks; }
 
 /* makeSummarizer(deps) -> summarize(older, prevSummary, live)
    deps: streamFn(req) async-iterable of provider events (text/usage) — or provider(live)+... (see below)
@@ -124,13 +179,14 @@ function makeSummarizer(deps) {
     // TRANSCRIPT DRAIN (before the fold) — strict; a throw here leaves the history unfolded (loop contract).
     transcriptDrain(older);
 
-    let chunks = partition(older, chunkChars);
-    let truncatedChars = 0;
+    const parted = partitionDetailed(older, chunkChars);
+    let chunks = parted.chunks;
+    let truncatedChars = parted.truncatedChars;   // characters an oversized turn-group lost to bounding
     if (chunks.length > maxChunks) {
       const keep = chunks.slice(0, maxChunks - 1);
       const rest = chunks.slice(maxChunks - 1);
       const joined = rest.join('\n');
-      truncatedChars = Math.max(0, joined.length - chunkChars);
+      truncatedChars += Math.max(0, joined.length - chunkChars);
       keep.push(joined.slice(0, chunkChars) + '\n[truncated ' + truncatedChars + ' chars]');
       chunks = keep;
     }
@@ -195,4 +251,4 @@ function makeSummarizer(deps) {
   return summarize;
 }
 
-module.exports = { makeSummarizer, partition, renderMessage, looksLikeRefusal, rejectReason, DEFAULT_CHUNK_CHARS, DEFAULT_MAX_CHUNKS };
+module.exports = { makeSummarizer, partition, partitionDetailed, renderMessage, looksLikeRefusal, rejectReason, DEFAULT_CHUNK_CHARS, DEFAULT_MAX_CHUNKS };
