@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "6474701319ccbceb197c16c98bc35133203a6ebb",
+    "sourceCommit": "55a99fbe3e0a70d0ba4f625dc6a9a73ad5823903",
     "pathSetSha256": "624df0d0e5b2511e74e175d045f26a8fd916195933e6750693b47d486e2e7b31",
     "files": [
       {
@@ -333,8 +333,8 @@
       },
       {
         "path": "frontend/app/classicons.js",
-        "bytes": 139475,
-        "sha256": "ce58f4d3ab93bf8a9ac7c2ef6669d27bab786e3047e17850c49c82c448f863e4"
+        "bytes": 139583,
+        "sha256": "9cfbe3fbba407f35721c0d79d970d33db6d36219d86cb13706d49d4f2e703e24"
       },
       {
         "path": "frontend/app/classify.js",
