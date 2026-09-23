@@ -64,7 +64,8 @@ const docExtract = require('./tools/builtin/docextract.js').makeDocExtract({ inf
 const imageWire = require('./tools/builtin/imagewire.js').makeImageWire({});
 const { makeNotebookTools, reviseRecord } = require('./tools/builtin/notebook.js');
 const { makeRecallTool } = require('./tools/builtin/recall.js');
-const { makeToolSearchTool } = require('./tools/builtin/toolsearch.js');   // tool.search: reach a granted-but-unadvertised (deferred) tool
+const { makeToolSearchTool, planConnectorDeferral, connectorIndexLine } = require('./tools/builtin/toolsearch.js');   // tool.search: reach a granted-but-unadvertised (deferred) tool
+const { unavailableTools, unavailableLine } = require('./capability/effective-toolsets.js');   // certain-unavailability signals -> deferred with the fix named
 const CodeMode = require('./tools/builtin/code.js');                      // code.run: bounded JS composition over this run's read-only grants
 const { makeCodeTools } = CodeMode;
 const { makeSkillTools } = require('./tools/builtin/skills.js');    // H4: the agent's reusable skill library tools
@@ -660,6 +661,14 @@ const MCP_CALL_TIMEOUT_MS = 120000;   // default connector call/handshake budget
 // num() passes a parsed value through (including 0 -> UNGOVERNED via budget.js capOf, e.g. SKYNET_BUDGET_PER_DAY=0
 // disables the day pool); only an empty/missing/negative/non-numeric value falls back to the default.
 const num = (v, d) => { if (v == null || String(v).trim() === '') return d; const n = Number(v); return (typeof n === 'number' && !isNaN(n) && n >= 0) ? n : d; };
+// CONNECTOR SCHEMA FOOTPRINT (w2, 2026-09-22): once a run's MCP connector tools pass EITHER threshold, the largest
+// servers stop riding every request — deferred (still granted, found through tool.search) with a one-line server
+// index in the prompt instead (tools/builtin/toolsearch.js planConnectorDeferral). Evidence for the defaults: the
+// CAP_REGISTRY browser deferral, measured at the wire, stood in for ~8.5KB of schemas and was worth doing; one big
+// server (40 tools) is several times that, while a handful of small tools stays well under both lines.
+// SKYNET_CONNECTOR_DEFER_BYTES / _TOOLS override; 0 switches that axis off (both 0 = never defer a connector).
+const CONNECTOR_DEFER = { bytes: num(ENV('CONNECTOR_DEFER_BYTES'), 8192), tools: num(ENV('CONNECTOR_DEFER_TOOLS'), 12) };
+let lastToolFootprintLog = '';   // de-dupes the [tools] footprint log line to changes, not every run
 // Users may opt into any cap in SETTINGS → BUDGET (0/blank = no cap); environment variables
 // still override for locked-down deploys. Unmetered subscription runs remain ungoverned.
 const BUDGET_CAPS = {
@@ -16590,6 +16599,66 @@ async function runOnceCore(o) {
   }
   // Harness controls never grant reach into the world. They exist only while an attended Task Brief is active.
   for (const name of internalBriefTools) if (resolved.tools.indexOf(name) < 0) resolved.tools.push(name);
+  /* TOOL FOOTPRINT (w2, 2026-09-22) — two more ADVERTISING decisions on the rail CAP_REGISTRY's `deferred: true`
+     already rides. Neither touches `resolved.tools` (the grant every gate consults): a deferred tool stays granted,
+     dispatchable and findable through tool.search, and the loop reveals it by WIRE name on the next turn.
+     (1) CONNECTORS: every MCP server's full schema list rode every request. Past CONNECTOR_DEFER the largest
+         servers are deferred and the prompt carries a one-line server index instead; below it the request is
+         byte-identical to before.
+     (2) CERTAIN UNAVAILABILITY: a granted tool the host can PROVE fails this run (no media route, no voice route,
+         Spotify not connected, no PTY runtime, not a routine run) is deferred, and tool.search + its declaration
+         carry why and how to enable it. An unknown signal leaves the tool advertised.
+     KILL SWITCH: SKYNET_TOOL_SEARCH=0 advertises everything, these included, exactly as before deferral. */
+  const deferralOff = String((process.env && process.env.SKYNET_TOOL_SEARCH) || '').trim() === '0';
+  let connectorDeferral = { deferred: [], servers: [] };
+  let unavailable = { byTool: {}, bySignal: {} };
+  {
+    const granted = new Set(resolved.tools);
+    // A deferred name must be a GRANTED one. enforceRunAuthority narrows `tools` but not `deferred`, and a name
+    // left behind would be offered by tool.search (and named in the prompt) and then refused by the gate.
+    const deferred = (resolved.deferred || []).filter(n => granted.has(n));
+    if (isTask && !deferralOff) {
+      try {
+        const entries = [];
+        for (const name of resolved.tools) {
+          const t = registry.get(name);
+          const cap = String((t && t.capability) || '');
+          if (cap.indexOf('mcp:') !== 0) continue;
+          entries.push({ name, server: cap.slice(4), bytes: JSON.stringify(registry.wireFormat([t])[0]).length });
+        }
+        if (entries.length) connectorDeferral = planConnectorDeferral(entries, { maxBytes: CONNECTOR_DEFER.bytes, maxTools: CONNECTOR_DEFER.tools });
+      } catch (e) { failNote('tools.connector-deferral', e); connectorDeferral = { deferred: [], servers: [] }; }
+      // Spotify's only certain fact is "no token at all" — getAccessToken() then throws before any network. A token
+      // that might refresh is NOT certain, and an unreadable store is unknown (undefined), so both stay advertised.
+      let spotifyConnected;
+      if (resolved.tools.some(n => /^spotify_/.test(n))) {
+        try { const st = await spotifyStore.load(); spotifyConnected = !!(st && (st.refreshToken || st.accessToken)); }
+        catch (e) { failNote('tools.availability.spotify', e); spotifyConnected = undefined; }
+      }
+      let voiceRoute;
+      try { voiceRoute = (media && typeof media.voiceRouteAvailable === 'function') ? media.voiceRouteAvailable() : undefined; }
+      catch (e) { failNote('tools.availability.voice', e); voiceRoute = undefined; }
+      unavailable = unavailableTools({
+        mediaRoute: !!(studioRoute && studioRoute.ok),             // the SAME route makeImageTools was built from above
+        voiceRoute,
+        spotifyConnected,
+        ptyRuntime: terminalSessions.available(),                  // node-pty loads once at boot
+        // the SAME predicate capCtx.cronJobId is minted from below; routine.notepad refuses without it
+        routineRun: !!(surface === 'autonomous' && trigger === 'schedule' && String(o.cronJobId || ''))
+      }, granted);
+    }
+    const extra = connectorDeferral.deferred.concat(Object.keys(unavailable.byTool));
+    resolved.deferred = deferred.concat(extra.filter(n => granted.has(n) && deferred.indexOf(n) < 0));
+    resolved.unavailable = unavailable.byTool;
+    const footprintSig = JSON.stringify([connectorDeferral.servers, unavailable.bySignal]);
+    if (footprintSig !== lastToolFootprintLog) {
+      lastToolFootprintLog = footprintSig;
+      if (connectorDeferral.servers.length || Object.keys(unavailable.bySignal).length) {
+        console.log('[tools] footprint: connectors deferred ' + (connectorDeferral.servers.map(s => s.id + '(' + s.count + ' tools, ' + s.bytes + 'B)').join(', ') || 'none')
+          + ' | unavailable ' + (Object.keys(unavailable.bySignal).map(k => k + '->' + unavailable.bySignal[k].join('/')).join(', ') || 'none'));
+      }
+    }
+  }
   // QUEST V2 §A — the PROP-contract sweep, wired at the one seam where the sidecar PROVES a capability is live:
   // resolveTools just projected the placed office (+ live connector tools) into this run's real grants. A prop
   // quest keyed to a live objectType / capId family / tool name completes here — there is no other server-side
@@ -16962,12 +17031,19 @@ async function runOnceCore(o) {
   // search loses the capability outright, and a weak one may claim it did the work anyway. SKYNET_TOOL_SEARCH=0
   // advertises everything, exactly as before this feature — the escape hatch for an operator whose model is
   // one of those, and the A/B control for measuring whether deferral (rather than the model) caused a miss.
-  const deferralOff = String((process.env && process.env.SKYNET_TOOL_SEARCH) || '').trim() === '0';
+  // (`deferralOff` is read once, above at TOOL FOOTPRINT, so the connector/availability deferrals obey it too.)
   const directDomainWithheld = (name) => !!directDomainTask && (/^team\./.test(name) || /^browser\./.test(name) || name === 'web_search' || name === 'web_request');
   const deferredNames = new Set((deferralOff ? [] : (resolved.deferred || [])).filter(n => !directDomainWithheld(n)));
   const coreNames = resolved.tools.filter(n => !deferredNames.has(n) && !directDomainWithheld(n));
   const toolDefs = isTask ? registry.wireFormat(registry.list(new Set(coreNames))) : [];
   const deferredToolDefs = isTask ? registry.wireFormat(registry.list(deferredNames)) : [];
+  // A tool deferred because it CANNOT work this run keeps that fact on its own declaration, so a model that
+  // reveals it reads why and how to enable it before calling. wireFormat returns fresh objects: the registry's
+  // description is untouched, and only a revealed declaration ever reaches the wire.
+  for (const d of deferredToolDefs) {
+    const u = resolved.unavailable && Object.prototype.hasOwnProperty.call(resolved.unavailable, d.function.name) ? resolved.unavailable[d.function.name] : null;
+    if (u) d.function.description = 'NOT USABLE RIGHT NOW: ' + u.why + '. To enable: ' + u.enable + '. ' + String(d.function.description || '');
+  }
   const fromWire = new Map();
   // BOTH lists go through the SAME dotted -> underscored translation. A deferred def that skipped this would
   // be advertised as `browser.screenshot` the moment it was revealed, which 400s the request outright (the
@@ -17374,6 +17450,11 @@ async function runOnceCore(o) {
 
   // tell the model, plainly + capability-driven, that it has real tools right now (so it never claims it can't act)
   const wireNames = toolDefs.map(d => d.function.name);
+  // The deferred names the PARTIAL list may call usable: every deferred declaration except a connector server's
+  // (indexed per server instead) and a tool deferred as unavailable (named with its fix instead). With neither,
+  // this is exactly deferredToolDefs' names, so the prompt is byte-identical to before.
+  const footprintWire = new Set(connectorDeferral.deferred.concat(Object.keys(unavailable.byTool)).map(n => String(n).replace(/\./g, '_')));
+  const listedDeferred = deferredToolDefs.map(d => d.function.name).filter(n => !footprintWire.has(n));
   const hasWebTools = wireNames.indexOf('web_search') >= 0 || wireNames.indexOf('web_fetch') >= 0;
   const hasWriteTools = wireNames.indexOf('fs_write') >= 0 || wireNames.indexOf('fs_append') >= 0 ||
     wireNames.indexOf('fs_edit') >= 0 || wireNames.indexOf('fs_patch') >= 0;
@@ -17436,13 +17517,18 @@ async function runOnceCore(o) {
          answer it never measured. A count asks the model to first imagine a capability might exist and then
          go looking; a name list removes that step entirely, which is the actual barrier. ~400 B of names
          against the ~8.5KB of schemas they stand in for, and it rides the CACHED prefix. */
-      + (deferredToolDefs.length
-        ? 'This list is PARTIAL. You have ' + deferredToolDefs.length + ' more granted tools that are not loaded yet. '
-          + 'These exist and you CAN use them: ' + deferredToolDefs.map(d => d.function.name).join(', ') + '. '
+      + (listedDeferred.length
+        ? 'This list is PARTIAL. You have ' + listedDeferred.length + ' more granted tools that are not loaded yet. '
+          + 'These exist and you CAN use them: ' + listedDeferred.join(', ') + '. '
           + 'To use one, call tool_search with the capability you want ("take a screenshot", "read network responses") '
           + 'and it becomes callable immediately. You MUST do that before saying you cannot do something, and you must '
           + 'never report an action as done when you had no tool to perform it. '
         : '')
+      // TOOL FOOTPRINT: a deferred connector server is ONE index entry (not 40 names), and a tool that cannot work
+      // is never listed under "you CAN use them" above. Both are '' when nothing was deferred for those reasons, and
+      // both are stable across runs (connector set / service state), so they ride the cached prefix like the list.
+      + connectorIndexLine(connectorDeferral.servers)
+      + unavailableLine(unavailable.bySignal)
       + taskDoctrineNote
       + (wireNames.indexOf('routine_create') >= 0
         ? 'When the Commander asks for a cron, routine, scheduled/recurring task, reminder, or standing job, use routine_create/routine_list in StarNet ROUTINES; do not use shell_exec, crontab, Windows Task Scheduler, Python scripts, or OS schedulers. '
