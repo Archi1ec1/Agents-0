@@ -615,6 +615,7 @@ test/plan-poster.test.js
 test/chain.test.js
 test/chain.join-loop.test.js
 test/chain.limits.test.js
+test/chain.multibay.test.js
 test/routing.steptest.test.js
 test/refit-card-stack.test.js
 test/refit-flow-polish.test.js
