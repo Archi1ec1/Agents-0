@@ -23,9 +23,104 @@
   'use strict';
 
   const MSG_OVERHEAD = 4; // rough per-message framing tokens
+  // The estimator's text ratio. Exported so the host's window-scaled tool-output caps (tools/registry.js
+  // outputBudgetFor) convert "15% of the window" to characters with the SAME ruler compaction measures with.
+  const CHARS_PER_TOKEN = 4;
 
   function defaultEstimate(text) {
-    return Math.ceil(String(text == null ? '' : text).length / 4);
+    return Math.ceil(String(text == null ? '' : text).length / CHARS_PER_TOKEN);
+  }
+
+  /* IMAGE COST (Step 2 wave 2, Hermes audit 2026-09-22). A multimodal message's content is an ARRAY of parts, and
+     the text estimator stringified it: String([{…},{…}]) is "[object Object],[object Object]", so a 300k-char
+     screenshot counted ~12 tokens against the ~1,500 the provider really bills. Every image part is now charged
+     a realistic cost: from its pixel dimensions when the data carries them (PNG/GIF/WebP/JPEG headers, or explicit
+     width/height on the part), using the resize-then-(w*h)/750 rule vision APIs document (long edge <= 1568,
+     ~1.15 MP ceiling, so ~1,600 tokens at most), else a flat IMAGE_TOKENS_DEFAULT = 1,500 (the reference harness's
+     per-image constant). Text parts keep the text estimator; any other part is measured as its JSON. Pure. */
+  const IMAGE_TOKENS_DEFAULT = 1500;
+  const IMAGE_TOKENS_MIN = 85;               // the smallest image still costs a fixed base on every vision API
+  const IMAGE_MAX_EDGE = 1568;
+  const IMAGE_MAX_PIXELS = 1150000;
+  const IMAGE_PIXELS_PER_TOKEN = 750;
+  const IMAGE_HEAD_B64 = 65536;              // base64 decoded to find dimensions (reaches a JPEG SOF past typical EXIF)
+  const imageTokenCache = (typeof WeakMap === 'function') ? new WeakMap() : null;
+
+  function b64Head(b64) {
+    if (typeof Buffer === 'undefined' || typeof Buffer.from !== 'function') return null;   // browser build: no dims
+    const s = String(b64).slice(0, IMAGE_HEAD_B64);
+    return Buffer.from(s.slice(0, s.length - (s.length % 4)), 'base64');
+  }
+  function u16be(b, i) { return (b[i] << 8) | b[i + 1]; }
+  function u32be(b, i) { return ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3]; }
+  function tag(b, i, s) { for (let k = 0; k < s.length; k++) if (b[i + k] !== s.charCodeAt(k)) return false; return true; }
+  // {w,h} from the leading bytes of PNG / GIF / WebP / JPEG data, or null when the format is unknown or truncated.
+  function imageDims(b) {
+    if (!b || b.length < 10) return null;
+    if (b[0] === 0x89 && tag(b, 1, 'PNG') && b.length >= 24 && tag(b, 12, 'IHDR')) return { w: u32be(b, 16), h: u32be(b, 20) };
+    if (tag(b, 0, 'GIF8')) return { w: b[6] | (b[7] << 8), h: b[8] | (b[9] << 8) };
+    if (tag(b, 0, 'RIFF') && b.length >= 30 && tag(b, 8, 'WEBP')) {
+      if (tag(b, 12, 'VP8 ')) return { w: (b[26] | (b[27] << 8)) & 0x3fff, h: (b[28] | (b[29] << 8)) & 0x3fff };
+      if (tag(b, 12, 'VP8L')) { const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24); return { w: (bits & 0x3fff) + 1, h: ((bits >> 14) & 0x3fff) + 1 }; }
+      if (tag(b, 12, 'VP8X')) return { w: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), h: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) };
+      return null;
+    }
+    if (b[0] === 0xff && b[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] !== 0xff) return null;                        // lost segment alignment: give up, never guess
+        const mk = b[i + 1];
+        if (mk === 0xff) { i++; continue; }                    // fill byte
+        if (mk === 0xd8 || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd7)) { i += 2; continue; }   // standalone markers
+        if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) return { w: u16be(b, i + 7), h: u16be(b, i + 5) };
+        i += 2 + u16be(b, i + 2);
+      }
+    }
+    return null;
+  }
+  function tokensForDims(w, h) {
+    if (!(w > 0 && h > 0)) return IMAGE_TOKENS_DEFAULT;
+    const s = Math.min(1, IMAGE_MAX_EDGE / Math.max(w, h));
+    let sw = w * s, sh = h * s;
+    if (sw * sh > IMAGE_MAX_PIXELS) { const k = Math.sqrt(IMAGE_MAX_PIXELS / (sw * sh)); sw *= k; sh *= k; }
+    return Math.max(IMAGE_TOKENS_MIN, Math.ceil((sw * sh) / IMAGE_PIXELS_PER_TOKEN));
+  }
+  function isImagePart(p) {
+    return !!p && typeof p === 'object' && (p.type === 'image_url' || p.type === 'image' || p.type === 'input_image' || p.image_url != null);
+  }
+  // One image part -> tokens. Explicit width/height win; else a data: URL (OpenAI shape) or a base64 `source`
+  // (Anthropic shape) is sniffed for dimensions; a remote URL or an unreadable header costs the flat default.
+  function imageTokens(part) {
+    if (!isImagePart(part)) return 0;
+    if (imageTokenCache && imageTokenCache.has(part)) return imageTokenCache.get(part);
+    let t = IMAGE_TOKENS_DEFAULT;
+    const w = Number(part.width), h = Number(part.height);
+    if (w > 0 && h > 0) t = tokensForDims(w, h);
+    else {
+      const iu = part.image_url;
+      const url = typeof iu === 'string' ? iu : (iu && typeof iu.url === 'string' ? iu.url : (typeof part.url === 'string' ? part.url : ''));
+      const comma = url.indexOf(',');
+      const b64 = (url.indexOf('data:') === 0 && comma > 0 && /;base64$/i.test(url.slice(0, comma))) ? url.slice(comma + 1)
+        : (part.source && typeof part.source.data === 'string' ? part.source.data : '');
+      const d = b64 ? imageDims(b64Head(b64)) : null;
+      if (d) t = tokensForDims(d.w, d.h);
+    }
+    if (imageTokenCache) imageTokenCache.set(part, t);
+    return t;
+  }
+  // A message's `content` -> tokens: a string through the text estimator (unchanged), a parts array part by part.
+  function estimateContentTokens(content, estimateText) {
+    const est = typeof estimateText === 'function' ? estimateText : defaultEstimate;
+    if (!Array.isArray(content)) return est(content);
+    let t = 0;
+    for (const p of content) {
+      if (p == null) continue;
+      if (isImagePart(p)) t += imageTokens(p);
+      else if (typeof p === 'string') t += est(p);
+      else if (typeof p.text === 'string') t += est(p.text);
+      else t += est(JSON.stringify(p));
+    }
+    return t;
   }
 
   // ---- secret redaction (module-level so it's usable without a context instance) ----
@@ -358,7 +453,8 @@
        ONE per-message rule, used by BOTH estimateMessages and fit — the two had their own inline arithmetic,
        which is how they came to disagree in the first place. */
     function estimateMessage(m) {
-      let t = estimateTokens(m && m.content) + MSG_OVERHEAD;
+      // parts arrays (screenshots, attachments) are costed part by part — see IMAGE COST above
+      let t = estimateContentTokens(m && m.content, estimateTokens) + MSG_OVERHEAD;
       if (m && Array.isArray(m.tool_calls)) {
         for (const c of m.tool_calls) {
           const fn = (c && c.function) || {};
@@ -473,5 +569,5 @@
     return api;
   }
 
-  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS };
+  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens };
 });
