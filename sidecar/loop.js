@@ -16,9 +16,9 @@
    typed error rather than a crash. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./providers/sanitize.js'), require('./providers/errorClass.js'), require('./output-continuation.js'), require('./recovery-policy.js'));
-  else { root.SK = root.SK || {}; root.SK.loop = factory(root.SK.providers && root.SK.providers.sanitize, root.SK.providers && root.SK.providers.errorClass, root.SK.outputContinuation, root.SK.recoveryPolicy); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (sanitize, errorClass, outputContinuation, recoveryPolicy) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./providers/sanitize.js'), require('./providers/errorClass.js'), require('./output-continuation.js'), require('./recovery-policy.js'), require('./loop-breaker.js'));
+  else { root.SK = root.SK || {}; root.SK.loop = factory(root.SK.providers && root.SK.providers.sanitize, root.SK.providers && root.SK.providers.errorClass, root.SK.outputContinuation, root.SK.recoveryPolicy, root.SK.loopBreaker); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (sanitize, errorClass, outputContinuation, recoveryPolicy, loopBreaker) {
   'use strict';
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('./failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
@@ -714,6 +714,21 @@
     const lgFails = new Map();    // signature (name\0args) -> failure count
     const lgWarned = new Set();   // signatures already nudged (the warn fires once)
     let lastDeterministicCheck = '';   // immediately-prior successful check turn; any other tool turn clears it
+    /* NO-PROGRESS LOOP BREAKER (Step 2, 2026-09-22 Hermes audit) — sidecar/loop-breaker.js. Three stuck shapes the
+       guard above cannot see because no two calls are byte-identical: calls to tools that do not exist, one tool
+       failing over and over with varying arguments, and a non-read call returning the identical result turn after
+       turn. Warnings on every surface; hard stops only where nobody is watching:
+         · o.unattended === true is the HOST's declaration that no Commander is watching this run live (index.js
+           derives it from the run surface). Absent/false = interactive = warn-only for (b)/(c), so a caller that
+           does not pass it can never be hard-stopped by them.
+         · unknown-tool strikes (3 turns whose every call named a tool that does not exist) stop on every surface.
+         · o.progressTracked(wireName) — the host's evidence-progress guard already owns those calls (reads,
+           browser, tool.search); the no-progress detector leaves them to it.
+       limits.failureBreaker === false disables all three; an object overrides the thresholds (loop-breaker DEFAULTS).
+       This is loop DETECTION, not a quota: nothing counts spend, turns or calls in aggregate. */
+    const breaker = (loopBreaker && typeof loopBreaker.makeLoopBreaker === 'function')
+      ? loopBreaker.makeLoopBreaker({ unattended: o.unattended === true, limits: limits.failureBreaker, isTracked: (typeof o.progressTracked === 'function') ? o.progressTracked : null })
+      : null;
 
     // CONTINUATION GUARD (default ON): some models (Kimi K3, live-caught 2026-07-17) end a turn by ANNOUNCING
     // the next action ("Reading the full main.js now — then fixing immediately.") with finish_reason 'stop' and
@@ -1909,6 +1924,7 @@
       else if (results.some(r => r && r.ok && !r.isError)) failureRecoveryPending = null;
 
       // (8) LOOP GUARD — break out of a run that keeps making the SAME failing tool call. Warn once, then stop.
+      const lgWarnedNow = new Set();   // wire names nudged this turn (the breaker's same-tool nudge stays quiet for them)
       if (LG_WARN || LG_STOP) {
         const sigOf = {};
         for (const c of calls) sigOf[c.id] = (c.name || '') + '\u0000' + (c.argsRaw || '');
@@ -1920,13 +1936,25 @@
           const nm = sig.split('\u0000')[0] || 'a tool';
           if (LG_STOP && n >= LG_STOP) {
             emit('agent.run.error', { agentId, runId, message: 'loop guard: ' + nm + ' failed ' + n + ' times with identical arguments — stopping a stuck loop', transient: false });
-            return end('error');
+            return end('error', { failureStage: 'tool_loop', failureCode: 'repeated_identical_failure' });
           }
           if (LG_WARN && n === LG_WARN && !lgWarned.has(sig)) {
             lgWarned.add(sig);
+            lgWarnedNow.add(vosKey(nm));
             messages.push({ role: 'system', content: '<loop_guard>You have called ' + nm + ' with the same arguments ' + n + ' times and it keeps failing. Do not repeat the identical call — change the arguments, try another approach, or stop and report the problem.</loop_guard>' });
           }
         }
+      }
+
+      // (9) NO-PROGRESS LOOP BREAKER — unknown tools, varying-argument failure streaks, identical successful polls.
+      // Runs after every result is appended and paired, so a stop leaves a provider-valid transcript behind.
+      if (breaker) {
+        const verdict = breaker.observe(calls, results, { loopGuardWarned: lgWarnedNow });
+        if (verdict.stop) {
+          emit('agent.run.error', { agentId, runId, message: verdict.stop.message, transient: false });
+          return end('error', { failureStage: verdict.stop.failureStage, failureCode: verdict.stop.failureCode });
+        }
+        for (const note of verdict.notes) messages.push({ role: 'system', content: note });
       }
     }
   }

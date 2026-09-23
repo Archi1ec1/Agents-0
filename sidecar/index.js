@@ -84,6 +84,7 @@ const { makeAutonomyLedger } = require('./autonomy-ledger.js');   // NS-0: durab
 const { makeArtifactCollector } = require('./artifacts.js');   // work-visibility: per-run "what did it produce" ledger
 const { makeCompletionEvidence } = require('./completion-evidence.js'); // structured effect proof; never guesses task completion
 const { makeRunExecutionState, toolBytesCapFor } = require('./run-execution-state.js'); // one lifecycle for per-run latches/counters/artifacts
+const { _internals: ProgressGuardInternals } = require('./tool-progress-guard.js');   // trackable(): which calls the evidence-progress guard owns (loop breaker hand-off)
 const { recoverToolResult } = require('./tool-recovery.js'); // bounded retry for host-trusted transient reads only
 const transcriptStoreModule = require('./transcriptstore.js');
 const { makeTranscriptStore } = transcriptStoreModule;
@@ -16881,6 +16882,9 @@ async function runOnceCore(o) {
       } catch (_) { /* a checkpoint failure must never break a run */ }
     }
     let dctx = (ctx && ctx.callId !== c.id) ? Object.assign({}, ctx, { callId: c.id }) : ctx;   // per-call id for shell.exec telemetry
+    // A name no registered tool answers to: the registry's "unknown tool" reply names the closest tools THIS run can
+    // call (advertised + deferred wire names), never an ungranted one (loop-breaker.js counts these as strikes).
+    if (!liveTool) dctx = Object.assign({}, dctx, { toolNames: Array.from(fromWire.keys()) });
     if (postTaintConfirmed) {
       const baseAuthorize = dctx && dctx.authorize;
       dctx = Object.assign({}, dctx, {
@@ -17706,6 +17710,18 @@ async function runOnceCore(o) {
         runJournal.checkpoint(runId, { phase, turn, messages: fresh });
       } : null,
       agentId, runId, model, trigger: trigger,
+      /* LOOP BREAKER (loop-breaker.js). Hard stops for a varying-argument failure streak or an identical successful
+         poll apply only when no Commander is watching. `surface` is 'interactive' ONLY on the watched /api/run COMMS
+         path (and a channel chat that opted into /approvals); every other trigger is UNATTENDED: cron, Run Now and
+         workshop shifts ('schedule'), night shift ('nightshift'), loop jobs ('loop'), channel chats and the /v1 API
+         ('event'), and delegated/spawned workers, overseer reviews and implement builds ('directive' on surface
+         'autonomous'). The same host-minted bit the consent broker uses — never derived from prompt or model text. */
+      unattended: surface !== 'interactive',
+      // the evidence-progress guard (dispatch above) already owns reads/browser/tool.search repeats
+      progressTracked: (wireName) => {
+        const real = fromWire.get(wireName) || allWire.get(wireName) || wireName;
+        return ProgressGuardInternals.trackable({ name: real }, registry.get(real));
+      },
       // rough initial estimate for the error classifier's context-overflow ratio; contextLimit is 0 until the
       // /models catalog warms, which (by design) disables the ratio so a bare 400 is never mislabelled.
       approxTokens: Math.ceil(JSON.stringify(msgs).length / 4), contextLimit: provider.contextLimit(model)
