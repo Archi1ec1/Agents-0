@@ -13,16 +13,18 @@
      parseError -> unknown-tool -> capability gate (ctx.canUse) -> schema-validate ->
      consent gate (tool.requiresConsent && ctx.consent) -> pre-tool hook -> durable dispatch callback ->
      per-tool timeout (+ run-abort grace race) -> run() once.
-   effectUnknown:true marks a non-read tool that timed out or was cancelled without confirming it stopped. */
+   effectUnknown:true marks a non-read tool that timed out or was cancelled without confirming it stopped.
+   ctx.outputMax (number | thunk) is the host's per-result character budget (window-scaled, see outputBudgetFor);
+   absent = OUTPUT_MAX. The tool itself receives the resolved number as ctx.outputMax. */
 'use strict';
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('../../shared/schema.js'), require('./tool.js'));
+    module.exports = factory(require('../../shared/schema.js'), require('./tool.js'), require('../context.js'));
   } else {
     root.SK = root.SK || {}; root.SK.tools = root.SK.tools || {};
-    root.SK.tools.registry = factory(root.SK.schema, root.SK.tools.tool);
+    root.SK.tools.registry = factory(root.SK.schema, root.SK.tools.tool, root.SK.context);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (schema, toolMod) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (schema, toolMod, contextMod) {
   'use strict';
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
@@ -45,6 +47,39 @@
       return (Number.isFinite(n) && n > 0) ? Math.floor(n) : 80000;
     } catch (_) { return 80000; }
   })();
+  /* WINDOW-SCALED BUDGETS (Step 2 wave 2, Hermes audit 2026-09-22). OUTPUT_MAX is a fixed 80,000 characters, and
+     loop.js's per-turn cap a fixed 200,000, whatever the model's window: probed at 29bb21d80, a 500 KB result on a
+     32k-token model left 80,288 characters visible = 63% of the window (three in parallel: 94%), and on an 8k
+     model the same ~20k tokens. The reference harness sizes both from the window: 15% per result, 30% per turn,
+     floors of 8,000 / 16,000 characters. outputBudgetFor(windowTokens) is that rule, in characters via the SAME
+     chars-per-token ratio context.js's estimator uses, and CEILINGED at today's caps so a large window is
+     byte-identical to before. An unknown window (0 / cold catalog) returns today's caps exactly. The host (index.js)
+     passes the per-result figure as ctx.outputMax (a number or a live thunk — a provider fallback can change the
+     window mid-run) and the per-turn figure as loop limits.turnOutputMax. Floors are absolute: on a tiny window
+     (8k tokens) 8,000 characters is ~25% of it — the same trade the reference makes so a result stays usable. */
+  const CHARS_PER_TOKEN = (contextMod && Number(contextMod.CHARS_PER_TOKEN) > 0) ? Number(contextMod.CHARS_PER_TOKEN) : 4;
+  const RESULT_WINDOW_SHARE = 0.15, TURN_WINDOW_SHARE = 0.30;
+  const RESULT_FLOOR_CHARS = 8000, TURN_FLOOR_CHARS = 16000;
+  const TURN_OUTPUT_MAX = 200000;   // loop.js's per-turn default (limits.turnOutputMax) — the per-turn ceiling
+  function outputBudgetFor(windowTokens) {
+    const w = Math.floor(Number(windowTokens) || 0);
+    if (!(w > 0) || !Number.isFinite(w)) return { known: false, windowTokens: 0, resultMax: OUTPUT_MAX, turnMax: TURN_OUTPUT_MAX };
+    const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, Math.floor(x)));
+    return {
+      known: true, windowTokens: w,
+      resultMax: clamp(w * RESULT_WINDOW_SHARE * CHARS_PER_TOKEN, RESULT_FLOOR_CHARS, OUTPUT_MAX),
+      turnMax: clamp(w * TURN_WINDOW_SHARE * CHARS_PER_TOKEN, TURN_FLOOR_CHARS, TURN_OUTPUT_MAX)
+    };
+  }
+  // The host's per-dispatch budget (ctx.outputMax: number or thunk). 0 = none -> the module OUTPUT_MAX, as before.
+  // A figure at or above OUTPUT_MAX IS the ceiling, i.e. the legacy path exactly (a large window changes nothing).
+  function hostOutputCap(ctx) {
+    let v = ctx ? ctx.outputMax : null;
+    if (typeof v === 'function') { try { v = v(); } catch (e) { failNote('tools.registry.outputMax', e); v = 0; } }
+    const n = Math.floor(Number(v));
+    return (Number.isFinite(n) && n > 0 && n < OUTPUT_MAX) ? n : 0;
+  }
+
   /* PARKING (2026-07-27): the middle of an over-cap result used to be DESTROYED. The note told the model to
      "narrow it", which is sound advice for a search but useless for output that was already the answer — a
      600k-line log, a full test run, a big query result. The work was done and paid for, and the part that
@@ -52,18 +87,25 @@
      When the host wires a parker (ctx.parkOutput), the FULL output is written to the agent's workspace first
      and the note points at the file, so nothing is lost and the model can page it back at its own pace.
      No parker wired = the old behavior verbatim (tests, the /api/file helper, any bare registry). */
-  function clampOutput(content, parkedPath) {
-    if (typeof content !== 'string' || content.length <= OUTPUT_MAX) return content;
-    const head = Math.floor(OUTPUT_MAX * 0.7), tail = OUTPUT_MAX - head;
-    const dropped = content.length - head - tail;
+  // cap: a HOST budget (window-scaled). Under one the note is carved OUT of the cap — the figure is a share of the
+  // model's window, so everything the model sees (head + note + tail) fits inside it. Without one (cap 0) the
+  // module OUTPUT_MAX applies with the note ADDITIVE, byte-identical to before this lane.
+  function clampOutput(content, parkedPath, cap) {
+    const hostCap = Number(cap) > 0 ? Math.floor(Number(cap)) : 0;
+    const limit = hostCap || OUTPUT_MAX;
+    if (typeof content !== 'string' || content.length <= limit) return content;
     // The note names a NEXT ACTION. "truncated" alone invites the model to run the identical call again.
-    const note = parkedPath
-      ? '\n\n[... ' + dropped + ' characters elided here by the host output cap. Full size: ' + content.length + ' characters / ' + utf8Bytes(content) + ' UTF-8 bytes. THE FULL OUTPUT WAS SAVED to '
+    const noteFor = (dropped) => parkedPath
+      ? '\n\n[... ' + dropped + ' characters elided here by the host output cap' + (hostCap ? ' (sized to this model\'s context window)' : '') + '. Full size: ' + content.length + ' characters / ' + utf8Bytes(content) + ' UTF-8 bytes. THE FULL OUTPUT WAS SAVED to '
         + parkedPath + ' — read that file (in ranges if it is large) to see the part that is missing, or search '
         + 'it. Do NOT repeat this call to recover it. The end of the output follows ...]\n\n'
-      : '\n\n[... ' + dropped + ' characters removed by the host output cap. Full size: ' + content.length + ' characters / ' + utf8Bytes(content) + ' UTF-8 bytes. Do not repeat this call as-is — '
+      : '\n\n[... ' + dropped + ' characters removed by the host output cap' + (hostCap ? ' (sized to this model\'s context window)' : '') + '. Full size: ' + content.length + ' characters / ' + utf8Bytes(content) + ' UTF-8 bytes. Do not repeat this call as-is — '
         + 'narrow it: filter, page, request a smaller range, or write the full output to a file and read it back '
         + 'in parts. The end of the output follows ...]\n\n';
+    // Carved-in: size the kept text from a first draft of the note, with slack for the dropped count gaining digits.
+    const room = hostCap ? Math.max(0, hostCap - noteFor(content.length - hostCap).length - 8) : OUTPUT_MAX;
+    const head = Math.floor(room * 0.7), tail = room - head;
+    const note = noteFor(content.length - head - tail);
     return content.slice(0, head) + note + content.slice(content.length - tail);
   }
 
@@ -81,25 +123,25 @@
     if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).length;
     return unescape(encodeURIComponent(text)).length;
   }
-  const okResult = (content, summary, control, parkedPath, images, outputChars, outputBytes, mutationReceipt) => ({ ok: true, isError: false, content: clampOutput(content, parkedPath), summary: summary || 'ok', control: control || null, images: Array.isArray(images) && images.length ? images : null, parkedPath: parkedPath || null, outputChars: Number.isFinite(Number(outputChars)) ? Number(outputChars) : (typeof content === 'string' ? content.length : null), outputBytes: Number.isFinite(Number(outputBytes)) ? Number(outputBytes) : (typeof content === 'string' ? utf8Bytes(content) : null), mutationReceipt: mutationReceipt || null, receipt: mutationReceipt || null });
+  const okResult = (content, summary, control, parkedPath, images, outputChars, outputBytes, mutationReceipt, cap) => ({ ok: true, isError: false, content: clampOutput(content, parkedPath, cap), summary: summary || 'ok', control: control || null, images: Array.isArray(images) && images.length ? images : null, parkedPath: parkedPath || null, outputChars: Number.isFinite(Number(outputChars)) ? Number(outputChars) : (typeof content === 'string' ? content.length : null), outputBytes: Number.isFinite(Number(outputBytes)) ? Number(outputBytes) : (typeof content === 'string' ? utf8Bytes(content) : null), mutationReceipt: mutationReceipt || null, receipt: mutationReceipt || null });
   function preconditionFrame(content, precondition) {
     if (!precondition) return String(content == null ? '' : content);
     return String(content == null ? '' : content)
       + '\n\n<tool_precondition>' + JSON.stringify(precondition) + '</tool_precondition>'
       + '\nHost recovery rule: do not repeat the identical call. Satisfy the named requirement or choose a different route, then make one revised attempt. If that revised route cannot work, report the proven blocker.';
   }
-  const errResult = (content, summary, parkedPath, outputChars, outputBytes, mutationReceipt, preconditionValue) => {
+  const errResult = (content, summary, parkedPath, outputChars, outputBytes, mutationReceipt, preconditionValue, cap) => {
     const precondition = toolMod.normalizePrecondition ? toolMod.normalizePrecondition(preconditionValue) : null;
     const framed = preconditionFrame(content, precondition);
-    const result = { ok: false, isError: true, content: clampOutput(framed, parkedPath), summary: summary || (precondition ? 'precondition' : 'error'), parkedPath: parkedPath || null, outputChars: Number.isFinite(Number(outputChars)) ? Number(outputChars) : (typeof framed === 'string' ? framed.length : null), outputBytes: Number.isFinite(Number(outputBytes)) ? Number(outputBytes) : (typeof framed === 'string' ? utf8Bytes(framed) : null), mutationReceipt: mutationReceipt || null, receipt: mutationReceipt || null };
+    const result = { ok: false, isError: true, content: clampOutput(framed, parkedPath, cap), summary: summary || (precondition ? 'precondition' : 'error'), parkedPath: parkedPath || null, outputChars: Number.isFinite(Number(outputChars)) ? Number(outputChars) : (typeof framed === 'string' ? framed.length : null), outputBytes: Number.isFinite(Number(outputBytes)) ? Number(outputBytes) : (typeof framed === 'string' ? utf8Bytes(framed) : null), mutationReceipt: mutationReceipt || null, receipt: mutationReceipt || null };
     if (precondition) result.precondition = precondition;
     return result;
   };
 
   // Ask the host to keep the full output. Never throws and never blocks a result: a parker that fails just
   // means we fall back to the plain clamp — losing the tail must never also lose the answer.
-  async function parkIfOver(content, call, ctx) {
-    if (typeof content !== 'string' || content.length <= OUTPUT_MAX) return null;
+  async function parkIfOver(content, call, ctx, limit) {
+    if (typeof content !== 'string' || content.length <= (limit || OUTPUT_MAX)) return null;
     if (!ctx || typeof ctx.parkOutput !== 'function') return null;
     try {
       const r = await ctx.parkOutput(content, { tool: (call && call.name) || 'tool' });
@@ -372,7 +414,12 @@
       const timeoutMs = tool.timeoutMs || ctx.timeoutMs || 0;
       const child = childAbort(ctx.signal);
       const ac = child.ctrl;
-      const runCtx = ac !== ctx.signal ? Object.assign({}, ctx, { signal: ac.signal }) : ctx;
+      // The per-result budget: the host's window-scaled figure (ctx.outputMax) when it passed one, else OUTPUT_MAX.
+      // Resolved ONCE per call and handed to the tool as a plain number, so an aggregating tool (team.dispatch) can
+      // fit its own rows inside the same budget this dispatch will enforce on its result.
+      const hostCap = hostOutputCap(ctx);
+      const limit = hostCap || OUTPUT_MAX;
+      const runCtx = ac !== ctx.signal ? Object.assign({}, ctx, { signal: ac.signal, outputMax: limit }) : ctx;
       const startedAt = (ctx.clock && typeof ctx.clock.now === 'function') ? ctx.clock.now() : 0;
       const elapsed = () => ((ctx.clock && typeof ctx.clock.now === 'function') ? ctx.clock.now() - startedAt : 0);
       try {
@@ -400,14 +447,14 @@
         const full = shaped && typeof out.fullContent === 'string' ? out.fullContent : raw;
         // Park BEFORE clamping — the clamp is what destroys the middle, so the full text has to be on disk first.
         let parked = null;
-        if (typeof full === 'string' && (full !== raw || full.length > OUTPUT_MAX) && ctx && typeof ctx.parkOutput === 'function') {
+        if (typeof full === 'string' && (full !== raw || full.length > limit) && ctx && typeof ctx.parkOutput === 'function') {
           try { const p = await ctx.parkOutput(full, { tool: (call && call.name) || 'tool' }); parked = p && p.path ? String(p.path) : null; } catch (e) { failNote('tools.registry.parkOutput', e); }
         } else {
-          parked = await parkIfOver(raw, call, ctx);
+          parked = await parkIfOver(raw, call, ctx, limit);
         }
         const fullBytes = typeof full === 'string' ? utf8Bytes(full) : null;
         const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked) : raw;
-        return await notifyPost(okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null), elapsed());
+        return await notifyPost(okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null, hostCap), elapsed());
       } catch (e) {
         /* A TIMEOUT IS NOT A NO-OP (h1 audit 2026-09-22). "timed out" read like "nothing happened", the failure-recovery
            nudge invited another attempt, and a connector write that had landed remotely was sent twice. A read tool
@@ -432,7 +479,7 @@
         const errorText = 'tool ' + call.name + ' failed: ' + (e && e.message ? e.message : String(e));
         const fullError = e && typeof e.fullContent === 'string' ? e.fullContent : errorText;
         let parked = null;
-        if (fullError !== errorText || fullError.length > OUTPUT_MAX) {
+        if (fullError !== errorText || fullError.length > limit) {
           try { const p = ctx && typeof ctx.parkOutput === 'function' ? await ctx.parkOutput(fullError, { tool: call.name }) : null; parked = p && p.path ? String(p.path) : null; } catch (e) { failNote('tools.registry.parkOutput', e); }
         }
         const fullErrorBytes = utf8Bytes(fullError);
@@ -445,7 +492,7 @@
         const unknownEffect = !!(e && e.effectUnknown === true) && !provenReadOnly(tool);
         const failed = errResult(unknownEffect ? visibleError + EFFECT_UNKNOWN_NOTE : visibleError,
           thrownSummary || (unknownEffect && e.cancelled ? 'cancelled' : (e && e.precondition ? 'precondition' : 'error')),
-          parked, fullError.length, fullErrorBytes, e && e.mutationReceipt, e && e.precondition);
+          parked, fullError.length, fullErrorBytes, e && e.mutationReceipt, e && e.precondition, hostCap);
         if (unknownEffect) failed.effectUnknown = true;
         return await notifyPost(failed, elapsed());
       } finally {
@@ -459,5 +506,5 @@
     return { register, get, list, wireFormat, dispatch };
   }
 
-  return { makeRegistry, closestToolNames, unknownToolMessage };
+  return { makeRegistry, closestToolNames, unknownToolMessage, outputBudgetFor, OUTPUT_MAX };
 });

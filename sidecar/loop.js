@@ -205,15 +205,17 @@
     return content.slice(0, head) + note + content.slice(content.length - tail);
   }
 
-  function applyTurnBudget(results, max) {
-    if (!max || max <= 0) return results;
+  // The water-fill itself: result index -> allowed characters, or null when the turn already fits. Pure; shared by
+  // applyTurnBudget (the cut) and parkForTurnBudget (which must know, BEFORE the cut, which results will lose text).
+  function turnAllowances(results, max) {
+    if (!max || max <= 0) return null;
     const idx = [];
     let total = 0;
     for (let i = 0; i < results.length; i++) {
       const c = results[i] && results[i].content;
       if (typeof c === 'string') { total += c.length; idx.push(i); }
     }
-    if (total <= max || !idx.length) return results;
+    if (total <= max || !idx.length) return null;
 
     const order = idx.slice().sort((a, b) => results[a].content.length - results[b].content.length);
     const allow = new Map();
@@ -223,13 +225,41 @@
       const give = Math.min(results[i].content.length, share);
       allow.set(i, give); remaining -= give; left--;
     }
-    for (const i of idx) {
+    return allow;
+  }
+
+  function applyTurnBudget(results, max) {
+    const allow = turnAllowances(results, max);
+    if (!allow) return results;
+    for (const i of allow.keys()) {
       const len = results[i].content.length;
       const give = allow.get(i);
       if (give >= len) continue;                       // fit inside its share — untouched
       results[i] = Object.assign({}, results[i], { content: squeeze(results[i].content, give, results[i].parkedPath), turnClamped: true });
     }
     return results;
+  }
+
+  /* PARK BEFORE THE TURN SQUEEZE (Step 2 wave 2). The per-turn cut used to destroy the middle of any result the
+     registry had not already parked — i.e. every result UNDER the per-result cap — so a parallel batch that tripped
+     the turn budget lost text nobody could get back ("narrow it" was the only advice). Now that the turn budget is a
+     share of the model's window it trips far more often on small models, so every result about to lose text is
+     written whole through the SAME host parker the registry uses (capCtx.parkOutput) first, and the squeeze note
+     then names that file. No parker wired (tests, aux loops) or a parker that fails = the old cut exactly. */
+  async function parkForTurnBudget(results, calls, capCtx, max) {
+    const allow = turnAllowances(results, max);
+    if (allow && capCtx && typeof capCtx.parkOutput === 'function') {
+      const nameOf = new Map((calls || []).map(c => [c && c.id, c && c.name]));
+      for (const [i, give] of allow) {
+        const r = results[i];
+        if (give >= r.content.length || r.parkedPath) continue;
+        let p = null;
+        try { p = await capCtx.parkOutput(r.content, { tool: nameOf.get(r.callId) || 'tool', reason: 'turn-output-budget' }); }
+        catch (e) { failNote('loop.turnBudget.park', e); p = null; }
+        if (p && p.path) results[i] = Object.assign({}, r, { parkedPath: String(p.path) });
+      }
+    }
+    return applyTurnBudget(results, max);
   }
 
   // STOP MEANS STOP (2026-09-04). A cancelled run must not keep dispatching: the model may have issued five
@@ -282,7 +312,7 @@
           ms: s.ms, summary: s.r.summary || (s.r.isError ? 'error' : 'ok'), isError: !!s.r.isError
         });
       }
-      return applyTurnBudget(results, meta.turnOutputMax);
+      return parkForTurnBudget(results, calls, capCtx, meta.turnOutputMax);
     }
 
     for (const c of calls) {
@@ -326,7 +356,7 @@
         ms: Math.max(0, t1 - t0), summary: r.summary || (r.isError ? 'error' : 'ok'), isError: !!r.isError
       });
     }
-    return applyTurnBudget(results, meta.turnOutputMax);
+    return parkForTurnBudget(results, calls, capCtx, meta.turnOutputMax);
   }
 
   // Pure heuristic for the continuation guard: does a final, tool-free text ANNOUNCE work the model never did?
@@ -775,8 +805,17 @@
     const toolImages = (o.toolImages === true);
     const TOOL_IMAGE_MAX = (limits.toolImageMax != null) ? limits.toolImageMax : 2;
     /* Per-turn aggregate tool output (see applyTurnBudget). 200k characters is ~2.5 full-size single results,
-       so an ordinary turn never notices it and only a wide parallel fan-out gets trimmed. 0 disables. */
-    const TURN_OUTPUT_MAX = (limits.turnOutputMax != null) ? limits.turnOutputMax : 200000;
+       so an ordinary turn never notices it and only a wide parallel fan-out gets trimmed. 0 disables.
+       A FUNCTION is read fresh each turn: the host passes 30% of the live model window (tools/registry.js
+       outputBudgetFor), which a provider fallback can change mid-run. */
+    const _tom = limits.turnOutputMax;
+    const TURN_OUTPUT_MAX = (_tom != null && typeof _tom !== 'function') ? _tom : 200000;
+    function turnOutputMaxNow() {
+      if (typeof _tom !== 'function') return TURN_OUTPUT_MAX;
+      let n;
+      try { n = Number(_tom()); } catch (e) { failNote('loop.turnOutputMax', e); return TURN_OUTPUT_MAX; }
+      return (Number.isFinite(n) && n >= 0) ? n : TURN_OUTPUT_MAX;
+    }
     const _vos = limits.verifyOnStop;
     const VOS_MAX = (_vos === false) ? 0 : (_vos && _vos.max != null ? _vos.max : 1);
     const vosUnverified = new Set();
@@ -1818,7 +1857,7 @@
       }
       let results;
       try {
-        results = await executeCalls(calls, dispatch, capCtx, emit, { agentId, runId, clock, signal, hiddenTools: new Set(o.hiddenTools || []), parallelSafe: (typeof o.parallelSafe === 'function') ? o.parallelSafe : null, turnOutputMax: TURN_OUTPUT_MAX });
+        results = await executeCalls(calls, dispatch, capCtx, emit, { agentId, runId, clock, signal, hiddenTools: new Set(o.hiddenTools || []), parallelSafe: (typeof o.parallelSafe === 'function') ? o.parallelSafe : null, turnOutputMax: turnOutputMaxNow() });
         assertPaired(calls, results); // (7) HARD INVARIANT
       } catch (e) {
         emit('agent.run.error', { agentId, runId, message: String((e && e.message) || e), transient: false });
@@ -2002,5 +2041,5 @@
     }
   }
 
-  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze } };
+  return { runAgentLoop, _internals: { parseCall, repairCalls, normalizeBatch, uniqueCallIds, dropDuplicateCalls, assistantTurn, toolResultMsg, assertPaired, executeCalls, announcesIntent, terminalHumanDecision, scrubTextToolCallMarkup, vosIsCodePath, vosIsCheckCommand, vosKey, vosExternalRole, vosExternalArtifactMutation, vosExternalSourceRole, sourceGroundingRequested, explicitNonzeroExit, vosCheckPassed, failedCheckRepairNote, deterministicCheckSignature, parallelizable, applyTurnBudget, squeeze, turnAllowances, parkForTurnBudget } };
 });

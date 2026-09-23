@@ -895,3 +895,4 @@ test/subagents.stop-cascade.test.js
 test/subagents.stale-worker.test.js
 test/loop.stall-giveup.test.js
 test/context.image-estimate.test.js
+test/registry.window-scaled-cap.test.js

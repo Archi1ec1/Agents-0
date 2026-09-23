@@ -40,7 +40,7 @@ const { makeUpdatePreparation } = require('./update-preparation.js');
 const { makeAgentLifecycle } = require('./agent-lifecycle.js');
 const { makeConsentWait } = require('./consentwait.js');   // EL-11: fail-closed consent timer + human-visible ack extension
 const { killAll } = require('./halt.js');
-const { makeRegistry } = require('./tools/registry.js');
+const { makeRegistry, outputBudgetFor } = require('./tools/registry.js');
 const { makeOutputArtifacts } = require('./output-artifacts.js');
 const { makeWebTools, makePoliteScheduler } = require('./tools/builtin/web.js');
 const { makeWebReader } = require('./tools/builtin/webreader.js');
@@ -16697,6 +16697,19 @@ async function runOnceCore(o) {
   // mid-run provider fallback (loop.js re-resolve) rescales it. An explicit SKYNET_MAX_TOOL_BYTES pins the
   // cap absolutely (no scaling) — deterministic budget e2es and locked-down deploys depend on that.
   const runToolBytesCap = () => MAX_TOOL_BYTES_PINNED ? CAPS.maxToolBytes : toolBytesCapFor(ctxMgr.contextLimit, CAPS.maxToolBytes);
+  /* WINDOW-SCALED TOOL OUTPUT (Step 2 wave 2, Hermes audit 2026-09-22). The per-result (80k) and per-turn (200k)
+     character caps were fixed whatever the model: one big read on a 32k-token model filled ~63% of its window.
+     tools/registry.js outputBudgetFor turns the run's KNOWN window into 15% per result / 30% per turn (floors
+     8k/16k chars, ceilings = the old caps). KNOWN means the catalog's real figure (or the test-only override) —
+     never the COLD_CATALOG guess above: an unknown window keeps today's caps exactly. Read live per call, because
+     `provider`/`model` are swapped by a mid-run fallback (onFallback below). The registry reads ctx.outputMax on
+     every dispatch; the loop reads limits.turnOutputMax every turn. */
+  const runOutputBudget = () => {
+    let w = CONTEXT_LIMIT_OVERRIDE;
+    if (!w) { try { w = Number(provider.contextLimit(model)) || 0; } catch (e) { failNote('run.outputBudget.window', e); w = 0; } }
+    return outputBudgetFor(w);
+  };
+  capCtx.outputMax = () => runOutputBudget().resultMax;
   // The summarizer is itself a paid model call. It RETURNS its reconciled {usd,tokens} so the loop folds the
   // spend into the run's running tally IN THE SAME TURN — so the per-run ceiling + cross-run pool guards (and the
   // run total -> ledger) all see it, not just at run end. It also surfaces a display-only agent.cost so live
@@ -17776,6 +17789,7 @@ async function runOnceCore(o) {
         // continuation, including brief answers promoted to tasks by a pending clarification.
         outputContinuation: !isTask && !internal ? false : undefined,
         grace: o.outputOnly ? false : undefined, refundMax: o.outputOnly ? 0 : undefined,
+        turnOutputMax: () => runOutputBudget().turnMax,   // 30% of the live window (see WINDOW-SCALED TOOL OUTPUT)
         // unpriced-token seatbelt: metered API-key providers only — a subscription/OAuth/unmetered run bills nothing
         maxUnpricedTokens: (providerUnmetered || usingCodex || usingDeviceOAuth) ? Infinity : CAPS.maxUnpricedTokens
       },
