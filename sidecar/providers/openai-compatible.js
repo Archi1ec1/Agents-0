@@ -3,9 +3,9 @@
    It implements the same LLMProvider seam as OpenRouter and Codex. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./prices.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openaiCompatible = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.prices); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, prices) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./prices.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openaiCompatible = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.prices, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, prices, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -95,7 +95,7 @@
     if (providerName) facts.push('provider ' + providerName);
     // Diagnostics deliberately clamps messages. Put correlation before the free-text detail so a
     // verbose upstream error cannot truncate the only identifiers support can trace.
-    return { detail: (facts.length ? '[' + facts.join('; ') + '] ' : '') + message, type, code, providerName, requestId };
+    return { detail: (facts.length ? '[' + facts.join('; ') + '] ' : '') + message, type, code, providerName, requestId, body: (data && typeof data === 'object') ? data : null };
   }
   function normalizeModel(m) {
     const id = (m && (m.id || m.name || m.model)) ? String(m.id || m.name || m.model) : '';
@@ -203,12 +203,17 @@
       Promise.resolve().then(() => loadCatalog()).catch(() => {});
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const dropped = droppedParams.get(String(req.model || ''));
       const skip = p => !!(dropped && dropped.has(p));
-      const body = { model: req.model, messages: provider.preserveClaudeContinuations(provider.repairToolPairs(req.messages || []), req.model), stream: true };
+      // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
+      const body = { model: req.model, messages: provider.preserveClaudeContinuations(provider.prepareWireMessages(req.messages || [], 'chat'), req.model), stream: true };
       if (includeUsage && !skip('stream_options')) body.stream_options = { include_usage: true };
       const explicitMax = Math.floor(Number(req.max_tokens || req.maxTokens || 0)) || 0;
       // Only the host's explicit casual-turn classification selects this cap. No-tool auxiliary
@@ -218,7 +223,9 @@
       const outputCap = Number.isFinite(explicitMax) && explicitMax > 0 ? explicitMax : defaultCap;
       if (outputCap > 0 && !skip('max_tokens')) body.max_tokens = outputCap;
       if (req.tools && req.tools.length) {
-        body.tools = req.tools;
+        // Grammar-safe property keys on every tool, and the Moonshot dialect on a Kimi route (a strict 400 on the
+        // whole request otherwise). A well-formed catalog on any other route is req.tools itself, byte-identical.
+        body.tools = toolschema.wireTools(req.tools, { moonshot: toolschema.isMoonshotRoute(req.model, baseUrl) });
         if (!skip('tool_choice')) body.tool_choice = 'auto';
         /* parallel_tool_calls is deliberately OMITTED (endpoint default: enabled). Forcing `false` predates the
            loop's concurrent dispatch path and cost one full round trip per tool on every multi-read turn; the
@@ -281,7 +288,12 @@
         try { return { json: JSON.parse(data) }; } catch (_) { return null; }
       }
       function* emitFrom(j) {
-        if (j.error) throw new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
+        if (j.error) {
+          const err = new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
+          err.body = j;   // the structured error (code/type) — errorClass reads it
+          err.ownMessage = true;
+          throw err;
+        }
         if (j.usage) yield { type: 'usage', usage: j.usage };
         const choice = j.choices && j.choices[0];
         if (!choice) return;
@@ -391,6 +403,11 @@
         err.requestId = upstreamError.requestId;
         err.providerCode = upstreamError.code;
         err.upstreamProvider = upstreamError.providerName;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js): errorClass reads error.code/type off it (an OpenAI
+           429 carrying code 'insufficient_quota' is an empty wallet, not a busy moment). The message stays this
+           adapter's own sentence — label + status, which the UI routes on ("Kimi For Coding http 401"); err.ownMessage tells
+           errorClass so. */
+        if (upstreamError.body) { err.body = upstreamError.body; err.ownMessage = true; }
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

@@ -77,11 +77,25 @@
   }
   function extractCode(body, err) {
     const e = body && (body.error || body);
+    /* Providers name the machine-readable error in different fields (2026-09-22): OpenAI a string `code` (plus
+       `type`), Anthropic ONLY `type` ('overloaded_error', 'rate_limit_error'), Gemini a numeric `code` beside the
+       canonical `status` string ('RESOURCE_EXHAUSTED'). A string code wins; else the typed name; else the status.
+       (Anthropic's envelope type 'error' names nothing.) With none of them, the original read below is unchanged. */
+    const named = !e ? null
+      : (typeof e.code === 'string' && e.code) ? e.code
+      : (typeof e.type === 'string' && e.type && e.type !== 'error') ? e.type
+      : (typeof e.status === 'string' && e.status) ? e.status : null;
+    if (named) return named;
     const c = (e && e.code) || (err && err.code);
     // node transport codes (ECONNRESET…) are numeric-ish strings handled separately; only return API codes here
     return (typeof c === 'string' && !/^E[A-Z]/.test(c)) ? c : (typeof c === 'number' ? null : (c || null));
   }
   function extractMessage(err, body) {
+    /* An adapter that composed its own sentence around the provider's error ('<label> http 429 — <detail>') marks it
+       `ownMessage`: the body rides along for its CODE and must not replace that sentence. The label + status are
+       what the UI routes on (frontend friendlyerror.js: /(grok|kimi).*http 40[13]/ -> the RECONNECT door), and
+       the adapter already redacted what it quoted. */
+    if (err && err.ownMessage && err.message) return String(err.message);
     const e = body && (body.error || body);
     const parts = [];
     if (e && e.message) parts.push(String(e.message));
@@ -302,6 +316,11 @@
       if (/usage_limit_reached|quota_exhausted|plan_limit/.test(c)) return 'quota_exhausted';
       if (/insufficient_quota|insufficient_credit|billing|payment/.test(c)) return 'billing';
       if (/rate_limit/.test(c)) return 'rate_limit';
+      // Gemini's canonical status for BOTH a per-minute limit and a spent daily allowance: the message decides
+      // which. (Its prose — 'Resource has been exhausted (e.g. check quota).' — used to fall to the bare /quota/
+      // billing pattern below and fail a mid-stream rate limit as an empty wallet.)
+      if (c === 'resource_exhausted') return isQuotaExhausted(low) ? 'quota_exhausted' : 'rate_limit';
+      if (/overloaded/.test(c)) return 'overloaded';   // Anthropic's typed 'overloaded_error' (arrives mid-stream too)
       if (/model_not_found|unknown_model|no_endpoints/.test(c)) return 'model_not_found';
       if (/content_policy|moderation/.test(c)) return 'content_policy_blocked';
       if (/invalid_api_key|authentication|unauthorized/.test(c)) return 'auth';
