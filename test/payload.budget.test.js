@@ -20,10 +20,14 @@ const WM = require('../frontend/app/worldmodel.js');
 
 const MARK = 'PAYLOAD_BUDGET_PROBE';
 const HOST = '127.0.0.1';
-// Measured 2026-09-22 on this commit (see the printed line); budgets carry ~8% headroom.
+/* Measured 2026-09-23 (agent/w2-footprint, node-pty loadable, no media key, no Spotify token):
+     default-new-install  36,924 system chars | 76 tools | 57,315 tool bytes   (before this lane: 36,575 | 78 | 59,452)
+     fully-granted-floor  37,173 system chars | 76 tools | 57,315 tool bytes   (before this lane: 36,883 | 86 | 61,556)
+   Budgets carry ~6% headroom. Biggest default-floor sections: INSTALLED SKILLS ~12.4K, operator manual ~9.3K,
+   [HARNESS] ~7.0K, [ORCHESTRATION] ~4.3K, FINISH THE JOB ~2.6K. */
 const BUDGET = {
-  'default-new-install': { systemChars: 0, tools: 0, toolBytes: 0 },
-  'fully-granted-floor': { systemChars: 0, tools: 0, toolBytes: 0 }
+  'default-new-install': { systemChars: 39100, tools: 80, toolBytes: 60800 },
+  'fully-granted-floor': { systemChars: 39400, tools: 80, toolBytes: 60800 }
 };
 
 (async () => {
