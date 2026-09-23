@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "6474701319ccbceb197c16c98bc35133203a6ebb",
+    "sourceCommit": "0901e749d92dbf911e5925a1a32f865a4488f926",
     "pathSetSha256": "624df0d0e5b2511e74e175d045f26a8fd916195933e6750693b47d486e2e7b31",
     "files": [
       {
@@ -323,8 +323,8 @@
       },
       {
         "path": "frontend/app/chat.js",
-        "bytes": 660161,
-        "sha256": "398ab607eeeabd50fbe0dee6e0ed18bf02c33ad034ac73f8112e76c01cc822ba"
+        "bytes": 661173,
+        "sha256": "ca034b3bad7531bf57369c9b54c79e2a7dfa2682a8d624c3a18afa539c15fbca"
       },
       {
         "path": "frontend/app/chatresize.js",
@@ -393,8 +393,8 @@
       },
       {
         "path": "frontend/app/data-shim.js",
-        "bytes": 5937,
-        "sha256": "eb7b818e55582e03d08499c0086c3dbbbc681f1fefb7d1d10fa7345ab4d1bea4"
+        "bytes": 6356,
+        "sha256": "87746e10ac0b967700104aa4c06b1f92c8338edaeb2a011b1cbaa13165ee861b"
       },
       {
         "path": "frontend/app/deliverables.js",
@@ -1398,8 +1398,8 @@
       },
       {
         "path": "frontend/css/comms.css",
-        "bytes": 52096,
-        "sha256": "7cc22462d3a002111dbb3bce45de269e18283894ea727180e1233ba22748784c"
+        "bytes": 52530,
+        "sha256": "397b0bd7562957558415fee1b4f61e2f5c7b892a99bc5e32f94b960429390105"
       },
       {
         "path": "frontend/css/glass-comms.css",
