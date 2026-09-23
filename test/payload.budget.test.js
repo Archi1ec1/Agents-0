@@ -24,10 +24,14 @@ const HOST = '127.0.0.1';
      default-new-install  36,924 system chars | 76 tools | 57,315 tool bytes   (before this lane: 36,575 | 78 | 59,452)
      fully-granted-floor  37,173 system chars | 76 tools | 57,315 tool bytes   (before this lane: 36,883 | 86 | 61,556)
    Budgets carry ~6% headroom. Biggest default-floor sections: INSTALLED SKILLS ~12.4K, operator manual ~9.3K,
-   [HARNESS] ~7.0K, [ORCHESTRATION] ~4.3K, FINISH THE JOB ~2.6K. */
+   [HARNESS] ~7.0K, [ORCHESTRATION] ~4.3K, FINISH THE JOB ~2.6K.
+   Re-measured 2026-09-23 on the wave-2 integration tree (trunk 0ea1bbb71 + all three wave-2 lanes): both layouts
+   36,967 / 37,188 system chars | 79 tools | 60,931 tool bytes. The +3 tools / +3.6 KB is the STUDIO DaVinci Resolve edit
+   bay (resolve_timeline_file / resolve_status / resolve_control, eefd36fe8) that landed on trunk after the measurement
+   above — intended growth, so the tool budgets were raised here with the same ~6% headroom. */
 const BUDGET = {
-  'default-new-install': { systemChars: 39100, tools: 80, toolBytes: 60800 },
-  'fully-granted-floor': { systemChars: 39400, tools: 80, toolBytes: 60800 }
+  'default-new-install': { systemChars: 39100, tools: 84, toolBytes: 64600 },
+  'fully-granted-floor': { systemChars: 39400, tools: 84, toolBytes: 64600 }
 };
 
 (async () => {
