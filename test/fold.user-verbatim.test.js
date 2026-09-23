@@ -95,24 +95,34 @@ function scripted(ctx, n, requests) {
     A.ok(/\[user message: \d+ chars\]\nConstraint added later: NEVER modify prod-db\.conf \(DECISIVE-FACT-2\)\.\n/.test(last), 'in the length-prefixed verbatim section');
   }
 
-  // ---- 3. bounded: many long user messages -> newest kept, an explicit omitted count, budget respected ----
+  // ---- 3. bounded: a fair share per message, the oldest dropped only past the floor, an explicit omitted count ----
   {
+    // (a) THE LIVE-PROOF CASE: one short constraint, then many long chatty messages newer than it. Newest-first
+    //     packing dropped the constraint; the fair share keeps it whole and cuts the chatter instead.
+    const crowd = [{ role: 'user', content: CONSTRAINT }];
+    for (let k = 1; k <= 24; k++) crowd.push({ role: 'user', content: 'Background note ' + k + ': ' + 'shift ran without incident; '.repeat(80) });
+    const fair = F.mergeUserMessages(null, F.collectUserMessages(crowd), 8000);
+    A.ok(fair.items.some(it => it.text === CONSTRAINT), 'a one-line constraint older than 24 long messages is still carried WHOLE');
+    A.eq(fair.omitted, 0, 'nothing had to be dropped — the long ones were cut to their share');
+    A.ok(fair.items.reduce((a, it) => a + it.text.length, 0) <= 8000, 'the budget holds');
+    A.ok(/\[user message: first \d+ of \d+ chars\]\nBackground note 24: /.test(F.renderUserSection(fair)), 'a cut message states its true length');
+    // (b) too many to give each the floor: the OLDEST are dropped and counted; the newest are always carried
     const fresh = [];
-    for (let k = 1; k <= 40; k++) fresh.push({ role: 'user', content: 'U' + String(k).padStart(2, '0') + ' ' + 'm'.repeat(995) });
-    const collected = F.collectUserMessages(fresh);
-    const merged = F.mergeUserMessages(null, collected, 12000);
+    for (let k = 1; k <= 80; k++) fresh.push({ role: 'user', content: 'U' + String(k).padStart(2, '0') + ' ' + 'm'.repeat(995) });
+    const merged = F.mergeUserMessages(null, F.collectUserMessages(fresh), 12000);
     const used = merged.items.reduce((a, it) => a + it.text.length, 0);
     A.ok(used <= 12000, 'the carried text respects the budget (' + used + ')');
-    A.eq(merged.items[merged.items.length - 1].text.slice(0, 3), 'U40', 'the newest message is kept');
-    A.eq(merged.items.length + merged.omitted, 40, 'every message is either carried or counted');
+    A.eq(merged.items[merged.items.length - 1].text.slice(0, 3), 'U80', 'the newest message is kept');
+    A.ok(merged.omitted > 0 && merged.items.length + merged.omitted === 80, 'every message is either carried or counted (' + merged.items.length + ' + ' + merged.omitted + ')');
+    A.ok(merged.items.every(it => it.text.length >= 240), 'every carried message keeps at least the floor');
     const section = F.renderUserSection(merged);
     A.ok(section.indexOf('[' + merged.omitted + ' earlier user messages omitted]') > 0, 'the omitted count is stated (' + merged.omitted + ')');
     A.ok(section.indexOf('U01 ') < 0, 'the oldest is not carried');
     // a second fold merges on top: previous items + omitted count carried forward, no duplicates
     const round = F.splitSummary('## S\nprose\n\n' + section);
     A.eq(round.items.length, merged.items.length, 'the section parses back to the same items');
-    const again = F.mergeUserMessages(round, F.collectUserMessages([{ role: 'user', content: 'U41 final ask' }]), 12000);
-    A.eq(again.items[again.items.length - 1].text, 'U41 final ask', 'the newest fold appends its message last');
+    const again = F.mergeUserMessages(round, F.collectUserMessages([{ role: 'user', content: 'U81 final ask' }]), 12000);
+    A.eq(again.items[again.items.length - 1].text, 'U81 final ask', 'the newest fold appends its message last, whole');
     A.eq(again.omitted, merged.omitted + (merged.items.length + 1 - again.items.length), 'omitted accumulates across folds');
     A.eq(new Set(again.items.map(it => it.text)).size, again.items.length, 'no item appears twice');
     // one message larger than the per-message cap is truncated with its true length stated

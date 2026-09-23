@@ -8,8 +8,9 @@
    at the end of the summary note, whatever the summarizer returned (paid fold, fallback digest, and the merge of an
    earlier fold's note alike). The section is host-owned: it is split OFF the previous note before the summarizer
    sees the previous summary, so the model can neither paraphrase nor duplicate it, and re-rendered from its parsed
-   items — a message is folded exactly once, so successive folds append and never repeat it. Bounded: newest kept
-   first under a character budget (window-scaled), each message capped, older ones counted in an explicit
+   items — a message is folded exactly once, so successive folds append and never repeat it. Bounded: a
+   window-scaled character budget shared FAIRLY (a short message whole, a long one cut to its share and marked), the
+   oldest dropped only when even a floor per message no longer fits, counted in an explicit
    "[k earlier user messages omitted]" line. Items are LENGTH-PREFIXED ("[user message: 57 chars]" + exactly 57
    chars), so any text — even text that looks like a header or the closing tag — round-trips byte-identical.
    Commander steering notes (<steering_note> system messages) are the same class of words and ride along too;
@@ -99,7 +100,13 @@ function capItem(it, max) {
 }
 
 /* prev (the parsed section of the previous note) + fresh (this fold's slice) -> the bounded section to render.
-   Newest first under the budget; an identical text repeated ("continue") is carried once, at its newest position. */
+   FAIR SHARE, NOT NEWEST-FIRST PACKING. Packing whole messages newest-first let a few long chatty messages crowd a
+   one-line constraint out of the budget (live proof 09-23: a 66-char "NEVER modify prod-db.conf" was dropped
+   behind 2,200-char notes). Now every carried message gets an equal share of the budget — a short one is kept
+   whole, a long one is cut to its share and says so — and only when even SHARE_FLOOR chars each would not fit are
+   the OLDEST messages dropped (counted in the omitted line). An identical text repeated ("continue") is carried
+   once, at its newest position. */
+const SHARE_FLOOR = 240;
 function mergeUserMessages(prev, fresh, budgetChars) {
   const p = prev || {};
   const all = (Array.isArray(p.items) ? p.items : []).concat(Array.isArray(fresh) ? fresh : []);
@@ -114,19 +121,23 @@ function mergeUserMessages(prev, fresh, budgetChars) {
     uniq.push(it);
   }
   const budget = Math.max(1, Math.floor(Number(budgetChars) || 0) || userBudgetChars(0));
-  const kept = [];
-  let used = 0, dropped = 0;
-  for (let k = 0; k < uniq.length; k++) {
-    let it = capItem(uniq[k], Math.min(PER_MESSAGE_MAX_CHARS, budget));
-    if (used + it.text.length > budget) {
-      if (!kept.length) { it = capItem(it, budget); kept.push(it); dropped += uniq.length - k - 1; }
-      else dropped += uniq.length - k;
-      break;
-    }
-    kept.push(it);
-    used += it.text.length;
+  const cap = (it) => Math.min(it.text.length, PER_MESSAGE_MAX_CHARS);
+  // how many (newest) messages can each keep at least min(own length, SHARE_FLOOR)?
+  let n = uniq.length, need = 0;
+  for (let k = 0; k < uniq.length; k++) need += Math.min(cap(uniq[k]), SHARE_FLOOR);
+  while (n > 1 && need > budget) { n--; need -= Math.min(cap(uniq[n]), SHARE_FLOOR); }
+  // water-fill the budget across those n: smallest first, each takes min(its length, an equal share of what is left)
+  const keep = uniq.slice(0, n);
+  const order = keep.map((_, i) => i).sort((a, b) => cap(keep[a]) - cap(keep[b]));
+  const alloc = new Array(keep.length);
+  let remaining = budget;
+  for (let k = 0; k < order.length; k++) {
+    const i = order[k];
+    alloc[i] = Math.max(1, Math.min(cap(keep[i]), Math.floor(remaining / (order.length - k))));
+    remaining -= alloc[i];
   }
-  return { items: kept.reverse(), omitted: (Math.max(0, Math.floor(Number(p.omitted) || 0))) + dropped };
+  const kept = keep.map((it, i) => capItem(it, alloc[i]));
+  return { items: kept.reverse(), omitted: (Math.max(0, Math.floor(Number(p.omitted) || 0))) + (uniq.length - n) };
 }
 
 function renderUserSection(sec) {
