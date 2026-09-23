@@ -22,9 +22,10 @@ const IndustrialTextures = (() => {
     // 2026-09-22 key light (WorldLight KEY buffer): pools open further (cut) and then
     // carry a warm gain ON the surface (key), tighter than the cut; screens and beacons
     // splash their own colour (keyProps); unlit deck leans cool (shadeCool).
-    // Stepped down once on Andrew's "a bit too bright" (first cut: cut 2.2, key 2, film .26).
-    // Hab crop, zoom 2: mean luma 24 -> 32 (first cut 37), crushed 19% -> 12%.
-    cut: 1.6, key: 1.7, keyReach: .5, keyProps: 3, keyPropReach: 1.5, shadeCool: .1 };
+    // Stepped down twice on Andrew's "a bit too bright" (first cut: cut 2.2, key 2, film .26;
+    // second: cut 1.6, key 1.7, keyProps 3, film .32). Hab crop, zoom 2: mean luma 24 -> 32
+    // (first cut 37). The second step took the worldshot hab/lounge frames down ~10%/16%.
+    cut: 1.3, key: 1.45, keyReach: .5, keyProps: 2.8, keyPropReach: 1.5, shadeCool: .1 };
   const plates = new WeakMap();
   const platePyramids = new WeakMap();
   const detailTargets = new WeakMap(), wallStrips = new Map(), materials = new Map(), emitters = new Map();
