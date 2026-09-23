@@ -677,6 +677,62 @@
       "sourceStandingHeight": 76,
       "readyForStation": true,
       "renderSet": "approved_gothgirl"
+    },
+    {
+      "id": "baddie",
+      "skin": "baddie",
+      "name": "Baddie",
+      "stage": "complete",
+      "targetStandingHeight": 19,
+      "walkFramesReady": true,
+      "walkReady": true,
+      "complete": true,
+      "retainedOriginal": false,
+      "sourceStandingHeight": 76,
+      "readyForStation": true,
+      "renderSet": "approved_baddie"
+    },
+    {
+      "id": "candyprincess",
+      "skin": "candyprincess",
+      "name": "Candy Princess",
+      "stage": "complete",
+      "targetStandingHeight": 19,
+      "walkFramesReady": true,
+      "walkReady": true,
+      "complete": true,
+      "retainedOriginal": false,
+      "sourceStandingHeight": 76,
+      "readyForStation": true,
+      "renderSet": "approved_candyprincess"
+    },
+    {
+      "id": "bunnycutie",
+      "skin": "bunnycutie",
+      "name": "Bunny Cutie",
+      "stage": "complete",
+      "targetStandingHeight": 19,
+      "walkFramesReady": true,
+      "walkReady": true,
+      "complete": true,
+      "retainedOriginal": false,
+      "sourceStandingHeight": 76,
+      "readyForStation": true,
+      "renderSet": "approved_bunnycutie"
+    },
+    {
+      "id": "tylerdurden",
+      "skin": "tylerdurden",
+      "name": "Tyler Durden",
+      "stage": "complete",
+      "targetStandingHeight": 19,
+      "walkFramesReady": true,
+      "walkReady": true,
+      "complete": true,
+      "retainedOriginal": false,
+      "sourceStandingHeight": 76,
+      "readyForStation": true,
+      "renderSet": "approved_tylerdurden"
     }
   ]
 }

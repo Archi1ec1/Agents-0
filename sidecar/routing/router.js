@@ -197,6 +197,14 @@ function makeRouter(o) {
     const pick = (k, n) => { const c = rr[k] || 0; rr[k] = (c + 1) % n; return c; };
     return Pipeline.chainStep(p, agentId, ctx || {}, pick);
   }
+  /* chainPeek(agentId, ctx) -> what chainStep WOULD answer right now, WITHOUT moving any splitter's round-robin
+     counter (2026-09-22, the step-through test's PREVIEW). It reads the counter where it stands, so on an
+     unchanged floor the preview names the lane the next real chainStep takes. Read-only by construction. */
+  function chainPeek(agentId, ctx) {
+    const p = activePlan();
+    if (!p || !agentId || !Pipeline.chainStep) return null;
+    return Pipeline.chainStep(p, agentId, ctx || {}, (k, n) => (rr[k] || 0) % n);
+  }
   /* loopGateAfter(agentId, lineId) -> { when, max } when this dock's own lane meets a LOOP gate before any other
      dock (2026-08-22), else null. A PURE read of the same walk chainStep takes, on a no-op pick so the splitter
      round-robin never moves: the chain runner asks it BEFORE a hop, to tell a reviewer dock to end with the
@@ -221,7 +229,7 @@ function makeRouter(o) {
     return !!(rec && rec.outbox && !rec.deadEnd);
   }
 
-  return { setPlan, clearPlan, getPlan, hasPlan, setStation, clearStation, getStation, resolveTarget, lineOfAgent, lineOriginFor, lineLimits, chainNext, chainStep, fanSiblings, loopGateAfter, chainShipsToOutbox, stationFor, stageBrief };
+  return { setPlan, clearPlan, getPlan, hasPlan, setStation, clearStation, getStation, resolveTarget, lineOfAgent, lineOriginFor, lineLimits, chainNext, chainStep, chainPeek, fanSiblings, loopGateAfter, chainShipsToOutbox, stationFor, stageBrief };
 }
 
 module.exports = { makeRouter };

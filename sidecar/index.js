@@ -186,7 +186,7 @@ const { makeTelegramTransport } = require('./channels/telegram.transport.js');  
 const { makeEnvironmentProxyFetch } = require('./channels/proxy-fetch.js');
 const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
-const { makeChannelHub, menuCommands } = require('./channels/hub.js');
+const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { makePromptRegistry } = require('./channels/prompts.js');   // C6: the bounded token→meaning map behind inline keyboards
 const { makeOpenAiCompat } = require('./openai-compat.js');   // /v1/* OpenAI-compatible surface (external harness ingress)
@@ -199,6 +199,7 @@ const { makeSseHub, runTeeView } = require('./channels/sse.js');
 // its replay-nonce inbox is a durable JSONL sibling of the other ledgers.
 const { makeRouter } = require('./routing/router.js');
 const { makeChainRunner, effectiveLimits: chainEffectiveLimits } = require('./routing/chain.js');
+const { makeStepTest } = require('./routing/steptest.js');   // the conveyor STEP-THROUGH TEST engine (/api/routing/steptest)
 const { makeLineSpend } = require('./routing/line-spend.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
 const { makeConnectorManager } = require('./mcp/manager.js');
 const { makeHttpTransport } = require('./mcp/transport.http.js');
@@ -9222,6 +9223,10 @@ const GENERIC_CHANNEL_RX = {
   status: /^\/api\/channels\/(slack|matrix|signal)\/status$/
 };
 // multi-bot telegram: add a new agent-bound bot (token probe via getMe), and per-bot resume/disconnect.
+// STEP-THROUGH TEST (declared ahead of ROUTES and the E-STOP quiesce, which both read them): the /:id[/verb]
+// route family, and the lazy engine singleton (one per station, built on first use — a restart reloads its file).
+const STEPTEST_RX = /^\/api\/routing\/steptest\/([A-Za-z0-9_-]{1,80})(?:\/(continue|rerun|rewind|stop|pause))?(?:\?.*)?$/;
+let stepTest = null;
 const TG_BOT_RX = {
   act: /^\/api\/channels\/telegram\/bots\/(\d+)\/(connect|disconnect)$/,
   owner: /^\/api\/channels\/telegram\/bots\/(\d+)\/owner\/(pair|revoke)$/
@@ -9480,6 +9485,11 @@ const ROUTES = [
   // job through the armed line. Keeping discovery separate means probing can never spend or dispatch.
   { m: 'GET', exact: '/api/routing/sample', h: handleRoutingSampleStatus },
   { m: 'POST', exact: '/api/routing/sample', h: handleRoutingSample },
+  // STEP-THROUGH TEST (2026-09-22): GET is the active-or-latest session (the panel's feature probe + poll);
+  // POST starts one; /:id answers one session and /:id/<verb> drives it. Every refusal 409, never 404.
+  { m: 'GET', qsplit: '/api/routing/steptest', h: handleStepTestLatest },
+  { m: 'POST', exact: '/api/routing/steptest', h: handleStepTestStart },
+  { m: ['GET', 'POST'], rx: STEPTEST_RX, h: handleStepTestId },
   { m: 'GET', exact: '/api/budget/status', h: handleBudgetStatus },
   { m: 'GET', qsplit: '/api/credits', h: handleCredits },   // 404s (no surface) unless managed credits are configured
   { m: 'GET', qsplit: '/api/credits/linkable', h: handleCreditsLinkable },   // {available} — is device linking offered (STARNET_CLOUD_URL set + not already configured)?
@@ -9996,7 +10006,7 @@ function quiesceForProcessFault() {
     });
     const tgBotInflights = [...telegramBots.values()].map((w) => (w && w.hub && w.hub._internals) ? w.hub._internals.inflight : null);
     const devInflight = (devHub && devHub._internals) ? devHub._internals.inflight : null;
-    killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight);
+    killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null);
   });
   contain('groups', () => groupSessions && groupSessions.halt && groupSessions.halt());
   contain('subagents', () => subagents && subagents.interruptAll && subagents.interruptAll());
@@ -10361,6 +10371,129 @@ async function handleRoutingSample(req, res) {
     sampleInFlight = null;
     sampleLineScope = null;
   }
+}
+
+/* ---- THE STEP-THROUGH TEST (conveyor, Andrew's ruling 2026-09-22) — /api/routing/steptest[/:id[/verb]].
+
+   Run your OWN job through a real work line and PAUSE after each dock: see the exact handoff the next dock
+   would get, edit it, re-run the step, rewind, change where it stops, or stop. "Try this step" is the same
+   engine with {single:true}. The engine (routing/steptest.js) holds only the pause and its bookkeeping; every
+   hop decision is the chain runner's own (hopTurn / loopDecision / preHopRefusal / effectiveLimits) and every
+   routing read is the router's. Each dock runs exactly like a chain hop of the SAMPLE hub: the dock's roster
+   run config (sampleRunConfigFor), its bay's isolated station (router.stationFor), its standing brief (entry:
+   system context via hub.dockSystem; later docks: the handoff turn), surface:'autonomous' with NO
+   unattendedGrants (the chain-grants law — the body cannot smuggle authority), recorded under the session's
+   own streamId so the runs are scoped and real cost lands in the ledger like any run. Contract: every refusal
+   409 {ok:false,error}; 400 only for unparseable JSON; never 404 for a known route. The frontend POLLS GET
+   while a session runs — no new event names (agent.run.* still fire from runOnce, so agents walk to their
+   desks). Sessions persist to steptest.sessions.json (last 10) through the durable single-file helpers. ---- */
+const STEPTEST_FILE = path.join(WORKSPACES, 'steptest.sessions.json');
+const STEPTEST_PERSONA = 'You are an agent aboard the STARNET station. The Commander is STEP-TESTING a work line: they sent their own '
+  + 'job through it and are watching each stage\'s output before it moves on. Do your stage of the work directly and '
+  + 'report the result clearly.';
+function stepTestLabel(agentId) { const r = agentRoster.get(String(agentId || '')); return (r && r.name) || null; }
+async function stepTestRunDock(h) {
+  let cfg = null;
+  try { cfg = sampleRunConfigFor(h.agentId); } catch (e) { return { text: '', usd: 0, error: 'target agent configuration failed: ' + ((e && e.message) || e) }; }
+  if (!cfg || cfg.ok === false) return { text: '', usd: 0, error: (cfg && cfg.error) || ('target agent ' + h.agentId + ' is not configured') };
+  if (!cfg.model || (!cfg.configured && !cfg.key)) return { text: '', usd: 0, error: 'no provider/model is configured for ' + h.agentId + ' — connect a provider and set a model first' };
+  const persona = cfg.system || STEPTEST_PERSONA;
+  let brief = null;
+  if (h.entry) { try { brief = router.stageBrief(h.agentId); } catch (e) { failNote('steptest.brief', e); brief = null; } }
+  const system = h.entry ? dockSystem(persona, brief, true) : persona;
+  const runId = crypto.randomUUID();
+  const st = { buf: '', err: null, usd: 0, tools: 0 };
+  const sink = (name, payload) => {
+    let p; try { p = redact(payload); } catch (_) { p = payload; }
+    if (name === 'agent.token') st.buf += (p && p.delta) || '';
+    else if (name === 'agent.tool_call') { st.buf = ''; st.tools++; }
+    else if (name === 'agent.run.error') st.err = (p && p.message) || 'run error';
+    else if (name === 'capdenied') st.err = st.err || ('no ' + ((p && p.need) || 'capability') + ' — ' + ((p && p.reason) || ''));
+    else if (name === 'agent.run.end') { if (p && typeof p.usd === 'number' && isFinite(p.usd)) st.usd = Math.max(st.usd, p.usd); }
+  };
+  let station = null;
+  try { station = router.stationFor(h.agentId); } catch (e) { failNote('steptest.station', e); station = null; }
+  const t0 = Date.now();
+  try {
+    await runOnce({
+      key: cfg.key, model: cfg.model, provider: cfg.provider, baseUrl: cfg.baseUrl || cfg.base_url || '',
+      reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
+      messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
+      runId, trigger: 'event', streamId: h.streamId,
+      initialTaint: h.entry ? null : 'upstream agent output',
+      surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
+      station: station || undefined,
+      taskKey: 'steptest:' + h.sessionId + ':' + h.agentId, taskSource: 'sample',
+      handoffEdited: h.edited === true   // the run row says the owner edited what this dock was handed
+    });
+  } catch (e) { st.err = st.err || ('run failed: ' + ((e && e.message) || e)); }
+  return { text: st.buf, usd: st.usd, tools: st.tools, runId, ms: Date.now() - t0, error: st.err };
+}
+function getStepTest() {
+  if (stepTest) return stepTest;
+  stepTest = makeStepTest({
+    runDock: stepTestRunDock,
+    plan: {
+      get: () => router.getPlan(),
+      step: (a, ctx) => router.chainStep(a, ctx),      // CONTINUE: the executor's own counter-advancing read
+      peek: (a, ctx) => router.chainPeek(a, ctx),      // PREVIEW: the same read, no splitter moves
+      // the entry dock: the SAME line-scoped unaddressed dispatch the sample route takes (one-resolver law), and
+      // only a dock the line's own INBOX feeds counts as having ridden in through its door
+      entryDock: (line, text) => {
+        const a = router.resolveTarget({ tag: Classify.getTag ? Classify.getTag(text) : undefined, text, lineId: line });
+        return (a && router.lineOriginFor(a) === line) ? a : null;
+      },
+      lineOf: (a) => router.lineOfAgent(a),
+      stageBrief: (a) => router.stageBrief(a),
+      loopGateAfter: (a, l) => router.loopGateAfter(a, l),
+      lineLimits: (l) => router.lineLimits(l),
+      shipsToOutbox: (a) => router.chainShipsToOutbox(a)
+    },
+    preflight: (agentId) => {
+      const c = sampleRunConfigFor(agentId);
+      if (!c || c.ok === false) return (c && c.error) || ('target agent ' + agentId + ' is not configured');
+      if (!c.model || (!c.configured && !c.key)) return 'no provider/model is configured for headless runs — connect a provider and set a default model first.';
+      return null;
+    },
+    poolCap: () => (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null,
+    daySpend: lineSpend,   // test spend is real line spend: it lands in the same per-line day ledger the executor reads
+    store: {
+      load: () => loadResilient(STEPTEST_FILE, 'steptest'),
+      save: (v) => saveResilient(STEPTEST_FILE, v)
+    },
+    getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),   // the SAME classifier a FILTER routes by
+    label: stepTestLabel,
+    now: () => Date.now(),
+    newId: () => 'st_' + crypto.randomUUID().slice(0, 12)
+  });
+  return stepTest;
+}
+function stepTestJson(res, r) {
+  res.writeHead(r && r.ok ? 200 : 409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify(r && r.ok ? { ok: true, session: r.session } : { ok: false, error: String((r && r.error) || 'refused') }));
+}
+async function stepTestBody(req, res) {
+  let raw = '';
+  try { raw = await readBody(req, 1 << 20); } catch (_) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'bad body' })); return null; }
+  if (!raw || !raw.trim()) return {};
+  let body = null;
+  try { body = JSON.parse(raw); } catch (_) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'bad json' })); return null; }
+  return (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+}
+function handleStepTestLatest(_req, res) { stepTestJson(res, getStepTest().get(null)); }
+async function handleStepTestStart(req, res) {
+  const body = await stepTestBody(req, res); if (!body) return;
+  stepTestJson(res, getStepTest().start(body));
+}
+async function handleStepTestId(req, res, gm) {
+  const id = gm[1], verb = gm[2] || '';
+  const st = getStepTest();
+  if (req.method === 'GET') return stepTestJson(res, verb ? { ok: false, error: 'use POST for ' + verb } : st.get(id));
+  if (!verb) return stepTestJson(res, { ok: false, error: 'POST needs a verb: continue, rerun, rewind, stop or pause' });
+  const body = await stepTestBody(req, res); if (!body) return;
+  const r = verb === 'continue' ? st.continue(id, body) : verb === 'rerun' ? st.rerun(id)
+    : verb === 'rewind' ? st.rewind(id, body) : verb === 'stop' ? st.stop(id) : st.pause(id, body);
+  stepTestJson(res, r);
 }
 
 /* ---- GET /api/budget/status — the live spend pools (day + global) vs their caps, plus session resume headroom.
@@ -17850,7 +17983,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface });   // execution terminal stays separate from the neutral Task Brief outcome used by progression
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, handoffEdited: o.handoffEdited === true });   // execution terminal stays separate from the neutral Task Brief outcome used by progression
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -19177,7 +19310,7 @@ function handleHalt(req, res) {
   // the DEV injector's hub too (SKYNET_DEV only, and null until something has used it). Its runs are REAL runs
   // that really spend, so an E-STOP that skipped them would leave live work the panel says it stopped.
   const devInflight = (devHub && devHub._internals) ? devHub._internals.inflight : null;
-  const halted = killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight);   // browser runs + ALL channel hub runs, in one kill (see sidecar/halt.js)
+  const halted = killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null);   // browser runs + ALL channel hub runs, in one kill (see sidecar/halt.js)
   let cronAborted = 0;
   try { cronAborted = cronDriver.abortAllLeases(); } catch (_) {}   // Phase 0: E-STOP also aborts in-flight cron runs (unattended spend)
   let beatAborted = 0;
