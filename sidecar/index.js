@@ -154,7 +154,7 @@ const oauthDevice = require('./providers/oauth-device.js');
 const oauthTokenStore = require('./providers/oauth-token-store.js');
 const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } = require('./spend.js');
 const { makeEmitter } = require('../shared/emitter.js');
-const { redact, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt } = require('./context.js');
+const { redact, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
 const { runRouteFailure } = require('./runroute.js');   // a failure escaping handleRun must never read as an empty 200
 const { json: respondJson, readJsonBody, isAgentId } = require('./respond.js');   // canonical json()/body/agent-id helpers — adopt incrementally, don't mass-migrate
@@ -16949,7 +16949,9 @@ async function runOnceCore(o) {
   // small run — the ONLY way to live-prove compaction against a production model without a 130k-token prompt.
   // Never set in a packaged build; unset/invalid = the catalog's real window exactly as before.
   const CONTEXT_LIMIT_OVERRIDE = Math.max(0, parseInt(String(ENV('CONTEXT_LIMIT_OVERRIDE') || ''), 10) || 0);
-  const ctxMgr = makeContext({ contextLimit: CONTEXT_LIMIT_OVERRIDE || provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS, compactAt: 0.65, keepTailTurns: 6 });   // TURNS, not messages (assistant + its tool results = 1)
+  // RUN_CONTEXT_DEFAULTS (context.js): fold at 65% of the window; the verbatim tail is a TOKEN budget (20% of the
+  // window), not six turns — six turns of big results outweighed a 64k window and a fold freed nothing.
+  const ctxMgr = makeContext(Object.assign({ contextLimit: CONTEXT_LIMIT_OVERRIDE || provider.contextLimit(model) || COLD_CATALOG_CONTEXT_TOKENS }, RUN_CONTEXT_DEFAULTS));
   // PER-RUN TOOL-OUTPUT CAP, scaled to the window. The flat 120KB cap (~30k tokens) sat far BELOW the compaction
   // threshold (0.65 × window — ~130k tokens on a 200k model), so the one event that resets the budget
   // (agent.compact, see loopEmit) could never fire: after ~120KB of reads the agent went blind — every later
@@ -17946,7 +17948,9 @@ async function runOnceCore(o) {
     // keeps paying for turns (every tool comes back "[tool output omitted]" with ~30 iterations still to go).
     // Freeing the budget at the moment the context is freed keeps the two in sync; erring generous here is the
     // right direction, since the alternative is a run that can still call tools but can no longer SEE any.
-    if (name === 'agent.compact') execution.resetToolBytes();
+    // Only a fold that FREED >= 10% of the prompt re-arms it (foldFreedEnough, context.js): a 0.6% fold used to re-arm
+    // the whole budget and let full-size results back into a prompt still at the window's edge (audit probe 09-22).
+    if (name === 'agent.compact' && foldFreedEnough(payload)) execution.resetToolBytes();
     execution.observeToolEvent(name, payload);
     if (((taskBrief || imageTask) || o.postconditions != null) && name === 'agent.run.end' && payload && payload.runId === runId && payload.reason === 'done') {
       bufferedTaskEnd = payload; return;

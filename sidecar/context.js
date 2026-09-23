@@ -4,7 +4,7 @@
    folds older turns into a summary (given an injected summarizer), and redacts
    key-shaped secrets from anything bound for logs/persistence.
 
-   makeContext({ contextLimit, compactAt?, keepTail?, estimateTokens? }) -> {
+   makeContext({ contextLimit, compactAt?, keepTail?, keepTailTurns?, tailShare?, estimateTokens? }) -> {
      systemPrompt({identity, capabilities, rules}) -> string,   // frozen, sectioned
      assemble({system, summary, history}) -> messages[],         // system + (summary) + history
      estimateTokens(text) -> int,  estimateMessages(msgs) -> int,
@@ -435,6 +435,23 @@
       COMPACTION_SECTIONS.map(s => '## ' + s).join('\n');
   }
 
+  /* THE RUN'S CONTEXT POLICY (index.js runOnce and the tests that must exercise exactly what ships read this one
+     object). compactAt: fold once the prompt passes 65% of the window. tailShare: the verbatim tail is sized in
+     TOKENS — 20% of the window (Hermes' TAIL_MAX_CONTEXT_FRACTION) — instead of a turn count: six turns of
+     79k-char results were ~120k tokens, more than a 64k window, so a fold freed 0.6% and the run died
+     context_overflow at 82,200 tokens (audit probe 09-22). keepTailTurns only applies while the window is unknown. */
+  const RUN_CONTEXT_DEFAULTS = Object.freeze({ compactAt: 0.65, tailShare: 0.2, keepTailTurns: 6 });
+
+  /* TOOL-OUTPUT BUDGET RE-ARM. The per-run tool-byte budget (index.js) is re-armed by a fold because the fold took
+     those bytes out of the prompt — but only a fold that really freed space (>= 10% of the prompt, both ends from
+     the SAME local estimator, as agent.compact reports them) earns it. A fold that freed 0.6% used to re-arm the
+     whole budget and let full-size results straight back into a prompt that was still at the window's edge. */
+  const REARM_MIN_FREED = 0.10;
+  function foldFreedEnough(ev) {
+    const before = Number(ev && ev.beforeTokens) || 0, after = Number(ev && ev.afterTokens) || 0;
+    return before > 0 && (before - after) / before >= REARM_MIN_FREED;
+  }
+
   function makeContext(opts) {
     opts = opts || {};
     let contextLimit = opts.contextLimit || 0;         // 0 = unknown (never auto-compact); mutable — see setContextLimit
@@ -444,6 +461,9 @@
        that pass the legacy keepTail (messages) keep message semantics exactly; default is 6 turns. */
     const keepTailTurns = opts.keepTailTurns > 0 ? opts.keepTailTurns : 0;
     const keepTail = keepTailTurns ? 0 : (opts.keepTail || 6);
+    // TOKEN TAIL (RUN_CONTEXT_DEFAULTS.tailShare): when set and the window is known, the tail is a token budget and
+    // keepTailTurns/keepTail are only the fallback for an unknown window. Unset = every legacy caller unchanged.
+    const tailShare = (opts.tailShare > 0 && opts.tailShare < 1) ? opts.tailShare : 0;
     const estimateTokens = opts.estimateTokens || defaultEstimate;
 
     /* COUNT THE TOOL CALLS. This summed `content` alone — but in an agentic loop the tool-call ARGUMENTS are
@@ -522,7 +542,38 @@
       }
       return cut;
     }
-    function tailStart(history) { return keepTailTurns ? turnCut(history, keepTailTurns) : Math.max(0, history.length - keepTail); }
+    /* Token-budgeted tail: walk turn-groups (an assistant message + its tool results; any other message alone)
+       newest-first and keep them while they fit the budget. The FLOOR is never folded whatever it weighs: everything
+       from the newest assistant message on (its tool calls, their results and anything after, e.g. a screenshot turn),
+       or the newest group when there is no assistant message. Cuts land only on group starts, so a tool result is
+       never separated from the call that produced it. */
+    function tailBudgetTokens() { return (tailShare && contextLimit) ? Math.floor(tailShare * contextLimit) : 0; }
+    function tokenTailCut(history, budget) {
+      const n = history.length;
+      let floor = -1;
+      for (let k = n - 1; k >= 0; k--) { if (history[k] && history[k].role === 'assistant') { floor = k; break; } }
+      if (floor < 0) { floor = n - 1; while (floor > 0 && history[floor] && history[floor].role === 'tool') floor--; }
+      let cut = n, acc = 0;
+      while (cut > 0) {
+        let start = cut - 1;
+        while (start > 0 && history[start] && history[start].role === 'tool') start--;
+        const t = estimateMessages(history.slice(start, cut));
+        if (cut <= floor && acc + t > budget) break;   // past the floor: stop at the first group that would not fit
+        acc += t;
+        cut = start;
+      }
+      return cut;
+    }
+    /* planOpts.scale = real tokens per local-estimate token (the caller's usage anchor / its local ruler, >= 1). The
+       budget is in REAL tokens but groups are measured with the local estimator, which can be blind to what the
+       provider counts (an image part estimates at ~8 tokens and bills ~1.5k): unscaled, a prompt the provider called
+       140k tokens looked like 2k locally, the whole history fit "the tail", and nothing could fold. */
+    function tailStart(history, planOpts) {
+      const budget = tailBudgetTokens();
+      const scale = (planOpts && Number(planOpts.scale) > 1) ? Number(planOpts.scale) : 1;
+      if (budget > 0) return tokenTailCut(history, budget / scale);
+      return keepTailTurns ? turnCut(history, keepTailTurns) : Math.max(0, history.length - keepTail);
+    }
 
     function compact(history, summarize) {
       history = history || [];
@@ -538,9 +589,9 @@
     // verbatim `tail`. Like compact() it keeps ~keepTail messages, but SNAPS the boundary earlier so the tail never
     // begins with an orphan `role:'tool'` result whose owning assistant turn was folded into the summary — that
     // orphan would 400 the next model call. The loop folds `older` into a summary; `tail` is replayed untouched.
-    function planCompaction(history) {
+    function planCompaction(history, planOpts) {
       history = history || [];
-      let cut = tailStart(history);                        // tail = history.slice(cut)
+      let cut = tailStart(history, planOpts);              // tail = history.slice(cut)
       if (cut <= 0) return { older: [], tail: history.slice() };
       while (cut > 0 && history[cut] && history[cut].role === 'tool') cut--;   // snap to a turn-group start
       if (cut <= 0) return { older: [], tail: history.slice() };
@@ -565,9 +616,9 @@
     // micro-compaction tier re-measures against this before paying for an LLM fold.
     function thresholdTokens() { return contextLimit ? compactAt * contextLimit : 0; }
 
-    const api = { systemPrompt, assemble, estimateTokens, estimateMessages, fit, shouldCompact, compact, planCompaction, setContextLimit, thresholdTokens, redact, contextLimit, keepTail, keepTailTurns };
+    const api = { systemPrompt, assemble, estimateTokens, estimateMessages, fit, shouldCompact, compact, planCompaction, setContextLimit, thresholdTokens, tailBudgetTokens, redact, contextLimit, keepTail, keepTailTurns, tailShare };
     return api;
   }
 
-  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens };
+  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens, RUN_CONTEXT_DEFAULTS, REARM_MIN_FREED, foldFreedEnough };
 });

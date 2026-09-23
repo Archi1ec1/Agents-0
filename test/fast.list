@@ -910,3 +910,8 @@ test/context.image-estimate.test.js
 test/registry.window-scaled-cap.test.js
 test/dispatch.fair-share.test.js
 test/loop.image-eviction.test.js
+test/preflight.first-call-fold.test.js
+test/threshold.anchored.test.js
+test/tail.token-budget.test.js
+test/fold.user-verbatim.test.js
+test/compaction.images.test.js
