@@ -140,6 +140,18 @@ function hopTurn(t) {
   return compose(t.originalText, t.from, t.upstream, t.hop, brief, verdictWhen ? Verdict.verdictBrief(verdictWhen) : '');
 }
 
+/* lineRefusalNote(lineOfAgent, dock, lineId) -> the honest note when the line GATE refused to advance this work
+   past `dock` (the run carries a line that is not this dock's own), else null. See refusalNote's full reasoning
+   inside makeChainRunner — conservative by construction: it only turns a PROVEN refusal into words. */
+function lineRefusalNote(lineOfAgent, dock, lineId) {
+  if (typeof lineOfAgent !== 'function' || !lineId) return null;
+  let own = null;
+  try { own = lineOfAgent(dock); } catch (_) { return null; }
+  if (!own || String(own) === String(lineId)) return null;
+  // plain language, no ids, no belt vocabulary — the same voice the floor speaks (build.js step card)
+  return 'this job did not come in through this line’s door, so the line did not run past ' + dock;
+}
+
 function makeChainRunner(o) {
   o = o || {};
   const nextAgent = typeof o.nextAgent === 'function' ? o.nextAgent : null;
@@ -204,14 +216,7 @@ function makeChainRunner(o) {
      answered right here and stops here" is the designed contract (Andrew's ruling, 2026-08-07) and the
      step editor says so on the floor — it is not a line that failed to run. */
   const lineOfAgent = typeof o.lineOfAgent === 'function' ? o.lineOfAgent : null;
-  function refusalNote(dock, lineId) {
-    if (!lineOfAgent || !lineId) return null;
-    let own = null;
-    try { own = lineOfAgent(dock); } catch (_) { return null; }
-    if (!own || String(own) === String(lineId)) return null;
-    // plain language, no ids, no belt vocabulary — the same voice the floor speaks (build.js step card)
-    return 'this job did not come in through this line’s door, so the line did not run past ' + dock;
-  }
+  function refusalNote(dock, lineId) { return lineRefusalNote(lineOfAgent, dock, lineId); }
 
   /* JOINER + LOOP seams (2026-08-21) — all optional, all injected like nextAgent:
        stepAgent(agentId, ctx) -> Pipeline.chainStep's answer (router.chainStep in production). When absent the
@@ -458,4 +463,4 @@ function makeChainRunner(o) {
   return { advance, stopNote, _limits: { maxHops, maxUsd }, _barrier: barrier };
 }
 
-module.exports = { makeChainRunner, effectiveLimits, loopDecision, preHopRefusal, hopTurn, MAX_HOPS, MAX_CHAIN_USD };
+module.exports = { makeChainRunner, effectiveLimits, loopDecision, preHopRefusal, hopTurn, lineRefusalNote, MAX_HOPS, MAX_CHAIN_USD };
