@@ -302,6 +302,7 @@
 @media (max-width:620px){
   .home .tick{ display:none; }
   .hero-eyebrow{ font-size:13px; letter-spacing:2px; padding:5px 11px; gap:8px; }
+  .home .tagline{ font-size:clamp(20px,6.2vw,26px); }            /* keeps the typing cursor on the tagline line */
   .home .hero .cta-row{ flex-direction:column; align-items:stretch; width:min(300px,100%); gap:12px; }
   .home .hero .cta-row .btn{ text-align:center; }
   .home .hero-meta{ font-size:14px; letter-spacing:.5px; line-height:1.6; }
