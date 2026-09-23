@@ -447,7 +447,10 @@
       body.output_config = Object.assign({}, body.output_config, { effort });
     }
     function buildBody(req) {
-      const converted = messagesToAnthropic(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages): every tool_use gets its tool_result in the
+      // next turn (a run that died at the tool boundary left one mid-history), and ids minted by another provider
+      // (Kimi's functions.read_file:0) are rewritten into this wire's ^[a-zA-Z0-9_-]+$ grammar, call and result alike.
+      const converted = messagesToAnthropic(provider.prepareWireMessages(req.messages || [], 'anthropic'));
       const body = {
         model: req.model,
         max_tokens: resolveMaxTokens(req),

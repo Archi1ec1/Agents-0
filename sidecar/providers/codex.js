@@ -189,7 +189,9 @@
     const reasoningEffort = normalizeCodexReasoningEffort(opts.reasoningEffort || DEFAULT_REASONING_EFFORT);
 
     function buildBody(req) {
-      const { instructions, rest } = extractInstructions(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages) ahead of this wire's own pairing pass below
+      // (messagesToInput): a well-formed transcript is untouched; a malformed one arrives already paired.
+      const { instructions, rest } = extractInstructions(provider.prepareWireMessages(req.messages || [], 'codex'));
       const effort = normalizeCodexReasoningEffort(req.reasoningEffort || reasoningEffort);
       const body = {
         model: req.model || DEFAULT_MODEL,

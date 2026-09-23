@@ -873,3 +873,4 @@ test/summarizer.guards.test.js
 test/micro.durability.test.js
 test/checkpoint-restore-undoable.test.js
 test/provider.codex-quota-body.test.js
+test/provider.wire-sanitize.test.js

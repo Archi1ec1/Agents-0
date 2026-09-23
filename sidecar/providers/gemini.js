@@ -303,7 +303,10 @@
       body.generationConfig = Object.assign({}, body.generationConfig, { thinkingConfig: cfg });
     }
     function buildBody(req) {
-      const converted = messagesToGemini(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages): a functionCall left unanswered mid-history (a
+      // run that died at the tool boundary) gets its functionResponse before the next turn, instead of being
+      // followed straight by user text. Gemini's wire carries no call ids (it pairs by position), so no id rewrite.
+      const converted = messagesToGemini(provider.prepareWireMessages(req.messages || [], 'gemini'));
       const body = { contents: converted.contents };
       if (converted.systemInstruction) body.systemInstruction = converted.systemInstruction;
       const tools = toGeminiTools(req.tools);
