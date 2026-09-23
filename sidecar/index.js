@@ -4355,9 +4355,9 @@ let connectorOauth = connectorState.oauth;
 /* Publisher-owned Desktop registration wins for new sign-ins. Keep launch configuration out of the
    shared OAuth-client cache; old grants retain their own client for refresh. Legacy Web clients remain readable. */
 const GOOGLE_OAUTH_AS = 'https://accounts.google.com';
-const googleConnectorDeferred = cfg => googleClientConfig.RELEASE_DEFERRED && !!cfg &&
-  !(googleClientConfig.SELECTED_FILES_ENABLED && googleClientConfig.isSelectedFiles(cfg)) &&
-  (cfg.googleApi || cfg.transport !== 'stdio' && googleClientConfig.isWorkspaceUrl(cfg.url));
+// Per-service release: each Google service opens on its own verification tier (mcp/google-client.js SERVICES).
+const googleConnectorDeferred = cfg => googleClientConfig.connectorDeferred(cfg);
+const googleDeferredMessage = cfg => googleClientConfig.deferredMessage(cfg);
 const GOOGLE_DESKTOP_CLIENT = googleClientConfig.loadDesktopClient({ env: process.env,
   readFile: () => fs.readFileSync(path.join(__dirname, 'mcp', 'google-client.json'), 'utf8') });
 const GOOGLE_OAUTH_ENV_CLIENT = (() => {
@@ -4483,7 +4483,7 @@ function mcpStdioIsolationError(cfg) {
 const connectors = makeConnectorManager({
   makeTransport: (cfg) => {
     if (connectorStorageError) throw new Error(connectorStorageError);
-    if (googleConnectorDeferred(cfg)) throw new Error(googleClientConfig.DEFERRED);
+    if (googleConnectorDeferred(cfg)) throw new Error(googleDeferredMessage(cfg));
     if (cfg && cfg.transport === 'http' && googleApiTransport.productForUrl(cfg.url)) return googleApiTransport.makeGoogleTransport(cfg);
     if (!cfg || cfg.transport !== 'stdio') return makeHttpTransport(cfg);
     const aid = String(cfg.agentId || '');
@@ -4594,8 +4594,9 @@ function classifyOauthRefreshError(msg) {
   return 'network';   // fetch failed / timed out / DNS / connection reset / private-host refusal — the AS never answered
 }
 async function ensureConnectorOauthToken(id, force) {
-  if (googleConnectorDeferred(connectorConfigs.find(c => c && c.id === id))) {
-    return { token: '', refreshError: { kind: 'unavailable', message: googleClientConfig.DEFERRED } };
+  const deferredCfg = connectorConfigs.find(c => c && c.id === id);
+  if (googleConnectorDeferred(deferredCfg)) {
+    return { token: '', refreshError: { kind: 'unavailable', message: googleDeferredMessage(deferredCfg) } };
   }
   const t = connectorOauth.byId[id];
   if (!t || !t.accessToken) return { token: '', refreshError: null };
@@ -4664,7 +4665,7 @@ async function configureConnectorCfg(cfg, options) {
   if (googleConnectorDeferred(cfg)) {
     // Runtime-only suspension. Never write enabled:false over the owner's saved preference or grant.
     await connectors.configure(cfg.id, Object.assign({}, cfg, { enabled: false, token: '', tokenProvider: null }), options);
-    return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleClientConfig.DEFERRED };
+    return { ok: false, state: 'down', toolCount: 0, releaseDeferred: true, error: googleDeferredMessage(cfg) };
   }
   if (cfg && cfg.transport === 'stdio' && cfg.enabled !== false &&
       !(Array.isArray(cfg.missingFields) && cfg.missingFields.length) && !(options && options.deferConnect)) {
@@ -11137,7 +11138,7 @@ async function handleToolsetToggle(req, res) {
    protected sibling file, and NEVER echoed back (list/status carry `hasToken` only, never the value). ---- */
 function connectedConnectorSnapshot() {
   return connectors.list().map(c => googleConnectorDeferred(connectorConfigs.find(cfg => cfg.id === c.id) || c)
-    ? Object.assign({}, c, { releaseDeferred: true, signInAvailable: false, detail: googleClientConfig.DEFERRED,
+    ? Object.assign({}, c, { releaseDeferred: true, signInAvailable: false, detail: googleDeferredMessage(connectorConfigs.find(cfg => cfg.id === c.id) || c),
       oauth: !!connectorConfigs.find(cfg => cfg.id === c.id)?.oauth, oauthAuthorized: false,
       credentialSaved: !!connectorOauth.byId[c.id]?.accessToken })
     : c && c.oauth
@@ -11233,7 +11234,7 @@ function handleConnectorCatalog(req, res) {
       e.releaseDeferred = googleConnectorDeferred(e);
       if (e.releaseDeferred) e.blurb = 'Planned for a later update. ' + e.blurb.replace(/^Planned for a later update\. /, '').replace(' Sign in with Google to connect your account.', '');
       e.signInAvailable = !connectorStorageError && !e.releaseDeferred && !e.needsClient && (!googleClientConfig.isSelectedFiles(e) || connectorVault.protected);
-      if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleClientConfig.DEFERRED : googleClientConfig.UNAVAILABLE);
+      if (!e.signInAvailable) e.signInMessage = connectorStorageError || (e.releaseDeferred ? googleDeferredMessage(e) : googleClientConfig.UNAVAILABLE);
     }
   };
   payload.connectors.forEach(markNeedsClient);
@@ -11249,7 +11250,7 @@ async function handleConnectorOauthClient(req, res) {
   let body; try { body = JSON.parse(await readBody(req, 8192)) || {}; } catch (e) { return json(400, { error: 'bad json' }); }
   const entry = connectorCatalog.get(String(body.id || '').trim());
   if (!entry || !entry.staticOauth) return json(400, { error: 'not a pre-registered-client connector' });
-  if (googleConnectorDeferred(entry)) return json(503, { error: googleClientConfig.DEFERRED, code: 'google_release_deferred' });
+  if (googleConnectorDeferred(entry)) return json(503, { error: googleDeferredMessage(entry), code: 'google_release_deferred' });
   const as = entry.staticOauth.authorizationServer;
   const clientId = String(body.clientId || '').trim();
   const clientSecret = String(body.clientSecret || '').trim();
@@ -11276,7 +11277,7 @@ async function handleConnectorUpsert(req, res) {
   if (transport === 'http' && !url) return json(400, { error: 'a server URL is required' });
   const selectedFileToggle = googleClientConfig.isSelectedFiles(prev) && transport === 'http' && url === prev.url && oauth &&
     Object.keys(body).every(k => ['id', 'transport', 'enabled'].includes(k));
-  if (!selectedFileToggle && googleConnectorDeferred({ transport, url })) return json(503, { ok: false, saved: false, error: googleClientConfig.DEFERRED, code: 'google_release_deferred' });
+  if (!selectedFileToggle && googleConnectorDeferred({ transport, url })) return json(503, { ok: false, saved: false, error: googleDeferredMessage({ url }), code: 'google_release_deferred' });
   if (transport === 'stdio' && !command) return json(400, { error: 'a stdio command is required' });
   const agentId = String(body.agentId || (transport === 'stdio' ? (prev.agentId || '') : '')).trim();
   const cwd = transport === 'stdio' ? String(Object.prototype.hasOwnProperty.call(body, 'cwd') ? body.cwd : (prev.cwd || '')).trim() : '';
@@ -11455,7 +11456,7 @@ async function handleConnectorOauthStart(req, res) {
   const entry = target.entry;
   if (connectorStorageError) return json(503, { error: connectorStorageError, code: 'connector_storage_locked', signInAvailable: false });
   if (googleClientConfig.isSelectedFiles(entry) && !connectorVault.protected) return json(503, { error: 'Selected Google files requires encrypted credential storage in the StarNet desktop app.', code: 'connector_storage_required' });
-  if (googleConnectorDeferred(entry)) return json(503, { error: googleClientConfig.DEFERRED, code: 'google_release_deferred', signInAvailable: false });
+  if (googleConnectorDeferred(entry)) return json(503, { error: googleDeferredMessage(entry), code: 'google_release_deferred', signInAvailable: false });
   const rawAttempt = String(body.attemptId || '').trim();
   const attemptId = /^[A-Za-z0-9_-]{8,80}$/.test(rawAttempt) ? rawAttempt : crypto.randomBytes(12).toString('hex');
   if (connectorOauthAttempts.has(attemptId)) return json(409, { error: 'this sign-in attempt is already running', attemptId });
