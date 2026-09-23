@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "ae4b0f817ec5fbc253a594f77c8b40cb5399cfaf",
+    "sourceCommit": "15ce69940ec27b31eebc1e57f49b19367f0e748f",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -118,8 +118,8 @@
       },
       {
         "path": "frontend/agent-demo/review-world.js",
-        "bytes": 743630,
-        "sha256": "e6be5ef4b329c59d23ed48957df13a8eaa620cd4a98bf7aa80573907b0b5d047"
+        "bytes": 743660,
+        "sha256": "9cd058c5973542080c70195eaa0751c855adb79b77f7c81d0115f66e6876a1c6"
       },
       {
         "path": "frontend/agent-demo/sprites.js",
@@ -313,8 +313,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 392159,
-        "sha256": "7be4aff4130b91b380876ff99785a24705080b2884b66368a6821eec58ad9b50"
+        "bytes": 392197,
+        "sha256": "db6009d2ec8d5bc97e885b4743dde0e0a9e5525ad59ce5d35e1305e87370091f"
       },
       {
         "path": "frontend/app/channels.js",
@@ -688,8 +688,8 @@
       },
       {
         "path": "frontend/app/pipeline.js",
-        "bytes": 96709,
-        "sha256": "a2d2f8dd33fe4aa0c71c5f9888c3c570e0f6d22b523bac8b4582608220983c16"
+        "bytes": 98192,
+        "sha256": "317238eeb4c5a82381118feb2c7208cb5d672d027d758da1f6500436760a45ed"
       },
       {
         "path": "frontend/app/pitch.js",
@@ -1303,8 +1303,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 778694,
-        "sha256": "ff34ee7f142493ed4cf10c40df34e079e91c9aee214f598b079f110fb3f2a90d"
+        "bytes": 778724,
+        "sha256": "bccef3d42788a14022184c4d79926ce80f7bb76c4038bcee6c71850bbe6a31e0"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1318,8 +1318,8 @@
       },
       {
         "path": "frontend/app/worldmodel.js",
-        "bytes": 177630,
-        "sha256": "d59864c5c3d66f64c69efc358e9eb2d6975c8f491860495ead0041d4f2fdc46f"
+        "bytes": 177857,
+        "sha256": "df01468e428d58a96dcaf6cae42349da034199eb21d787f5691cfc2f310241b7"
       },
       {
         "path": "frontend/app/worldrenderer.js",
