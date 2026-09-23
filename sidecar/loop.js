@@ -41,6 +41,9 @@
   const preStreamSpend = recoveryPolicy && typeof recoveryPolicy.preStreamSpend === 'function'
     ? recoveryPolicy.preStreamSpend
     : (() => ({ rungs: 0, waitedMs: 0 }));
+  const isIdleStall = recoveryPolicy && typeof recoveryPolicy.isIdleStall === 'function'
+    ? recoveryPolicy.isIdleStall
+    : (() => false);
 
   function summarize(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) : s; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 80; return s.length > n ? s.slice(0, n) + '…' : s; }
@@ -1306,6 +1309,12 @@
       // deliberately tighter, because a truncation costs a FULL generation to re-run.
       let truncRetries = 0;
       const MAX_TRUNC_RETRIES = 1;
+      /* A STALLED PROVIDER IS NOT A BLIP (Step 2 F4). The idle watchdog (providers/provider.js, 300s by default)
+         turns a byte-silent stream into a retryable `timeout`, and the ladder retried it on every rung: up to 7
+         attempts x 300s = ~37 minutes of silence before the run said anything. Two CONSECUTIVE idle stalls on the
+         same provider/model now end the ladder (recovery-policy: fallback when one is configured, otherwise fail
+         'provider_stalled'). Any other failure class resets the count, and so does a fallback switch. */
+      let idleStalls = 0;
       while (true) {
         bookUsage(usage, usageModel);   // a re-entry after retry/compress/fallback: book the partial attempt BEFORE the reset
         acc.text = ''; acc.toolCalls = {}; acc.reasoning = []; streamedTextChunks = []; usage = null; lastFinishReason = null;
@@ -1363,12 +1372,14 @@
         const spent = preStreamSpend(streamErr);
         retriesUsed += spent.rungs;
         ladderWaitMs += spent.waitedMs;
+        idleStalls = isIdleStall(streamErr) ? idleStalls + 1 : 0;
         const sample = jitterSample();
         const decide = (canCompress, hasFallback) => providerRecovery({
           classification: cls, canCompress, hasFallback,
           recoveriesUsed: recoveries, maxRecoveries, retriesUsed, maxRetries: MAX_STREAM_RETRIES,
           preStreamRetriesExhausted: !!streamErr.preStreamRetriesExhausted, cancelled: !!signal.aborted,
-          outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample
+          outputCapRetried, waitedMs: ladderWaitMs, patienceMs: STREAM_RETRY_PATIENCE_MS, jitterSample: sample,
+          idleStalls
         });
         let decision = decide(!!(context && summarize), fbIndex < fallbacks.length);
         if (decision.action === 'lower_output') {
@@ -1408,7 +1419,7 @@
                 if (m && m.role === 'assistant' && m.reasoning != null) { delete m.reasoning; reasoningDropped++; }
               }
             }
-            const fbPayload = { agentId, runId, fromModel: model, toModel: (fb.model || model), reason: cls.reason, rotate: !!cls.shouldRotateCredential };
+            const fbPayload = { agentId, runId, fromModel: model, toModel: (fb.model || model), reason: decision.reason === 'provider_stalled' ? 'provider_stalled' : cls.reason, rotate: !!cls.shouldRotateCredential };
             if (reasoningDropped) fbPayload.reasoningDropped = reasoningDropped;   // additive; schema declares no additionalProperties
             emit('provider.fallback', fbPayload);
             if (fb.credKey != null) activeCredKey = fb.credKey;   // the entry we switch TO becomes the live credential
@@ -1434,6 +1445,7 @@
             }
             armRetryDedupe(acc);
             recoveries++;
+            idleStalls = 0;   // a different provider/model starts its own stall count
             noteRecovery({ stage: 'provider_stream', action: 'fallback', reason: decision.reason, attempt: recoveries, model, delayMs: 0, rotate: decision.rotate });
             continue;
           }
@@ -1464,7 +1476,15 @@
           if (signal.aborted) break;   // a cancel during the backoff ends cleanly below
           continue;
         }
-        fatal = cls;                                 // unrecoverable / chain exhausted / retries spent
+        if (decision.reason === 'provider_stalled') {
+          // Name the stall honestly — which model, how many silent attempts, what the watchdog saw — so the
+          // Commander reads "the model stopped responding", not a generic timeout after half an hour.
+          fatal = Object.assign({}, cls, {
+            reason: 'provider_stalled', retryable: true,
+            message: 'model stalled: ' + idleStalls + ' consecutive attempts on ' + model + ' received no response bytes ('
+              + String((streamErr && streamErr.message) || 'idle timeout') + ') — stopped instead of waiting out the rest of the retry ladder. The provider may be down or overloaded; try again later or switch models.'
+          });
+        } else fatal = cls;                          // unrecoverable / chain exhausted / retries spent
         break;
       }
       if (fatal) {

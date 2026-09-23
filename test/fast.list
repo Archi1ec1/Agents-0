@@ -875,3 +875,4 @@ test/checkpoint-restore-undoable.test.js
 test/provider.codex-quota-body.test.js
 test/loop.failure-breaker.test.js
 test/loop.no-progress-guard.test.js
+test/loop.stall-giveup.test.js
