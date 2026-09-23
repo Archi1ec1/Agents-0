@@ -46,6 +46,14 @@ A.ok(/t === 'intake' \|\| t === 'outbox' \|\| t === 'merger' \|\| t === 'splitte
 A.ok(/if\(WF_PART\[p\.t\]\)\{finFocusLine\(p\.id\);openWorkflowPanel\(p\.id,true\);\}/.test(build), 'a floor click on a line machine selects it in the panel');
 A.ok(!/refit-step-card|refit-flow-card/.test(build.replace(/\/\*[\s\S]*?\*\//g, ' ')), 'the modal step/flow cards are gone');
 
+// two panels must not squeeze the floor: the Workflow panel minimizes the Build Library through its own
+// MINIMIZE state and gives it back on close — unless the Commander reopened it meanwhile
+A.ok(/H\.panelShown\(true\)/.test(panel) && /H\.panelShown\(false\)/.test(panel), 'the panel reports open/close to build mode');
+A.ok(/if \(dock && !dock\.classList\.contains\('is-collapsed'\)\) \{ toggleKit\(true\); wfKitAuto = true; \}/.test(build), 'opening minimizes the library via toggleKit, remembering it did');
+A.ok(/if \(restore && dock && dock\.classList\.contains\('is-collapsed'\)\) toggleKit\(false\);/.test(build), 'closing restores it only if the panel minimized it');
+A.ok(/if \(!hide\) wfKitAuto = false;/.test(build), 'a reopen by the Commander cancels the owed restore');
+A.ok(/if \(id !== 'select' \|\| !wasSelect\) toggleKit\(false\);/.test(build), 'a bare deselect (ESC) does not pop the minimized library back open');
+
 // load order: the truth layer, then the panel, then build.js
 const iL = html.indexOf('app/workflowline.js'), iP = html.indexOf('app/workflowpanel.js'), iB = html.indexOf('app/build.js');
 A.ok(iL > 0 && iP > iL && iB > iP, 'index.html loads workflowline.js, then workflowpanel.js, then build.js');
