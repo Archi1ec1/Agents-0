@@ -1004,7 +1004,16 @@ const ledgerIo = {
   }
 };
 const ledger = makeLedger({ io: ledgerIo, clock: { now: () => Date.now() }, nextId: () => crypto.randomUUID() });
-const budget = makeBudget({ caps: { agent: BUDGET_CAPS.perAgent, day: BUDGET_CAPS.perDay, global: BUDGET_CAPS.global }, ledger, clock: { now: () => Date.now() } });
+const budget = makeBudget({ caps: { agent: BUDGET_CAPS.perAgent, day: BUDGET_CAPS.perDay, global: BUDGET_CAPS.global }, ledger, clock: { now: () => Date.now() }, strictScope: budgetScopeIsExplicit });
+// A cap someone CHOSE is strict (fail-closed on uncertain spend history); the SHIPPED $25/day default is a soft rail
+// nobody chose (budget.js strictScope). agent/global ship at 0, so any governed value there was chosen. Read at
+// check time, after the saved overrides have loaded.
+function budgetScopeIsExplicit(scope) {
+  if (scope !== 'day') return true;
+  const env = ENV('BUDGET_PER_DAY');
+  if (env != null && String(env).trim() !== '') return true;
+  return !!(budgetOverrides && Object.prototype.hasOwnProperty.call(budgetOverrides, 'perDay'));
+}
 /* ---- managed credits (config-gated). Shares the SAME spend ledger as the run finalizer, so a managed run's
    final truth lands in one place. INERT (configured() === false) unless CREDITS_URL is set — then admission can
    reserve/refund against a managed account and the STORE surface + /api/credits come alive. */
