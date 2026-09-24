@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "8389cb6dab80d6523aa07a65c4b0dec1d546c00e",
+    "sourceCommit": "ea7810ff723e6ce970b9edba6c34f9286fe48d3b",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -1238,8 +1238,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 56820,
-        "sha256": "e1b3783a4bab5392a607ae224e00968e1527d7e43d6b6309dee04b377768c0e9"
+        "bytes": 59969,
+        "sha256": "13d821ce3b9dea597aafe920fad823f0984ace914532ee9deeb490d649d785f9"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1303,8 +1303,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 779732,
-        "sha256": "e7c98222b93309972e6aa451946674f114e73dd0636af2ba37854e0c5e8f1043"
+        "bytes": 778724,
+        "sha256": "bccef3d42788a14022184c4d79926ce80f7bb76c4038bcee6c71850bbe6a31e0"
       },
       {
         "path": "frontend/app/worldlab.js",
