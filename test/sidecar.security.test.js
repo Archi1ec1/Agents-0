@@ -95,6 +95,17 @@ async function tokenFromIndex(base) {
     A.eq(localIndex.headers['x-frame-options'], 'SAMEORIGIN', 'the app refuses cross-site framing (X-Frame-Options)');
     A.ok(/frame-ancestors 'self'/.test(localIndex.headers['content-security-policy'] || ''), 'the app refuses cross-site framing (CSP frame-ancestors)');
     A.eq((await rawGet('/', 'localhost:' + port)).status, 200, 'localhost Host is loopback too');
+    // The ONE exemption: a line-trigger webhook may arrive through the Commander's own tunnel carrying its public
+    // Host. It must reach the trigger's secret check (here: an unknown trigger), never the Host floor.
+    const tunnelHook = await new Promise((resolve, reject) => {
+      const req = require('http').request({ host: '127.0.0.1', port, path: '/api/hooks/trg_nosuchtrigger01', method: 'POST', headers: { Host: 'abc.trycloudflare.com', 'Content-Type': 'application/json' } }, (res) => {
+        let body = ''; res.on('data', d => { body += d; }); res.on('end', () => resolve({ status: res.statusCode, body }));
+      });
+      req.on('error', reject); req.end('{}');
+    });
+    A.ok(tunnelHook.status !== 403 || !/forbidden host/.test(tunnelHook.body), 'a tunnelled trigger webhook reaches its own secret check, not the Host floor');
+    A.ok(tunnelHook.body.indexOf(browserToken) < 0, 'the trigger webhook answer carries no API token');
+    A.eq((await rawGet('/api/hooks/trg_nosuchtrigger01', 'abc.trycloudflare.com')).status, 403, 'a non-POST on the hook path still meets the Host floor');
   } finally {
     await fixture.dispose();
   }

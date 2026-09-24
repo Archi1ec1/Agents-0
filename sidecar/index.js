@@ -9218,7 +9218,10 @@ const server = http.createServer((req, res) => {
   // openai-compat's own routes), while `/` inlines the per-launch API token — a rebound page could read the secret
   // the token layer exists to protect, plus /workshop-run/ bytes and the pre-gate fault line. Every legitimate
   // caller (browser, Tauri webview, tests, the desktop shell) addresses 127.0.0.1/localhost, so this costs nothing.
-  if (!isAllowedHost(req.headers.host)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('forbidden host'); }
+  // ONE exemption: a line-trigger webhook POST /api/hooks/trg_… may arrive through a tunnel the Commander set up
+  // (cloudflared/ngrok forward the PUBLIC Host). It is fenced by its own per-trigger secret and returns no token.
+  const triggerHook = req.method === 'POST' ? TRIGGER_HOOK_RX.exec(String(req.url || '')) : null;
+  if (!triggerHook && !isAllowedHost(req.headers.host)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('forbidden host'); }
   // Once an uncaught exception has made this process's in-memory state unprovable, the server becomes a recovery
   // shell. Static GET/HEAD keeps the already-installed UI reloadable; health + authenticated diagnostics explain
   // the fault. Every other API, external-harness, artifact and mutation surface fails closed with 503. This gate
@@ -9230,7 +9233,7 @@ const server = http.createServer((req, res) => {
   // LINE TRIGGER WEBHOOKS (2026-09-23): an outside caller has no launch token, so POST /api/hooks/trg_<id> is answered
   // HERE, before the /api gate, and ONLY for that exact shape — its own per-trigger secret is the fence (serveTriggerHook).
   // Any other method or path on /api/hooks still meets the full host/origin/token gate below.
-  if (req.method === 'POST') { const hm = TRIGGER_HOOK_RX.exec(String(req.url || '')); if (hm) return serveTriggerHook(req, res, hm[1]); }
+  if (triggerHook) return serveTriggerHook(req, res, triggerHook[1]);
   const isApi = String(req.url || '').indexOf('/api/') === 0 || req.url === '/api';
   if (isApi) {
     // Desktop serves the frontend from a Tauri app origin, while browser mode is same-origin loopback.
