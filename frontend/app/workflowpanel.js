@@ -704,34 +704,33 @@ const WorkflowPanel = (() => {
   }
   function projectSectionHtml(p) {
     const cur = projectOf(p), P = S.projects;
-    let opts = '', note = 'All workflow stages use this folder. Add trusted folders in Projects.', dis = ' disabled';
-    if (!P) opts = '<option>Loading projects…</option>';
-    else if (P.err) { opts = '<option>Unavailable</option>'; note = P.err; }
+    const chip = (root, label, on, off) => '<button type="button" class="bb sm wf-proj' + (on ? ' active' : '') + '" data-root="' + esc(root) + '" aria-pressed="' + on + '"' + (off ? ' disabled' : '') + '>' + esc(label) + '</button>';
+    let chips = '', note = 'All workflow stages use this folder. Add trusted folders in Projects.';
+    if (!P) chips = '<div class="wf-help dim">Loading projects…</div>';
+    else if (P.err) note = P.err;
     else {
-      dis = '';
-      opts = '<option value="">Agent workspace (default)</option>'
-        + P.rows.map(r => '<option value="' + esc(r.root) + '"' + (r.root === cur ? ' selected' : '') + '>' + esc(r.displayPath || r.root) + '</option>').join('');
+      chips = chip('', 'Agent workspace (default)', !cur, false)
+        + P.rows.map(r => chip(r.root, r.displayPath || r.root, r.root === cur, false)).join('');
       if (cur && !P.rows.some(r => r.root === cur)) {
-        opts += '<option value="' + esc(cur) + '" disabled selected>' + esc(cur) + ' (unavailable)</option>';
+        chips += chip(cur, cur + ' (unavailable)', true, true);
         note = 'This project is no longer trusted. Restore access in Projects or choose another folder.';
       }
     }
     if (S.projectMsg && S.projectMsg.id === p.id) note = S.projectMsg.t;
-    return '<section class="wf-sec"><h3>Working folder</h3><label class="trg-form-k" for="wf-project">Trusted project</label>'
-      + '<select id="wf-project" class="refit-input"' + dis + '>' + opts + '</select>'
+    return '<section class="wf-sec"><h3>Working folder</h3><div class="trg-form-k">Trusted project</div>'
+      + '<div class="wf-chips" id="wf-project" role="group" aria-label="Trusted project">' + chips + '</div>'
       + '<p class="wf-help" id="wf-project-note">' + esc(note) + '</p></section>';
   }
   function wireProjectPick(p) {
-    const pick = $('#wf-project');
-    if (!pick || pick.disabled) return;
-    pick.onchange = () => {
+    $$('.wf-proj').forEach(b => b.onclick = () => {
+      if (b.disabled || b.getAttribute('aria-pressed') === 'true') return;
       const st = H.station();
-      const res = typeof st.setPropProject === 'function' ? st.setPropProject(p.id, pick.value) : { ok: false, message: 'this station model cannot save a project' };
+      const res = typeof st.setPropProject === 'function' ? st.setPropProject(p.id, b.dataset.root || '') : { ok: false, message: 'this station model cannot save a project' };
       S.projectMsg = { id: p.id, t: res && res.ok ? 'Working folder saved for all workflow stages. Existing tool permissions still apply.' : ((res && (res.msg || res.message)) || 'Could not save the project.') };
       H.sfx(res && res.ok ? 'click' : 'bad');
       H.layoutChanged();
       paint();
-    };
+    });
   }
   /* the schedule form: the SAME SchedPicker + /api/cron/preview + the SAME create body the AUTOMATION
      window posts, plus runsLine:true — minted here, under FOR THIS LINE, it is the Commander asking for the
