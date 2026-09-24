@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "bf6df1c7c70bb25f1977a6e8d41edc7880ad82d8",
+    "sourceCommit": "5b3bf1408edc67e942b7bfb59c281db9cbb44804",
     "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
@@ -1438,8 +1438,8 @@
       },
       {
         "path": "frontend/css/linewatch.css",
-        "bytes": 2433,
-        "sha256": "14f4ee3554a4d098896a3b23ab4ec157a48bf1440cda657d2bb794ac6cf33394"
+        "bytes": 3877,
+        "sha256": "7a8ffd6f6d364ba2b2fc997e240955b83b2166e175e657f4887fbd8afbd0d598"
       },
       {
         "path": "frontend/css/marketplace.css",
@@ -1553,8 +1553,8 @@
       },
       {
         "path": "frontend/css/workflow-panel.css",
-        "bytes": 17107,
-        "sha256": "5be2878d589d3a93217957bc09daf144f0d4c94190ce12054499a6dd8d926a50"
+        "bytes": 27460,
+        "sha256": "95ba86bc6a4b451ef344a1848866f9fb6d91d8872416cae1aa6dde2e50f78ac1"
       },
       {
         "path": "frontend/css/workhub.css",
