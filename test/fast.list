@@ -622,6 +622,8 @@ test/routing.steptest.multibay.test.js
 test/channels.multibay.test.js
 test/cron.multibay.test.js
 test/refit-card-stack.test.js
+test/refit-playtest-fixes.test.js
+test/conveyor-visible-connections.test.js
 test/refit-flow-polish.test.js
 test/refit-junction-cards.test.js
 test/refit-footprint.test.js
