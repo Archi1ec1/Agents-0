@@ -1,20 +1,24 @@
 /* LINE WATCH (2026-09-23) — frontend/app/cratecard.js + the Workflow panel's TODAY row (workflowpanel.js).
-   The crate card is a small body-child popover beside a clicked crate on the LIVE floor: matte station glass, VT323,
-   one hairline edge, a state accent on the top rail (amber live · red failed · green done · dim queued). No glow
-   pulses on the box itself (a glow is not an edge) — the state reads from drawn geometry and text. */
+   The crate card is a small body-child popover beside a clicked crate on the LIVE floor: the station's glass popover
+   (the COMMS model dock / widget library recipe: glass face, one hairline edge, a top hairline light, backdrop blur),
+   VT323, and a state accent on the top rail (phosphor live · red failed · green done · dim queued). No glow pulses
+   on the box itself (a glow is not an edge) — the state reads from drawn geometry and text. Theme tokens only. */
 .lw-card {
+  --lw-edge: var(--gd-edge, rgba(var(--ph-rgb),.24));
+  --lw-light: inset 0 1px 0 rgba(var(--ph-bright-rgb),.1);
   position: fixed; z-index: var(--z-overlay, 60); width: 300px; max-width: calc(100vw - 16px); box-sizing: border-box;
-  font-family: 'VT323', 'Courier New', monospace; color: var(--text);
-  background: var(--glass, var(--panel)), var(--panel);
-  border: 1px solid var(--ph-dim); border-top: 2px solid var(--lw-accent, var(--ph-dim));
-  box-shadow: 0 10px 28px rgba(0,0,0,.5);
+  font-family: 'VT323', 'Courier New', monospace; color: var(--text); text-shadow: none;
+  background: linear-gradient(165deg, rgba(var(--ph-rgb),.075), transparent 46%), color-mix(in srgb, var(--panel2) 90%, transparent);
+  backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+  border: 1px solid var(--lw-edge); border-top: 2px solid var(--lw-accent, var(--ph-dim)); border-radius: 6px;
+  box-shadow: var(--lw-light), 0 12px 30px rgba(0,0,0,.45);
   padding: 6px 10px 8px;
 }
-.lw-card[data-state="running"] { --lw-accent: #ffb23e; }
+.lw-card[data-state="running"] { --lw-accent: var(--ph); }
 .lw-card[data-state="failed"]  { --lw-accent: var(--bad, #ff4a3d); }
 .lw-card[data-state="done"]    { --lw-accent: var(--ok, #62ff9e); }
 .lw-card[data-state="pending"] { --lw-accent: var(--ph-dim); }
-.lw-head { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--ph-faint, var(--ph-dim)); padding-bottom: 4px; margin-bottom: 4px; }
+.lw-head { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--lw-edge); padding-bottom: 4px; margin-bottom: 4px; }
 .lw-kind { font-size: 17px; letter-spacing: 1.6px; color: var(--ph-bright); }
 .lw-st { font-size: 13px; letter-spacing: 1.4px; color: var(--lw-accent, var(--ph-dim)); margin-right: auto; }
 .lw-x { min-width: 24px; }
@@ -22,8 +26,16 @@
 .lw-row { display: grid; grid-template-columns: 58px 1fr; gap: 6px; align-items: baseline; }
 .lw-row dt { font-size: 13px; letter-spacing: 1.3px; color: var(--ph-dim); }
 .lw-row dd { margin: 0; font-size: 16px; line-height: 1.2; color: var(--text); overflow-wrap: anywhere; }
-.lw-card[data-state="failed"] .lw-row:last-child dd { color: #f0b3a8; }
+.lw-card[data-state="failed"] .lw-row:last-child dd { color: color-mix(in srgb, var(--bad, #ff4a3d) 45%, var(--text)); }
 .lw-foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+/* the card's keys: the COMMS glass button (thin edge, top light; hover = edge + fill, never a bloom) */
+.lw-card .bb { color: var(--ph); border: 1px solid var(--lw-edge); border-radius: 5px; background: rgba(var(--ph-rgb),.05); box-shadow: var(--lw-light); text-shadow: none;
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft), color var(--t-fast) var(--ease-soft); }
+.lw-card .bb:hover { color: var(--ph-bright); border-color: rgba(var(--ph-rgb),.5); background: var(--gd-hover, rgba(var(--ph-rgb),.12)); box-shadow: var(--lw-light); }
+.lw-card .bb:active { box-shadow: inset 0 2px 4px rgba(0,0,0,.35); }
+.lw-card .lw-x:hover { color: var(--bad); border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.lw-card .bb:focus-visible { outline: 1px solid var(--ph-bright); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .lw-card .bb { transition: none; } }
 
 /* the Workflow panel header: today's numbers for the line (GET /api/routing/lines/stats) */
 .wf-today { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 14px; color: var(--ph-dim); font-variant-numeric: tabular-nums; }
