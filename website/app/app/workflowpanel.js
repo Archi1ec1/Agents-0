@@ -904,6 +904,9 @@ const WorkflowPanel = (() => {
   function wireScheduleForm(p, docks, dockHint) {
     const formEl = $('#trg-form'), newBtn = $('#trg-new'), promptEl = $('#trg-prompt'), schedEl = $('#trg-sched');
     const pvEl = $('#trg-preview');
+    // the chosen BAY's agent, resolved from THIS function's docks (paintTrigger's own lookup is not in scope here —
+    // reaching for it threw a ReferenceError and SAVE SCHEDULE never saved; locked by test/sibling-scope.test.js)
+    const agentOfDock = pid => { const d = docks.find(x => x.propId === pid); return d ? d.agentId : null; };
     // the answer outlives a re-render (a save repaints the card): kept on S, painted wherever #trg-msg is now
     const say = (t, bad) => { S.trgMsg = { t, bad: !!bad }; const m = $('#trg-msg'); if (m) { m.hidden = false; m.classList.toggle('bad', !!bad); m.textContent = t; } };
     const relFmt = iso => { const d = Date.parse(iso) - Date.now(); if (!isFinite(d)) return ''; const m = Math.round(d / 60000); return m < 1 ? 'under a minute' : m < 60 ? 'in ' + m + 'm' : m < 2880 ? 'in ' + Math.round(m / 60) + 'h' : 'in ' + Math.round(m / 1440) + 'd'; };
@@ -938,14 +941,15 @@ const WorkflowPanel = (() => {
     $('#trg-create').onclick = () => {
       const prompt = promptEl.value.trim(), schedule = schedEl.value.trim();
       if (!prompt || !schedule) { H.sfx('bad'); say('a task and a schedule are required', true); return; }
-      if (!S.trgDock) { H.sfx('bad'); say('assign an agent to a step first — a routine fires at an agent', true); return; }
+      const dockId = S.trgDock, agentId = agentOfDock(dockId);
+      if (!dockId || !agentId) { H.sfx('bad'); say('assign an agent to a step first — a routine fires at an agent', true); return; }
       const btn = $('#trg-create'); btn.disabled = true; say('saving…');
       const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch (e) { return undefined; } })();
       const ln = lineName();
       const name = (ln ? ln + ' — ' : '') + (prompt.length > 48 ? prompt.slice(0, 45) + '…' : prompt);
       const refuse = m => { btn.disabled = false; H.sfx('bad'); say('✕ ' + m, true); };
       // FIRES AT a bay: the agent that runs + WHICH of its bays (multi-bay; cron-store keeps dockId additively)
-      api('/api/cron', 'POST', { name, prompt, schedule, agentId: trgAgent(), dockId: S.trgDock, provider: H.provider(), tz, runsLine: true }).then(async ({ status, j: r }) => {
+      api('/api/cron', 'POST', { name, prompt, schedule, agentId, dockId, provider: H.provider(), tz, runsLine: true }).then(async ({ status, j: r }) => {
         if (r && r.error) return refuse(r.error);
         if (r && r.declined) return refuse(r.message || 'this routine name was deleted before — reword the task');
         if (r && r.duplicate) return refuse('a similar routine already exists' + (r.job && r.job.name ? ' ("' + r.job.name + '")' : '') + ' — reword the task; nothing new was created');
@@ -960,7 +964,7 @@ const WorkflowPanel = (() => {
         S.trgOpen = false;
         H.pollFeed().then(() => paint(true), () => paint(true));
         say(saved.state === 'completed' ? '✓ routine completed — see its result in AUTOMATION' : !saved.enabled ? '✓ saved — this routine is paused; manage it in AUTOMATION'
-          : armedNow ? '✓ schedule saved — fires at ' + nameOf(S.trgDock) : '✓ saved — but scheduling is OFF or STOPPED; enable it in AUTOMATION', !saved.enabled || !armedNow);
+          : armedNow ? '✓ schedule saved — fires at ' + nameOf(agentId) : '✓ saved — but scheduling is OFF or STOPPED; enable it in AUTOMATION', !saved.enabled || !armedNow);
         paint(true);
       }).catch(() => refuse('save not confirmed — check AUTOMATION before retrying'));
     };
