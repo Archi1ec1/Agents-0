@@ -20,8 +20,8 @@ const grab = header => {
   A.ok(body && body.length < 4000, header + ' extracted (' + (body ? body.length : 0) + ' chars)');
   return body;
 };
-const lib = new Function(grab('function fmtElapsed(') + '\n' + grab('function foldWaitNote(') + '\n' + grab('function waitNoteText(')
-  + '\nreturn { fmtElapsed, foldWaitNote, waitNoteText };')();
+const lib = new Function(grab('function fmtElapsed(') + '\n' + grab('function foldWaitNote(') + '\n' + grab('function waitModelLabel(') + '\n' + grab('function waitNoteText(')
+  + '\nreturn { fmtElapsed, foldWaitNote, waitModelLabel, waitNoteText };')();
 const { foldWaitNote, waitNoteText } = lib;
 const run = evs => evs.reduce((note, [name, p]) => foldWaitNote(note, name, p), null);
 
@@ -29,15 +29,15 @@ const run = evs => evs.reduce((note, [name, p]) => foldWaitNote(note, name, p), 
 {
   const retry = { agentId: 'a', runId: 'r', attempt: 3, maxAttempts: 6, reason: 'overloaded', delayMs: 30000, model: 'anthropic/claude-sonnet-4.5' };
   let n = foldWaitNote(null, 'provider.retry', retry);
-  A.eq(waitNoteText(n), 'waiting on anthropic/claude-sonnet-4.5 — retry 3/6 in 30s (overloaded)', 'retry line: model, rung/budget, the announced wait, the reason');
+  A.eq(waitNoteText(n), 'retry 3/6 in 30s (overloaded) — claude-sonnet-4.5', 'retry line: rung/budget, the announced wait, the reason, then the model');
   n = foldWaitNote(n, 'agent.waiting', { runId: 'r', phase: 'retry_backoff', sinceMs: 15000, model: 'anthropic/claude-sonnet-4.5' });
-  A.eq(waitNoteText(n), 'waiting on anthropic/claude-sonnet-4.5 — retry 3/6 in 15s (overloaded)', 'a backoff beat updates the remaining wait from the EVENT (delayMs − sinceMs)');
+  A.eq(waitNoteText(n), 'retry 3/6 in 15s (overloaded) — claude-sonnet-4.5', 'a backoff beat updates the remaining wait from the EVENT (delayMs − sinceMs)');
   n = foldWaitNote(n, 'agent.waiting', { runId: 'r', phase: 'first_byte', sinceMs: 0, model: 'anthropic/claude-sonnet-4.5' });
-  A.eq(waitNoteText(n), 'waiting on anthropic/claude-sonnet-4.5…', 'the retry going out replaces the countdown (no stale "retry in 15s")');
+  A.eq(waitNoteText(n), 'waiting on claude-sonnet-4.5', 'the retry going out replaces the countdown (no stale "retry in 15s")');
   n = foldWaitNote(n, 'agent.waiting', { runId: 'r', phase: 'first_byte', sinceMs: 45000, model: 'anthropic/claude-sonnet-4.5' });
-  A.eq(waitNoteText(n), 'waiting on anthropic/claude-sonnet-4.5 for 45s…', 'a slow first byte: how long, per the heartbeat');
+  A.eq(waitNoteText(n), 'waiting for 45s on claude-sonnet-4.5', 'a slow first byte: how long, per the heartbeat');
   n = foldWaitNote(n, 'agent.waiting', { runId: 'r', phase: 'streaming', sinceMs: 75000, model: 'anthropic/claude-sonnet-4.5' });
-  A.eq(waitNoteText(n), 'waiting on anthropic/claude-sonnet-4.5 for 1:15… (stream open)', 'an open stream with nothing shown says so; long waits use the COMMS m:ss format');
+  A.eq(waitNoteText(n), 'waiting for 1:15 (stream open) on claude-sonnet-4.5', 'an open stream with nothing shown says so; long waits use the COMMS m:ss format');
   A.eq(foldWaitNote(n, 'agent.token', { runId: 'r', delta: 'Hello' }), null, 'the first token clears the line');
   A.eq(foldWaitNote(n, 'agent.token', { runId: 'r', delta: '' }), n, 'an empty delta shows nothing, so it clears nothing');
   for (const ev of ['agent.tool_call', 'agent.tool_result', 'provider.fallback', 'agent.run.end', 'agent.run.error']) {
@@ -48,22 +48,45 @@ const run = evs => evs.reduce((note, [name, p]) => foldWaitNote(note, name, p), 
 
 /* ---------- 2. edges stay honest ---------- */
 A.eq(waitNoteText(run([['provider.retry', { attempt: 1, maxAttempts: 6, reason: 'server_error', delayMs: 400, model: 'm' }]])),
-  'waiting on m — retry 1/6 in 1s (server error)', 'a sub-second rung reads "in 1s" (rounded up), reason made readable');
+  'retry 1/6 in 1s (server error) — m', 'a sub-second rung reads "in 1s" (rounded up), reason made readable');
 A.eq(waitNoteText(run([['provider.retry', { attempt: 2, reason: 'timeout', delayMs: 0, model: 'm' }]])),
-  'waiting on m — retry 2 now (timeout)', 'no sleep wired -> "now"; no budget -> no "/N"');
+  'retry 2 now (timeout) — m', 'no sleep wired -> "now"; no budget -> no "/N"');
 A.eq(waitNoteText(run([['agent.waiting', { phase: 'retry_backoff', sinceMs: 30000, model: 'm' }]])),
-  'waiting on m — retry backoff, 30s so far', 'a backoff beat with no retry seen (e.g. after a reload) claims only what it says');
-A.eq(waitNoteText(run([['agent.waiting', { phase: 'first_byte', sinceMs: 15000 }]])), 'waiting on the model for 15s…', 'no model named -> "the model"');
-A.eq(waitNoteText(run([['agent.waiting', { phase: 'connect', sinceMs: 15000, model: 'm' }]])), 'connecting to m for 15s…', 'connect phase');
+  'retry backoff, 30s so far — m', 'a backoff beat with no retry seen (e.g. after a reload) claims only what it says');
+A.eq(waitNoteText(run([['agent.waiting', { phase: 'first_byte', sinceMs: 15000 }]])), 'waiting for 15s on the model', 'no model named -> "the model"');
+A.eq(waitNoteText(run([['agent.waiting', { phase: 'connect', sinceMs: 15000, model: 'm' }]])), 'connecting for 15s to m', 'connect phase');
 A.eq(waitNoteText(null), '', 'no note -> empty line (the slot hides)');
 const longModel = 'x'.repeat(80);
 A.ok(waitNoteText(run([['agent.waiting', { phase: 'first_byte', sinceMs: 15000, model: longModel }]])).length < 80, 'a very long model id is clipped');
+/* FACTS FIRST (live browser proof 2026-09-24: the 520 px panel clipped every retry reason; 300 px showed only the model).
+   Every line with numbers leads with them and ends on the model; no line ends in the clip-lookalike "…". */
+for (const [evs, lead] of [
+  [[['provider.retry', { attempt: 3, maxAttempts: 6, reason: 'overloaded', delayMs: 30000, model: 'anthropic/claude-sonnet-4.6' }]], 'retry 3/6 in 30s (overloaded)'],
+  [[['agent.waiting', { phase: 'first_byte', sinceMs: 35000, model: 'anthropic/claude-sonnet-4.6' }]], 'waiting for 35s'],
+  [[['agent.waiting', { phase: 'connect', sinceMs: 15000, model: 'anthropic/claude-sonnet-4.6' }]], 'connecting for 15s'],
+  [[['agent.waiting', { phase: 'retry_backoff', sinceMs: 30000, model: 'anthropic/claude-sonnet-4.6' }]], 'retry backoff, 30s so far']
+]) {
+  const line = waitNoteText(run(evs));
+  A.ok(line.startsWith(lead) && line.endsWith(' claude-sonnet-4.6') && !line.includes('anthropic/'), 'facts lead, the bare model id trails: ' + line);
+  A.ok(!/…$/.test(line), 'no trailing ellipsis (it reads as a clip): ' + line);
+}
 
 /* ---------- 3. wiring (source lock) ---------- */
 const rp = A.fnBody(src, 'function renderPresence(');
 A.ok(/presenceCurTool\s*\?\s*shortName\(presenceCurTool\)\s*:\s*waitNoteText\(presenceWaitNote\(\)\)/.test(rp),
   'the presence card .cp-tool slot shows the running tool, else the wait line');
 A.ok(/paused[\s\S]*waitNoteText/.test(rp), 'an approval pause still outranks the wait line');
+A.ok(/classList\.toggle\('wait-note',\s*!presenceCurTool\s*&&\s*!!t\)/.test(rp), 'the wait line (never a tool name) takes the wrapping .wait-note class');
+A.ok(/paused-note'\);\s*tool\.classList\.remove\('wait-note'\)/.test(rp), 'a pause drops .wait-note');
+const ptl = A.fnBody(src, 'function paintToolLine(');
+A.ok(/paintToolLine\(tool, t, presenceCurTool \? null : presenceWaitNote\(\)\)/.test(rp) && /waitModelLabel\(note\)/.test(ptl) && /className = 'cp-model'/.test(ptl),
+  'the model id is drawn as one .cp-model token (never broken at a hyphen); a tool name stays plain text');
+A.eq(lib.waitModelLabel({ model: 'meta-llama/llama-3.3-70b' }), 'llama-3.3-70b', 'vendor path dropped');
+A.eq(lib.waitModelLabel({ model: 'qwen3:8b' }), 'qwen3:8b', 'a bare id is kept as is');
+A.eq(lib.waitModelLabel({}), 'the model', 'no model -> "the model"');
+const css = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'css', 'comms.css'), 'utf8');
+A.ok(/#comms-presence \.cp-tool\.wait-note\s*\{[^}]*white-space:\s*normal/.test(css), 'comms.css: the wait line wraps instead of clipping its numbers');
+A.ok(/\.cp-tool\.wait-note \.cp-model\s*\{[^}]*white-space:\s*nowrap[^}]*\}/.test(css) || /\.cp-tool\.wait-note \.cp-model\s*\{[\s\S]*?white-space:\s*nowrap/.test(css), 'comms.css: the model token never breaks mid-id');
 const pw = A.fnBody(src, 'function presenceWaitNote(');
 A.ok(/Channels\.runIdOf\(activeWs\.id\)/.test(pw), 'the line is keyed to the DISPLAYED stream\'s confirmed run id');
 const ww = A.fnBody(src, 'function wireWaitNotes(');

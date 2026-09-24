@@ -258,12 +258,14 @@ const Chat = (() => {
           ? 'paused — waiting for your answer to the question above'
           : 'paused — waiting for you to approve ' + shortName(pend.tool);
         if (tool.textContent !== t) tool.textContent = t;
-        tool.classList.add('has'); tool.classList.add('paused-note');
+        tool.classList.add('has'); tool.classList.add('paused-note'); tool.classList.remove('wait-note');
       } else {
         tool.classList.remove('paused-note');
         // the running tool wins; with none, the sidecar's own word on a slow/retrying model call (LIVE WAIT LINE)
         const t = presenceCurTool ? shortName(presenceCurTool) : waitNoteText(presenceWaitNote());
-        if (tool.textContent !== t) tool.textContent = t; tool.classList.toggle('has', !!t);
+        if (tool.textContent !== t) paintToolLine(tool, t, presenceCurTool ? null : presenceWaitNote());
+        tool.classList.toggle('has', !!t);
+        tool.classList.toggle('wait-note', !presenceCurTool && !!t);   // the wait line WRAPS: its numbers never clip
       }
     }
     const time = card.querySelector('.cp-time'); const txt = fmtElapsed(Channels.elapsedOf(activeWs.id, Date.now()));
@@ -285,7 +287,7 @@ const Chat = (() => {
      first byte) used to leave this card reading THINKING and nothing else. The sidecar now says so itself —
      provider.retry before each backoff, agent.waiting on a ~15 s heartbeat while a model call shows nothing — and the
      card's .cp-tool slot (the same transient line that names the running tool) renders exactly that:
-     "waiting on <model> — retry 3/6 in 30s (overloaded)" · "waiting on <model> for 45s…". Truthful telemetry: every
+     "retry 3/6 in 30s (overloaded) — <model>" · "waiting for 45s on <model>". Truthful telemetry: every
      number is read off the latest event for the DISPLAYED run (no local countdown, no guessed state), and the line
      clears the moment the run shows output (a token, a tool call), fails over, or ends. */
   const waitNotes = new Map();   // runId -> the latest wait note (see foldWaitNote)
@@ -306,11 +308,21 @@ const Chat = (() => {
       || name === 'agent.run.end' || name === 'agent.run.error') return null;   // output, a failover or the end: the wait is over
     return prev;
   }
-  // PURE: the one-line text for a wait note ('' = nothing to show).
+  /* PURE: the text for a wait note ('' = nothing to show). FACTS FIRST, MODEL LAST (live browser proof, 2026-09-24): the
+     line used to lead with "waiting on <model>", so the default 520 px panel clipped every retry line's reason and a
+     300 px panel showed "· waiting on anthropic…" and nothing else. The rung, countdown, reason and duration now lead;
+     the model id (the least new fact — it is the agent's roster model) trails, and the slot wraps (.wait-note). No
+     trailing "…": it read exactly like the clip ellipsis. */
+  // PURE: the model as the wait line names it — the bare id without its vendor path ("anthropic/claude-sonnet-4.6" ->
+  // "claude-sonnet-4.6"; still the model, in a third of a 300 px line), capped at 48 chars.
+  function waitModelLabel(n) {
+    const model = String((n && n.model) || '').trim();
+    const bare = model.slice(model.lastIndexOf('/') + 1) || model;
+    return bare ? (bare.length > 48 ? bare.slice(0, 47) + '…' : bare) : 'the model';
+  }
   function waitNoteText(n) {
     if (!n) return '';
-    const model = String(n.model || '').trim();
-    const who = 'waiting on ' + (model ? (model.length > 48 ? model.slice(0, 47) + '…' : model) : 'the model');
+    const name = waitModelLabel(n);
     const since = Math.max(0, Number(n.sinceMs) || 0);
     const r = n.retry;
     if (r) {
@@ -318,12 +330,20 @@ const Chat = (() => {
       const left = Math.max(0, (Number(r.delayMs) || 0) - since);
       const of = Number(r.maxAttempts) > 0 ? '/' + r.maxAttempts : '';
       const why = String(r.reason || '').replace(/_/g, ' ').trim();
-      return who + ' — retry ' + r.attempt + of + (left > 0 ? ' in ' + fmtElapsed(Math.ceil(left / 1000) * 1000) : ' now') + (why ? ' (' + why + ')' : '');
+      return 'retry ' + r.attempt + of + (left > 0 ? ' in ' + fmtElapsed(Math.ceil(left / 1000) * 1000) : ' now') + (why ? ' (' + why + ')' : '') + ' — ' + name;
     }
-    if (n.phase === 'retry_backoff') return who + ' — retry backoff' + (since >= 1000 ? ', ' + fmtElapsed(since) + ' so far' : '');
+    if (n.phase === 'retry_backoff') return 'retry backoff' + (since >= 1000 ? ', ' + fmtElapsed(since) + ' so far' : '') + ' — ' + name;
     const dur = since >= 1000 ? ' for ' + fmtElapsed(since) : '';
-    if (n.phase === 'connect') return 'connecting to ' + (model || 'the model') + dur + '…';
-    return who + dur + '…' + (n.phase === 'streaming' ? ' (stream open)' : '');
+    if (n.phase === 'connect') return 'connecting' + dur + ' to ' + name;   // (the model id is always LAST: renderPresence splits it off)
+    return 'waiting' + dur + (n.phase === 'streaming' ? ' (stream open)' : '') + ' on ' + name;
+  }
+  // the model id closes every wait line as ONE token (.cp-model): it wraps whole and clips only itself, never mid-id
+  function paintToolLine(tool, t, note) {
+    const m = note ? waitModelLabel(note) : '';
+    if (m && t.endsWith(m)) {
+      tool.textContent = t.slice(0, t.length - m.length);
+      const s = document.createElement('span'); s.className = 'cp-model'; s.textContent = m; tool.appendChild(s);
+    } else tool.textContent = t;
   }
   function presenceWaitNote() {
     const rid = (activeWs && typeof Channels !== 'undefined' && Channels.runIdOf) ? Channels.runIdOf(activeWs.id) : null;
