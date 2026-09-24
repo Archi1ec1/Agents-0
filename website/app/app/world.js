@@ -72,11 +72,26 @@ const World = (() => {
     _glFailed = true; _glReady = false;
     return false;
   }
-  // whole-frame per-channel means via a 16×16 GPU downscale (~1KB readback) — the probe's sampler
+  // whole-frame per-channel means via a 16×16 GPU downscale (~1KB readback) — the probe's sampler.
+  // The downscale is a chain of exact 2:1 bilinear halvings (each one a true 2×2 box average on every
+  // backend), never one big drawImage: a single ~45:1 step POINT-samples, so scanlines, grain and fine
+  // material texture alias into a biased reading that differs between the raw and the warped frame.
+  // (2026-09-23: that alias read a healthy warp as +27% brighter — true means moved +3% — tripped the
+  // "implausible magnitude" check and pinned whole sessions to the CPU warp at half frame rate.)
   function probeMeans(src) {
-    if (!_glProbeCv) { _glProbeCv = document.createElement('canvas'); _glProbeCv.width = 16; _glProbeCv.height = 16; }
-    const pctx = _glProbeCv.getContext('2d', { willReadFrequently: true });
-    pctx.clearRect(0, 0, 16, 16); pctx.drawImage(src, 0, 0, src.width, src.height, 0, 0, 16, 16);
+    if (!_glProbeCv) _glProbeCv = [];
+    const fit = n => { let s = 16; while (s * 2 <= n) s *= 2; return s; };
+    let w = fit(src.width), h = fit(src.height), from = src, fw = src.width, fh = src.height, level = 0, pctx = null;
+    for (;;) {
+      let c = _glProbeCv[level];
+      if (!c) { c = _glProbeCv[level] = document.createElement('canvas'); }
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      pctx = c.getContext('2d', w === 16 && h === 16 ? { willReadFrequently: true } : undefined);
+      pctx.imageSmoothingEnabled = true;
+      pctx.clearRect(0, 0, w, h); pctx.drawImage(from, 0, 0, fw, fh, 0, 0, w, h);
+      if (w === 16 && h === 16) break;
+      from = c; fw = w; fh = h; w = Math.max(16, w / 2); h = Math.max(16, h / 2); level++;
+    }
     const d = pctx.getImageData(0, 0, 16, 16).data;
     let r = 0, g = 0, b = 0;
     for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
