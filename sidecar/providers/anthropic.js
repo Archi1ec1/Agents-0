@@ -86,8 +86,9 @@
   // The 4.6 family predates the `xhigh` level (low/medium/high/max only) — offering it there is a 400.
   const NO_XHIGH_CLAUDE = ['claude-opus-4-6', 'claude-opus-4.6', 'claude-sonnet-4-6', 'claude-sonnet-4.6'];
   // Thinking is ALWAYS ON for these: an explicit {type:'disabled'} is refused at any effort, so 'none' is never
-  // offered and the thinking key is OMITTED rather than sent disabled.
-  const ALWAYS_THINKING_CLAUDE = ['claude-fable', 'claude-mythos'];
+  // offered; saved OFF settings clamp to adaptive thinking at the lowest supported effort.
+  // Opus 5.5 rejects disabled thinking; Opus 5 still supports it, so do not match all Opus 5.x.
+  const ALWAYS_THINKING_CLAUDE = ['claude-fable', 'claude-mythos', 'claude-opus-5-5', 'claude-opus-5.5'];
 
   const modelKey = (id) => String(id == null ? '' : id).toLowerCase();
   function hasAny(id, list) { const k = modelKey(id); for (const s of list) if (k.indexOf(s) >= 0) return true; return false; }
@@ -291,7 +292,9 @@
       out.push({
         name,
         description: fn.description || '',
-        input_schema: toolschema.normalize(fn.parameters || { type: 'object', properties: {} })
+        // sanitizeKeys first: a property key outside ^[a-zA-Z0-9_.-]{1,64}$ 400s the WHOLE request here (the
+        // model's args are mapped back to the declared names on the way in — see stream()).
+        input_schema: toolschema.normalize(toolschema.sanitizeKeys(fn.parameters || { type: 'object', properties: {} }))
       });
     }
     return out.length ? out : null;
@@ -447,7 +450,10 @@
       body.output_config = Object.assign({}, body.output_config, { effort });
     }
     function buildBody(req) {
-      const converted = messagesToAnthropic(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages): every tool_use gets its tool_result in the
+      // next turn (a run that died at the tool boundary left one mid-history), and ids minted by another provider
+      // (Kimi's functions.read_file:0) are rewritten into this wire's ^[a-zA-Z0-9_-]+$ grammar, call and result alike.
+      const converted = messagesToAnthropic(provider.prepareWireMessages(req.messages || [], 'anthropic'));
       const body = {
         model: req.model,
         max_tokens: resolveMaxTokens(req),
@@ -483,7 +489,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const body = buildBody(req);
@@ -514,7 +524,12 @@
       }
       function* emitFrom(ev) {
         if (!ev || typeof ev !== 'object') return;
-        if (ev.error) throw new Error('anthropic stream error: ' + ((ev.error && (ev.error.message || ev.error.type)) || 'unknown'));
+        if (ev.error) {
+          const err = new Error('anthropic stream error: ' + ((ev.error && (ev.error.message || ev.error.type)) || 'unknown'));
+          err.body = ev;   // the typed error ({type:'error', error:{type:'overloaded_error'}}) — errorClass reads the type
+          err.ownMessage = true;
+          throw err;
+        }
         switch (ev.type) {
           case 'message_start':
             baseUsage = Object.assign({}, (ev.message && ev.message.usage) || {});
@@ -657,12 +672,17 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); }
         catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('anthropic http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js). The message above keeps only error.message, but the
+           classifier's decisive signal can be the typed error ({error:{type:'overloaded_error'|'rate_limit_error'|…}});
+           dropping the body left errorClass reading prose. The message stays the adapter's own sentence (label +
+           status — what the UI routes on; err.ownMessage tells errorClass so); the body rides alongside for its type. */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }

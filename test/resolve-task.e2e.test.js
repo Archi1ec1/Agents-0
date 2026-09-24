@@ -94,13 +94,21 @@ const toolNames = req => ((req && req.tools) || []).map(t => (t.function && t.fu
     const before = provider.requests.length;
     await run(base, token, { provider: 'custom', baseUrl: provider.baseUrl, key: 'k', model: 'test/model', agentId: 'bare', isTask: true, placed: [],
       messages: [{ role: 'user', content: 'Cut my footage into a timeline. NO_STUDIO' }] });
-    const coupled = r => { const n = toolNames(r); const studio = n.includes('image_generate'); return ['resolve_timeline_file', 'resolve_status', 'resolve_control'].every(t => n.includes(t) === studio); };
-    A.ok(provider.requests.slice(before).every(coupled), 'Resolve tools appear iff the studio grant (image_generate) does');
+    // Coupled to the studio GRANT, not to image_generate's presence on the wire: image_generate is deferred as certainly
+    // unavailable when there is no image connection (this sidecar has no key), while the Resolve tools need none.
+    const RESOLVE = ['resolve_timeline_file', 'resolve_status', 'resolve_control'];
+    const resolveOn = r => RESOLVE.map(t => toolNames(r).includes(t));
+    const coupled = r => { const s = resolveOn(r); return s.every(Boolean) || s.every(x => !x); };   // the family rides together
+    // The studio grant is visible per request as image_generate on the wire OR named in the "CANNOT work right now" line
+    // (deferred: no image connection). Full Power (this sidecar) grants the studio family even with nothing placed.
+    const studioGranted = r => toolNames(r).includes('image_generate') || JSON.stringify(r.messages || []).includes('image_generate — ');
+    A.ok(provider.requests.slice(before).every(r => (studioGranted(r) ? resolveOn(r).every(Boolean) : resolveOn(r).every(x => !x))),
+      'Resolve tools appear iff the studio grant does (advertised or deferred-unavailable image_generate)');
 
     const start = provider.requests.length;
     const events = await run(base, token, { provider: 'custom', baseUrl: provider.baseUrl, key: 'k', model: 'test/model', agentId: 'editor', isTask: true, placed: ['studio'],
       messages: [{ role: 'user', content: 'Build a DaVinci Resolve timeline from clips/a.mp4' }] });
-    const first = provider.requests.slice(start).find(r => toolNames(r).includes('image_generate'));   // the main loop turn (aux calls carry no studio)
+    const first = provider.requests.slice(start).find(r => toolNames(r).length > 0 && JSON.stringify(r.messages || []).includes('Build a DaVinci Resolve timeline'));   // the main loop turn (aux calls carry no tools)
     for (const n of ['resolve_timeline_file', 'resolve_status', 'resolve_control']) A.ok(first && toolNames(first).includes(n), 'a studio agent is offered ' + n);
     A.ok(provider.requests.slice(start).every(coupled), 'studio run: coupling holds on every request');
     const cut = events.find(e => e.name === 'agent.tool_result' && e.payload.callId === 'cut');

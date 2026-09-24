@@ -85,6 +85,7 @@ const Build = (() => {
   }
 
   const SEEN_KEY = 'starnet.refit.seen';
+  const PREVIEW_LABEL = '▸ PREVIEW FLOW';   // the top-bar preview button — the guide and Field Manual name it by this constant
   // machines the BELT tool connects with two clicks (mirrors worldmodel CONNECTABLE)
   const CONNECT_TYPES = { intake: 1, bay: 1, outbox: 1, filter: 1, splitter: 1, merger: 1, joiner: 1, loop: 1 };
 
@@ -102,18 +103,30 @@ const Build = (() => {
   const VAL_LABEL = {
     ORPHAN_SOURCE: 'NOT CONNECTED — BELT: CLICK IT, THEN A BAY', ORPHAN_BAY: 'NOT ON THE LINE',
     // a belt that only TOUCHES the junction corner feeds nothing: the lane must run THROUGH the junction tile
-    BAY_NOT_FED: 'NOT FED — RUN A BELT INTO IT (THROUGH ANY JUNCTION TILE, NOT PAST ITS CORNER)',
+    // (SHORT on the floor — the full sentence rides the hover card, VAL_WHY: the long form ran wider than a room)
+    BAY_NOT_FED: 'NOT FED — BELT INTO IT',
     CYCLE: 'LOOP! — BREAK THE CIRCLE', FILTER_NO_DEFAULT: 'NO DEFAULT LANE — CLICK', SPLIT_CREW: 'PLACE A DESK — TOOLS FOLLOW THE DOCK',
-    UNBOUND_BAY: 'NO AGENT — CLICK', SPLIT_ONE_LANE: 'SPLITTER NEEDS 2 OUT-LANES — RUN BELTS THROUGH ITS TILE, IN ONE SIDE, OUT TWO',
-    JOIN_ONE_LANE: 'JOINER NEEDS 2 IN-LANES — RUN A SECOND BELT INTO ITS TILE',
+    UNBOUND_BAY: 'NO AGENT — CLICK', SPLIT_ONE_LANE: 'NEEDS 2 OUT-LANES',
+    JOIN_ONE_LANE: 'NEEDS 2 IN-LANES',
     // the done lane defaults to the FIRST exit (E, S, W, N order); this only fires with no exit, or a done set to a non-exit
-    LOOP_NO_DONE: 'LOOP HAS NO DONE LANE — RUN A BELT OUT OF ITS TILE (FIRST EXIT E/S/W/N IS DONE)',
-    LOOP_NO_BACK: 'LOOP HAS NO BACK LANE — RUN A SECOND BELT OUT OF ITS TILE BACK TO AN EARLIER BAY',
+    LOOP_NO_DONE: 'NO DONE LANE',
+    LOOP_NO_BACK: 'NO BACK LANE',
     ORPHAN_JUNCTION: 'NOT ON A BELT — MOVE IT ONTO THE LINE',
     BELT_BURIED: 'A PROP SITS ON THIS LINE — MOVE IT',
     // the docks feed each OTHER: no belt loop anywhere, but the work line would run forever, paying each lap
     CHAIN_CYCLE: 'WORK LINE LOOPS — CUT ONE HANDOFF'
   };
+  /* THE FULL SENTENCE for a finding whose floor label had to be cut short (2026-09-23 playtest: the NOT FED nag
+     ran wider than the room). The floor keeps the short label; the machine's HOVER CARD and the Workflow panel's
+     hints carry this — a glance says what is wrong, the card says exactly how to fix it. */
+  const VAL_WHY = {
+    BAY_NOT_FED: 'Not fed — no belt brings work into this BAY. Run a belt INTO it (BELT tool: click the machine before it, then this BAY). If the lane passes a junction, it must run THROUGH the junction’s tile, not past its corner.',
+    SPLIT_ONE_LANE: 'This SPLITTER needs two out-lanes — run belts THROUGH its tile: in on one side, out on two others.',
+    JOIN_ONE_LANE: 'This JOINER needs two in-lanes — run a second belt INTO its tile.',
+    LOOP_NO_DONE: 'This LOOP has no DONE lane — run a belt OUT of its tile onward (the first exit, in E/S/W/N order, is DONE unless you choose one).',
+    LOOP_NO_BACK: 'This LOOP has no BACK lane — run a second belt OUT of its tile back to an earlier BAY.'
+  };
+  const valWhy = code => VAL_WHY[code] || VAL_LABEL[code] || code;
   const esc = s => U.esc(s == null ? '' : s);   // one complete impl (escapes & < > " ' — value="…" attrs here stay injection-safe)
   // THE ONE SENTENCE (2026-08-04 onramp): every self-introduction of the belt system leads with this.
   // It also leads the INBOX catalog desc (propsprites.js) and the first-run guide card — keep them aligned.
@@ -233,6 +246,7 @@ const Build = (() => {
     buildGroup = 'props'; propSection = 'decoration'; propAbility = ''; propCat = 'all'; propType = PropSprites.STARTER[0];
     equipmentAgentId = ''; equipmentAccessKey = ''; equipmentAccessView = null; equipmentAccessTicket++;
     tool = 'select';   // SELECT is the default mode — a fresh REFIT session never opens with a placement tool armed
+    escExitArmedAt = 0;   // a fresh session never inherits a half-pressed exit
     ridePending = false; rideAgentId = null; ridePrevReach = null;   // the auto first-ride re-arms (and re-baselines its reach snapshot) from THIS session's compile, never a stale one
     // finish-the-line: fresh session state (the registry itself persists in localStorage) + one seam probe
     wfHighlightId = null; wfPaused = null; wfHostMemo = null; wfKitAuto = false;
@@ -344,9 +358,9 @@ const Build = (() => {
           <button class="bb sm" id="refit-redo" title="redo (Ctrl+Shift+Z)">↷ REDO</button>
         </span>
         <button class="bb sm" id="refit-fit" title="frame the station">⊹ FIT</button>
-        <button class="bb sm" id="refit-test" title="Preview routing with an animated example. This does not run an AI task; use Run a sample job on a configured line for real work.">▸ PREVIEW FLOW</button>
+        <button class="bb sm" id="refit-test" title="Preview routing with an animated example. This does not run an AI task; use Run a sample job on a configured line for real work.">${esc(PREVIEW_LABEL)}</button>
         <button class="bb sm" id="refit-help" title="how to build">? HELP</button>
-        <button class="bb sm refit-primary" id="refit-done" title="finish + save (Esc)">SAVE & EXIT</button>
+        <button class="bb sm refit-primary" id="refit-done" title="finish + save (or press Esc twice)">SAVE & EXIT</button>
       </div>
       <div class="refit-dock" role="region" aria-label="Construction kit">
         <div class="refit-dock-head"><span class="refit-dock-head-t">BUILD LIBRARY</span><button class="bb refit-presets-entry" id="refit-stations" type="button">▦ Presets</button><button class="bb sm" type="button" id="refit-kit-toggle" aria-expanded="true" aria-controls="refit-option-section">MINIMIZE ▴</button></div>
@@ -786,7 +800,7 @@ const Build = (() => {
     let paletteLabel = '';
     root.dataset.tool = tool;
     root.dataset.buildGroup = buildGroup;
-    root.dataset.catalog = String(tool === 'prop' || (tool === 'select' && buildGroup === 'props'));
+    root.dataset.catalog = String((tool === 'prop' && buildGroup !== 'workflow') || (tool === 'select' && buildGroup === 'props'));
     root.querySelectorAll('[data-build-group]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.buildGroup === buildGroup)));
     root.querySelectorAll('.refit-toolset').forEach(g => { g.hidden = g.dataset.group !== buildGroup; });
     pal.innerHTML = '';
@@ -851,7 +865,7 @@ const Build = (() => {
         b.onclick = () => { hallWidth = w; renderPalette(); sfx('click'); };
         pal.appendChild(b);
       });
-    } else if (tool === 'prop' || (tool === 'select' && buildGroup === 'props')) {
+    } else if ((tool === 'prop' && buildGroup !== 'workflow') || (tool === 'select' && buildGroup === 'props')) {
       paletteLabel = 'CATALOG';
       const CATS = (typeof PropSprites !== 'undefined') ? PropSprites.CATS : {};
       const workspace = document.createElement('div'); workspace.className = 'refit-propworkspace';
@@ -1036,7 +1050,7 @@ const Build = (() => {
       intro.className = 'refit-lineintro';
       intro.textContent = LINE_SENTENCE;
       pal.appendChild(intro);
-    } else if (tool === 'line' || (tool === 'select' && buildGroup === 'workflow')) {
+    } else if (tool === 'line' || ((tool === 'select' || tool === 'prop') && buildGroup === 'workflow')) {
       /* THE LINE LIBRARY (v3, 2026-08-30) — one-click whole layouts, now a browsable library.
          Cards keep the v2 anatomy (schematic MINIATURE in the floor's own colour economy, NAME +
          footprint/dock chip, one-line purpose); with 15 systems on the shelf they group into
@@ -1048,8 +1062,12 @@ const Build = (() => {
       paletteLabel = 'THE LINE LIBRARY';
       const intro = document.createElement('div');
       intro.className = 'refit-lineintro';
-      intro.textContent = LINE_SENTENCE + ' Choose a workflow layout, then make it yours.';
+      intro.textContent = LINE_SENTENCE + ' Place single machines, or a whole line, then make it yours.';
       pal.appendChild(intro);
+      pal.appendChild(machinePalette());
+      const lhd = document.createElement('div'); lhd.className = 'refit-linegroup refit-palsection';
+      lhd.innerHTML = '<span class="refit-linegroup-nm">CONVEYOR LINES · ' + blueprints().length + '</span><span class="refit-linegroup-why">whole layouts, pre-wired — stamp one, then assign its bays</span>';
+      pal.appendChild(lhd);
       const grid = document.createElement('div'); grid.className = 'refit-linegrid';
       grid.setAttribute('aria-label', 'Line library');
       const groups = {};
@@ -1162,6 +1180,60 @@ const Build = (() => {
     loop: 'the gate that sends work round again — one lane back upstream, one lane onward when done',
     outbox: 'the exit — every finished result ships here; click it for the logbook'
   };
+  /* THE MACHINES SHELF (2026-09-23 playtest fix). The Conveyors tab offered whole LINES and the BELT tool,
+     but no single machine: INBOX, BAY, OUTBOX and every junction were reachable only by typing into the
+     Props search. The shelf is computed from the catalog (every cat:'workflow' entry — a machine added
+     there shows up here with no second list), ordered the way work flows through them, each with its
+     live art and its one-line purpose (PALETTE_PURPOSE). A pick arms the ordinary PROP placement for
+     that machine while the Conveyors tab stays up. */
+  const MACHINES_LABEL = 'MACHINES';   // the Conveyors tab's single-machine shelf — the guide + Field Manual name it by this
+  const MACHINE_ORDER = ['intake', 'bay', 'outbox', 'splitter', 'joiner', 'filter', 'merger', 'loop'];
+  function workflowMachines() {
+    const all = catalog().filter(c => c && c.cat === 'workflow');
+    const rank = id => { const i = MACHINE_ORDER.indexOf(id); return i < 0 ? MACHINE_ORDER.length : i; };
+    return all.slice().sort((a, b) => rank(a.id) - rank(b.id));
+  }
+  function machinePalette() {
+    const wrap = document.createElement('div'); wrap.className = 'refit-machines';
+    const ms = workflowMachines();
+    const hd = document.createElement('div'); hd.className = 'refit-linegroup refit-palsection';
+    hd.innerHTML = '<span class="refit-linegroup-nm">' + MACHINES_LABEL + ' · ' + ms.length + '</span><span class="refit-linegroup-why">one piece at a time — place it, then connect it with BELT</span>';
+    wrap.appendChild(hd);
+    const grid = document.createElement('div'); grid.className = 'refit-machinegrid'; grid.setAttribute('aria-label', 'Workflow machines');
+    for (const c of ms) {
+      const b = document.createElement('button'); b.type = 'button';
+      const on = tool === 'prop' && propType === c.id;
+      b.className = 'refit-machinetile' + (on ? ' active' : ''); b.dataset.machine = c.id; b.dataset.prop = c.id;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      const purpose = PALETTE_PURPOSE[c.id] || '';
+      b.setAttribute('aria-label', c.label + (purpose ? ' — ' + purpose : ''));
+      const DW = 44, DH = 34, SS = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
+      const cvEl = document.createElement('canvas'); cvEl.className = 'refit-machinetile-cv';
+      cvEl.style.width = DW + 'px'; cvEl.style.height = DH + 'px'; cvEl.width = Math.round(DW * SS); cvEl.height = Math.round(DH * SS);
+      const tile = (typeof PropSprites !== 'undefined') ? PropSprites.TILE : 12;
+      const nativeW = c.w * tile + THUMB_PAD * 2, nativeH = c.h * tile + THUMB_PAD * 2;
+      const density = typeof PropRemaster !== 'undefined' && PropRemaster.isProjection() ? 4 : 1;
+      const off = document.createElement('canvas'); off.width = nativeW * density; off.height = nativeH * density;
+      propThumbs.push({ id: c.id, w: c.w, h: c.h, off, octx: off.getContext('2d'), dctx: cvEl.getContext('2d'), nativeW, nativeH, density, bw: cvEl.width, bh: cvEl.height });
+      const txt = document.createElement('span'); txt.className = 'refit-machinetile-txt';
+      const nm = document.createElement('span'); nm.className = 'refit-machinetile-nm'; nm.textContent = c.label;
+      const why = document.createElement('span'); why.className = 'refit-machinetile-why'; why.textContent = purpose;
+      txt.append(nm, why); b.append(cvEl, txt);
+      b.onclick = () => {
+        propType = c.id;
+        setLibraryPlacement(true);
+        grid.querySelectorAll('.refit-machinetile').forEach(t => { const a = t.dataset.machine === c.id; t.classList.toggle('active', a); t.setAttribute('aria-pressed', String(a)); });
+        root.querySelectorAll('.refit-linetile.active').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-pressed', 'false'); });
+        hidePropCard(); setHint(); sfx('click');
+      };
+      b.onmouseenter = () => { hoverThumb = c.id; };
+      b.onmouseleave = () => { hoverThumb = null; };
+      grid.appendChild(b);
+    }
+    wrap.appendChild(grid);
+    try { paintThumbs(performance.now(), true); } catch (e) {}   // paint once; the frame loop animates the armed/hovered one
+    return wrap;
+  }
   const THUMB_PAD = 7;   // native-px halo so art that overflows the footprint (monitors, masts, shadows) isn't clipped
   function setLibraryPlacement(placing) {
     tool = placing ? 'prop' : 'select';
@@ -1630,7 +1702,8 @@ const Build = (() => {
     const o = lineOrigin(bp, s.tx, s.ty);
     const rects = bp.props.map(p => ({ x1: o.x + p.x, y1: o.y + p.y, x2: o.x + p.x + p.w - 1, y2: o.y + p.y + p.h - 1 }))
       .concat(bp.belts.map(b => ({ x1: o.x + b.x, y1: o.y + b.y, x2: o.x + b.x, y2: o.y + b.y })));
-    return { rects, v: station.canPlaceBlueprint(bp.id, o.x, o.y), kind: 'line', label: bp.label, snapped: s.snapped };
+    const links = ghostLinks({ props: bp.props.map(p => ({ t: p.t, x: o.x + p.x, y: o.y + p.y, w: p.w, h: p.h })), belts: bp.belts.map(b => ({ x: o.x + b.x, y: o.y + b.y, d: b.d })) });
+    return { rects, v: station.canPlaceBlueprint(bp.id, o.x, o.y), kind: 'line', label: bp.label, snapped: s.snapped, links };
   }
   function stampLine(w, ev) {
     const bp = blueprintOf(lineType);
@@ -1713,7 +1786,7 @@ const Build = (() => {
      tool's imperative VERB in bright phosphor, and the standing camera/escape keys beneath it,
      dim. A transient message (passed as `msg`) takes the verb rank alone, because a transient
      message is always the more urgent of the two. */
-  const CAMERA_KEYS = 'wheel zoom · space-drag pan · ESC deselect';
+  const CAMERA_KEYS = 'wheel zoom · space-drag pan · ESC deselect · ESC twice exit';
   function setHint(msg) {
     if (!hintEl) return;
     hintEl.classList.toggle('is-feedback', !!msg);
@@ -1721,7 +1794,7 @@ const Build = (() => {
     // SURFACE means three different gestures depending on which surface is targeted — say which
     let verb = (t && t.verb) || (t && t.hint) || '';
     if (tool === 'select' && buildGroup === 'props') verb = 'Choose a prop, then click the floor to place it. Click existing props to edit.';
-    if (tool === 'select' && buildGroup === 'workflow') verb = 'Choose a layout, or use Belt to connect existing machines. Nothing is selected yet.';
+    if (tool === 'select' && buildGroup === 'workflow') verb = 'Choose a machine or a whole line, or use Belt to connect machines. Nothing is selected yet.';
     if (tool === 'select' && (buildGroup === 'rooms' || buildGroup === 'surfaces')) verb = 'Choose a tool above to begin. Click existing objects to edit.';
     if (tool === 'paint') verb = paintTarget === 'hull' ? 'click a room to re-clad its outside'
       : paintTarget === 'walls' ? 'click a room to clad its walls'
@@ -2009,6 +2082,18 @@ const Build = (() => {
      dismiss, so hasSeen() stays false and the card shows on the next REFIT open, once the tour is out of the
      way and the Commander is actually building. #refit-help re-opens it on demand either way. */
   function tutorialCoaching() { try { return !!(typeof Tutorial !== 'undefined' && Tutorial.isCoaching && Tutorial.isCoaching()); } catch (e) { return false; } }
+  /* THE NAMES THE GUIDE USES ARE READ FROM THE UI ITSELF (2026-09-23 playtest: the guide named a PROPS →
+     WORKSTATIONS & WORKFLOWS tab and a "LAYOUTS (9)" button that no longer existed). Tab, tool and button
+     labels come from BUILD_GROUPS / TOOLS / PREVIEW_LABEL; counts from the live catalogs — so renaming a
+     tab or adding a line updates the guide and the Field Manual (Build.refitNames) with it. */
+  function guideNames() {
+    const grp = (BUILD_GROUPS.find(g => g[0] === 'workflow') || [])[1] || 'Conveyors';
+    const lbl = id => ((TOOLS.find(x => x.id === id) || {}).label) || id.toUpperCase();
+    const keyOf = id => ((TOOLS.find(x => x.id === id) || {}).key) || '';
+    return { tab: String(grp).toUpperCase(), lines: lbl('line'), belt: lbl('belt'), lineKey: keyOf('line'), beltKey: keyOf('belt'),
+      preview: PREVIEW_LABEL, lineCount: blueprints().length, machinesShelf: MACHINES_LABEL,
+      machines: workflowMachines().map(c => ({ id: c.id, label: c.label, purpose: PALETTE_PURPOSE[c.id] || '', junction: (c.w || 1) === 1 && (c.h || 1) === 1 })) };
+  }
   function showGuide() {
     if (!root || root.querySelector('.refit-guide')) return;
     const g = document.createElement('div');
@@ -2019,6 +2104,7 @@ const Build = (() => {
        ever sees of build mode, and it read like documentation. The three beats are the same three
        beats; each now leads with a PICTURE of the gesture (drawn in the station's own pixel language
        by guideStepArt) and carries one line of words under it. */
+    const G = guideNames();
     g.innerHTML = `
       <div class="refit-guide-card refit-guide-wide" role="dialog" aria-modal="true" aria-labelledby="refit-guide-title">
         <span class="refit-guide-kicker">REFIT · QUICK GUIDE</span><h3 id="refit-guide-title">Shape your station</h3>
@@ -2032,16 +2118,16 @@ const Build = (() => {
           <div class="refit-step" data-art="bay">
             <span class="refit-step-n">2</span>
             <b>ASSIGN AN AGENT</b>
-            <span>Choose <b>PROPS → WORKSTATIONS &amp; WORKFLOWS</b> and place a <b>BAY</b>. Click it to choose an agent and describe their step.</span>
+            <span>Open <b>${esc(G.tab)} › ${esc(G.machinesShelf)}</b> and place a <b>BAY</b>. Click it: the <b>Workflow panel</b> docks beside the floor — choose an agent and describe their step.</span>
           </div>
           <div class="refit-step" data-art="belt">
             <span class="refit-step-n">3</span>
             <b>CONNECT THE STEPS</b>
-            <span>Choose <b>BELT</b>, then click the start and end objects. Connect <b>INBOX → BAY → OUTBOX</b>; the bay needs an assigned agent to do the work.</span>
+            <span>Choose <b>${esc(G.belt)}</b>, then click the start and end machines. Connect <b>INBOX → BAY → OUTBOX</b>; the bay needs an assigned agent to do the work.</span>
           </div>
         </div>
-        <p class="refit-guide-foot">For a head start, choose <b>LAYOUTS (9)</b>, place a starter workflow, then configure its steps. <b>PREVIEW</b> shows animated routing; it does not run an AI job.</p>
-        <div class="refit-guide-shortcuts"><span><b>Wheel</b> Zoom</span><span><b>Space + drag</b> Pan</span><span><b>Ctrl + Z</b> Undo</span><span><b>Done</b> Save &amp; exit</span></div><button class="btn-sm refit-primary" id="refit-guide-go">START BUILDING</button>
+        <p class="refit-guide-foot">For a head start, open <b>${esc(G.tab)} › ${esc(G.lines)}</b> (${G.lineCount} ready-made layouts), stamp one, then assign its bays. <b>${esc(G.preview)}</b> animates the routing and runs no AI job. To test for real, click any machine on a line and use <b>STEP TEST</b> in its Workflow panel: it runs the real agents one step at a time and pauses at every hand-off so you can read or edit what moves on.</p>
+        <div class="refit-guide-shortcuts"><span><b>Wheel</b> Zoom</span><span><b>Space + drag</b> Pan</span><span><b>Ctrl + Z</b> Undo</span><span><b>SAVE &amp; EXIT</b> Leave (or Esc twice)</span></div><button class="btn-sm refit-primary" id="refit-guide-go">START BUILDING</button>
       </div>`;
     root.appendChild(g);
     g.querySelectorAll('.refit-step').forEach(s => {
@@ -2208,7 +2294,7 @@ const Build = (() => {
       root: () => root, station: () => station, plan: () => valPlan, comps: () => valComps || [], geo: () => cacheGeo,
       lineOfProp, lineNameOf, stampName: id => stampNameOf[id] || null, stationKey: () => stationKeyOf(station),
       agents: () => (opts && typeof opts.agents === 'function' && opts.agents()) || [],
-      agentLabel: agentLabelFor, esc, sfx, flashTip: (msg, ok) => flashTip(null, msg, ok), valLabel: code => VAL_LABEL[code] || code,
+      agentLabel: agentLabelFor, esc, sfx, flashTip: (msg, ok) => flashTip(null, msg, ok), valLabel: valWhy,
       roleInfo: r => (typeof WorldModel !== 'undefined' && WorldModel.bayRoleInfo) ? WorldModel.bayRoleInfo(r) : null,
       canSummon: () => typeof App !== 'undefined' && !!App.summonAgent, summonForRole,
       hasCompute: aid => !!aid && bayObjectsMemoed(aid).indexOf('computer') >= 0,
@@ -2730,7 +2816,7 @@ const Build = (() => {
     if (!t) { if (!auto) { flashTip(ev, 'place an INBOX on a belt first', false); sfx('bad'); } return false; }
     for (const tag of ['code', 'research', 'general']) convey.enqueueAt(t.x, t.y, { workitemId: 'test-' + (++_testN), tag, preview: 'test ' + tag, test: true });
     note(t.x, t.y, '① OUTSIDE WORK ENTERS HERE (DMs · routines)', '#e8c860');
-    flashTip(ev, auto ? 'LINE COMPLETE — the first crate rides itself. ▸ PREVIEW replays this any time' : 'test work riding — watch the loop', true);
+    flashTip(ev, auto ? 'LINE COMPLETE — the first crate rides itself. ' + PREVIEW_LABEL + ' replays this any time' : 'test work riding — watch the loop', true);
     sfx('click');
     return true;
   }
@@ -3495,8 +3581,9 @@ const Build = (() => {
       if(movingPropId){
         const p=station.propById(movingPropId);
         if(!p){movingPropId=null;return;}
+        const left=beltsLeftBehind(p,w.tx,w.ty);
         const res=station.moveProp(p.id,w.tx-p.x,w.ty-p.y);
-        feedback(res,ev,'moved · Undo restores the previous position');
+        feedback(res,ev,left?'moved — its belts stayed behind · reconnect with BELT (Undo puts it back)':'moved · Undo restores the previous position');
         if(res&&res.ok){const id=p.id;selectTool('select');selectedPropId=id;renderSelection();}
         return;
       }
@@ -3821,6 +3908,9 @@ const Build = (() => {
         }
       }
     }
+    // belts never ride along with a machine: say so at the drop (the ghost already warned amber)
+    const left = mp ? beltsLeftBehind(mp, mp.x + dx, mp.y + dy) : 0;
+    if (left) okMsg = 'moved — its belts stayed behind · reconnect with BELT (Undo puts it back)';
     const moved = station.moveProp(d.propId, dx, dy);
     feedback(moved, ev, okMsg);
     if(moved && moved.ok){selectedPropId=d.propId;renderSelection();}
@@ -4025,6 +4115,8 @@ const Build = (() => {
     // NO StationUI.notify (notification diet): the REFIT title flash + the new tier word ARE the announcement.
   }
 
+  const ESC_EXIT_WINDOW_MS = 2500;
+  let escExitArmedAt = 0;   // performance.now() of the bare ESC that armed "press again to leave" (0 = not armed)
   function onKey(ev) {
     const a = ev.target;
     const modal = cardTop();
@@ -4053,8 +4145,17 @@ const Build = (() => {
       if (selectedPropId || movingPropId) { selectTool('select'); return; }
       if (typeof WorkflowPanel !== 'undefined' && WorkflowPanel.isOpen()) { WorkflowPanel.close(); return; }   // the docked panel closes (saving) before REFIT does
       if (tool !== 'select') { deselectTool(); return; }                 // then the armed tool → SELECT
-      return close();                                                    // only a bare select-mode ESC leaves REFIT
+      /* LEAVING IS ITS OWN, EXPLICIT PRESS (2026-09-23 playtest). A bare select-mode ESC used to close REFIT
+         outright, so the same key that had just deselected something threw you out of build mode on the next
+         tap. Now the first bare ESC only ARMS the exit and says so; a second ESC within the window (or the
+         SAVE & EXIT button) leaves. Any card, tool or selection still eats ESC first, exactly as before. */
+      const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+      if (escExitArmedAt && nowMs - escExitArmedAt < ESC_EXIT_WINDOW_MS) { escExitArmedAt = 0; return close(); }
+      escExitArmedAt = nowMs || 1;
+      showTip('PRESS ESC AGAIN TO SAVE & EXIT', true); clearTimeout(tipTimer); tipTimer = setTimeout(hideTip, ESC_EXIT_WINDOW_MS);
+      return;
     }
+    escExitArmedAt = 0;   // any other key disarms the pending exit
     if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'z' || ev.key === 'Z')) {
       ev.preventDefault();
       const r = ev.shiftKey ? station.redo() : station.undo();
@@ -4219,12 +4320,46 @@ const Build = (() => {
   }
 
   let propHoverMemo = null;
+  /* WILL IT CONNECT? (2026-09-23 playtest) — the ghost asks the model which EXISTING machines a placement would
+     hook (station.connectionPreview: the compiler's own ring rule), so a line stamped against another, or a
+     machine dropped against a lane, turns the ghost AMBER and names what it joins before the click. Placement
+     stays allowed (sandbox — never gate); the point is that no connection is ever made without being shown.
+     Memoized per (floor edit, candidate) — the frame loop calls ghostInfo every frame. */
+  let linkMemo = null;
+  function ghostLinks(cand) {
+    if (!station || typeof station.connectionPreview !== 'function') return [];
+    const key = geoVer + '|' + JSON.stringify(cand);
+    if (linkMemo && linkMemo.key === key) return linkMemo.links;
+    let links = [];
+    try { links = station.connectionPreview(cand) || []; } catch (_) { links = []; }
+    linkMemo = { key, links };
+    return links;
+  }
+  const isWorkflowType = t => !!CONNECT_TYPES[t];
+  // the words for what a placement would join — agents by name, a named line's INBOX by its line
+  function linkNames(links) {
+    const names = [];
+    for (const l of links || []) {
+      const n = l.t === 'bay' ? (l.agentId ? String(agentLabelFor(l.agentId)).toUpperCase() : 'AN EMPTY BAY')
+        : l.t === 'intake' ? (l.label ? 'LINE ' + String(l.label).toUpperCase() : 'AN INBOX')
+        : l.t === 'outbox' ? 'AN OUTBOX' : 'A ' + propLabel(l.t);
+      if (names.indexOf(n) < 0) names.push(n);
+    }
+    return names.length > 3 ? names.slice(0, 3).join(' + ') + ' +' + (names.length - 3) : names.join(' + ');
+  }
+  // a MOVE of a workflow machine: which of its belt hookups would it leave behind at the new spot?
+  function beltsLeftBehind(p, nx, ny) {
+    if (!p || !isWorkflowType(p.t) || typeof station.hookedBelts !== 'function') return 0;
+    const w = p.w || 1, h = p.h || 1;
+    return station.hookedBelts(p.id).filter(b => !(b.x >= nx - 1 && b.x <= nx + w && b.y >= ny - 1 && b.y <= ny + h)).length;
+  }
   function ghostInfo() {
     if (!drag) {
       if(tool==='move'&&movingPropId&&hoverTile){
         const p=station.propById(movingPropId);if(!p)return null;
         const {tx,ty}=hoverTile;
-        return {rects:[{x1:tx,y1:ty,x2:tx+p.w-1,y2:ty+p.h-1}],v:station.canPlaceProp(p.t,tx,ty,p.w,p.h,p.id),move:true,dx:tx-p.x,dy:ty-p.y,preview:{...p,x:tx,y:ty}};
+        const links = isWorkflowType(p.t) ? ghostLinks({ props: [{ t: p.t, x: tx, y: ty, w: p.w, h: p.h }], ignoreId: p.id }) : [];
+        return {rects:[{x1:tx,y1:ty,x2:tx+p.w-1,y2:ty+p.h-1}],v:station.canPlaceProp(p.t,tx,ty,p.w,p.h,p.id),move:true,dx:tx-p.x,dy:ty-p.y,preview:{...p,x:tx,y:ty},links,leftBehind:beltsLeftBehind(p,tx,ty)};
       }
       // DUPE armed: the copy ghosts under the cursor with no drag — every click stamps
       if (tool === 'dupe' && dupe && hoverTile) return dupeGhost(hoverTile.tx, hoverTile.ty);
@@ -4238,7 +4373,8 @@ const Build = (() => {
         if (!propHoverMemo || propHoverMemo.key !== key) {
           const s = propBox(propType, facing);
           const rect = { x1: tx, y1: ty, x2: tx + s.w - 1, y2: ty + s.h - 1 };
-          propHoverMemo = { key, ghost: { rects: [rect], v: station.canPlaceProp(propType, tx, ty, s.w, s.h), kind: 'prop', stamp: true } };
+          const links = isWorkflowType(propType) ? ghostLinks({ props: [{ t: propType, x: tx, y: ty, w: s.w, h: s.h }] }) : [];
+          propHoverMemo = { key, ghost: { rects: [rect], v: station.canPlaceProp(propType, tx, ty, s.w, s.h), kind: 'prop', stamp: true, links } };
         }
         return propHoverMemo.ghost;
       }
@@ -4264,14 +4400,16 @@ const Build = (() => {
     if (drag.mode === 'propstamp') {
       const s = propBox(propType, propFacing(propType)), tx = drag.cur.tx, ty = drag.cur.ty;   // ghost shows the TURNED box
       const rect = { x1: tx, y1: ty, x2: tx + s.w - 1, y2: ty + s.h - 1 };
-      return { rects: [rect], v: station.canPlaceProp(propType, tx, ty, s.w, s.h), kind: 'prop' };
+      const links = isWorkflowType(propType) ? ghostLinks({ props: [{ t: propType, x: tx, y: ty, w: s.w, h: s.h }] }) : [];
+      return { rects: [rect], v: station.canPlaceProp(propType, tx, ty, s.w, s.h), kind: 'prop', links };
     }
     if (drag.mode === 'propmove') {
       const p = station.propById(drag.propId); if (!p) return null;
       const dx = drag.cur.tx - drag.start.tx, dy = drag.cur.ty - drag.start.ty;
       const nx = p.x + dx, ny = p.y + dy;
       const rect = { x1: nx, y1: ny, x2: nx + p.w - 1, y2: ny + p.h - 1 };
-      return { rects: [rect], v: station.canPlaceProp(p.t, nx, ny, p.w, p.h, p.id), move: true, dx, dy, preview:{...p,x:nx,y:ny} };
+      const links = isWorkflowType(p.t) && (dx || dy) ? ghostLinks({ props: [{ t: p.t, x: nx, y: ny, w: p.w, h: p.h }], ignoreId: p.id }) : [];
+      return { rects: [rect], v: station.canPlaceProp(p.t, nx, ny, p.w, p.h, p.id), move: true, dx, dy, preview:{...p,x:nx,y:ny}, links, leftBehind: (dx || dy) ? beltsLeftBehind(p, nx, ny) : 0 };
     }
     if (drag.mode === 'move') {
       const rm = station.roomById(drag.roomId); if (!rm) return null;
@@ -4912,10 +5050,57 @@ const Build = (() => {
     const ri = (typeof WorldModel !== 'undefined' && WorldModel.bayRoleInfo) ? WorldModel.bayRoleInfo(p.role) : null;
     return ri ? p.role + ' — ' + ri.desc.toUpperCase() + ' — CLICK' : null;
   }
+  /* HIDDEN HOOKUPS MADE VISIBLE (2026-09-23 playtest). The compiler hooks a machine to every belt tile in its
+     1-tile ring, corners included. When ONE such tile sits in the rings of two machines and points into /
+     out of only one of them, the other is hooked too — two bays stacked touching became a hand-off chain,
+     a line stamped under another joined it. The routing rule stands; what changes is that the floor SHOWS
+     it: every such "brushed" hookup gets a small amber tap arrow from the belt into the machine it brushes,
+     and the machine's hover card says it in words. Pure over the doc, once per floor edit (geoVer). */
+  let brushVer = 0, brushMemo = null;
+  function brushedHookups() {
+    if (brushVer === geoVer && brushMemo) return brushMemo;
+    brushVer = geoVer; brushMemo = [];
+    if (!station) return brushMemo;
+    const DV = { E: [1, 0], W: [-1, 0], S: [0, 1], N: [0, -1] };
+    const docks = station.props().filter(p => CONNECT_TYPES[p.t] && ((p.w || 1) > 1 || (p.h || 1) > 1));
+    const inFoot = (p, x, y) => x >= p.x && x < p.x + (p.w || 1) && y >= p.y && y < p.y + (p.h || 1);
+    const owners = new Map();
+    for (const p of docks)
+      for (let y = p.y - 1; y <= p.y + (p.h || 1); y++) for (let x = p.x - 1; x <= p.x + (p.w || 1); x++) {
+        if (inFoot(p, x, y) || !station.beltAt(x, y)) continue;
+        const k = x + ',' + y; if (!owners.has(k)) owners.set(k, []); owners.get(k).push(p);
+      }
+    for (const [k, ps] of owners) {
+      if (ps.length < 2) continue;
+      const q = k.split(','), x = +q[0], y = +q[1], d = DV[station.beltAt(x, y)] || null;
+      // FACES = the belt visibly enters the machine (arrow into it) or leaves it (the tile behind is the machine)
+      const faces = p => !!d && (inFoot(p, x + d[0], y + d[1]) || inFoot(p, x - d[0], y - d[1]));
+      for (const p of ps) if (!faces(p)) brushMemo.push({ x, y, propId: p.id, p });
+    }
+    return brushMemo;
+  }
+  function drawBrushedHookups(t) {
+    const list = brushedHookups();
+    if (!list.length) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,190,60,0.95)'; ctx.fillStyle = 'rgba(255,190,60,0.95)'; ctx.lineWidth = 2 / zoom;
+    for (const h of list) {
+      const p = h.p, cx = (h.x + 0.5) * t, cy = (h.y + 0.5) * t;
+      // the nearest point of the machine's footprint — the tap lands on its edge
+      const tx2 = Math.max(p.x * t, Math.min((p.x + (p.w || 1)) * t, cx)), ty2 = Math.max(p.y * t, Math.min((p.y + (p.h || 1)) * t, cy));
+      const dx = tx2 - cx, dy = ty2 - cy, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, a = t * 0.22;
+      ctx.beginPath(); ctx.arc(cx, cy, t * 0.14, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(tx2, ty2);
+      ctx.moveTo(tx2 - ux * a - uy * a * 0.7, ty2 - uy * a + ux * a * 0.7); ctx.lineTo(tx2, ty2); ctx.lineTo(tx2 - ux * a + uy * a * 0.7, ty2 - uy * a - ux * a * 0.7);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   function drawRoutingValidation(t, now) {
     if (!cacheGeo) return;
     // Dormant workflows do not ask for attention while furnishing or shaping rooms.
     if (buildGroup !== 'workflow' && !tutorialCoaching()) return;
+    drawBrushedHookups(t);   // no text — a hidden hookup is shown whenever the Conveyors tab is up
     if (!finEngaged && tool !== 'belt' && tool !== 'line' && !tutorialCoaching()) return;
     const o = cacheGeo.origin || { tx: 0, ty: 0 };
     const pulse = 0.55 + 0.35 * Math.sin(now / 280);
@@ -5025,6 +5210,10 @@ const Build = (() => {
          nine simultaneous CLICK TO CONNECT / JUNCTION captions were the loudest single layer in
          Andrew's text-soup screenshot. Mid-gesture labels ride the activeFlow layer (top priority). */
       if (!connectFrom) continue;
+      /* …and mid-gesture only the HOVERED target speaks (2026-09-23 playtest: "CLICK TO CONNECT" printed over
+         every target at once, a wall of the same words). The other targets keep their pulsing glow — that
+         alone says "these are the endpoints"; the caption answers "this one?" where the pointer is. */
+      if (!isFrom && hoverPropId !== p.id) continue;
       const role = isFrom ? 'FROM ▸ NOW CLICK A DESTINATION' : 'CLICK TO CONNECT';
       const tw = ctx.measureText(role).width;
       // baseline-top label below the prop: colliders step DOWN (dir +1), away from the machinery
@@ -5183,7 +5372,7 @@ const Build = (() => {
      legal and red with the REASON on a second line when it isn't.
      It registers as `activeFlow` (top priority) so the one-voice arbiter mutes every lower label
      near it — the ghost speaks alone while a gesture is live. */
-  function ghostBadge(t, lines, ok, rect) {
+  function ghostBadge(t, lines, ok, rect, warn) {
     const fs = Math.max(9, 11 / zoom), lh = fs * 1.08, pad = fs * 0.34;
     ctx.font = fs + "px 'VT323','Courier New',monospace";
     let wMax = 0;
@@ -5207,14 +5396,14 @@ const Build = (() => {
       ctx.fillStyle = 'rgba(4,6,8,0.86)';
       ctx.fillRect(bx, by, bw, bh);
       ctx.lineWidth = 1 / zoom;
-      ctx.strokeStyle = ok ? 'rgba(120,255,170,0.9)' : 'rgba(255,120,110,0.9)';
+      ctx.strokeStyle = warn ? 'rgba(255,200,90,0.9)' : ok ? 'rgba(120,255,170,0.9)' : 'rgba(255,120,110,0.9)';
       ctx.strokeRect(bx + 0.5 / zoom, by + 0.5 / zoom, bw - 1 / zoom, bh - 1 / zoom);
       ctx.font = fs + "px 'VT323','Courier New',monospace";
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       for (let i = 0; i < lines.length; i++) {
         ctx.fillStyle = i === 0
           ? (ok ? 'rgba(180,255,215,1)' : 'rgba(255,190,180,1)')
-          : (ok ? 'rgba(150,220,190,.85)' : 'rgba(255,150,140,.95)');
+          : (warn ? 'rgba(255,205,110,1)' : ok ? 'rgba(150,220,190,.85)' : 'rgba(255,150,140,.95)');
         ctx.fillText(lines[i], cx, by + pad * 0.8 + i * lh);
       }
       ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
@@ -5413,14 +5602,18 @@ const Build = (() => {
     }
     const footprint = structureGhost(g);
     const ok = g.v && g.v.ok && (!footprint || footprint.ok);
+    // AMBER = legal, but it will CONNECT to something already on the floor (or leave its belts behind) —
+    // said on the ghost BEFORE the click, never discovered afterwards (2026-09-23 playtest)
+    const links = ok && g.links && g.links.length ? g.links : null;
+    const warn = !!(ok && (links || g.leftBehind));
     // a HOVER PREVIEW is quieter than a live gesture — it is showing you an option, not a commitment,
     // and at full strength it read as "you are already dragging" every time the pointer crossed the floor
     // ...and an INVALID preview is quieter still: with ROOM armed, every pass of the pointer over
     // your own station would otherwise wash the whole floor red before you had asked for anything.
     // The outline and the badge carry the refusal; the fill does not need to shout it.
     const k = g.stamp ? (ok ? 0.6 : 0.3) : 1;
-    const fill = ok ? 'rgba(80,255,140,' + (0.16 * k).toFixed(3) + ')' : 'rgba(255,90,80,' + (0.18 * k).toFixed(3) + ')';
-    const line = ok ? 'rgba(120,255,170,' + (0.95 * k).toFixed(2) + ')' : 'rgba(255,120,110,' + (0.95 * k).toFixed(2) + ')';
+    const fill = warn ? 'rgba(255,190,60,' + (0.16 * k).toFixed(3) + ')' : ok ? 'rgba(80,255,140,' + (0.16 * k).toFixed(3) + ')' : 'rgba(255,90,80,' + (0.18 * k).toFixed(3) + ')';
+    const line = warn ? 'rgba(255,200,90,' + (0.95 * k).toFixed(2) + ')' : ok ? 'rgba(120,255,170,' + (0.95 * k).toFixed(2) + ')' : 'rgba(255,120,110,' + (0.95 * k).toFixed(2) + ')';
     if (footprint && footprint.ok) drawFootprint(t, footprint, fill, line);
     else {
       ctx.lineWidth = 1.5 / zoom;
@@ -5458,6 +5651,8 @@ const Build = (() => {
     if (!ok) lines.push(((footprint && footprint.msg) || placementReason(g)).toUpperCase());
     // the hover preview teaches BOTH gestures: this size on a click, any size on a drag
     else if (g.stamp) lines.push(g.kind === 'prop' ? 'CLICK TO PLACE' : 'CLICK TO PLACE · DRAG TO SIZE');
+    if (links) lines.push('WILL CONNECT TO ' + linkNames(links));
+    if (ok && g.leftBehind) lines.push('ITS BELTS STAY HERE — RECONNECT WITH BELT');
     if (g.kind === 'prop' && canTurn(propType) && !propSpec(propType).flat) {
       const r = propFacing(propType), v = [[0,1],[-1,0],[0,-1],[1,0]][r];
       const cx = (r0.x1+w/2)*t, cy=(r0.y1+h/2)*t, len=t*.8;
@@ -5471,7 +5666,7 @@ const Build = (() => {
       const n = footprint.openings.length;
       lines.push(n ? n + (n === 1 ? ' OPEN CONNECTION' : ' OPEN CONNECTIONS') : footprint.sealed ? 'SEALED EDGE' : 'SEPARATE SECTION');
     }
-    ghostBadge(t, lines, ok, r0);
+    ghostBadge(t, lines, ok, r0, warn);
     // NOTE: deliberately does NOT hideTip() — flashTip's transient confirmations ("room placed")
     // fire while a ghost is still on screen, and hiding here every frame would eat them instantly.
   }
@@ -5550,13 +5745,30 @@ const Build = (() => {
       const bp = String(placed.brief).replace(/\s+/g, ' ');
       assign += '<div class="pc-assign">✎ ' + esc(bp.length > 72 ? bp.slice(0, 72) + '…' : bp) + '</div>';
     }
+    assign += placedFindingsHTML(placed);
     return '<h4>' + esc(c.label) + '</h4>' + tier + (desc ? ('<p>' + esc(desc) + '</p>') : '') + '<div class="pc-foot">' + foot + '</div>' + assign;
+  }
+  /* the FULL SENTENCE for every routing finding anchored on this machine (VAL_WHY — the floor shows the short
+     label), plus a brushed hookup in words: a belt from another lane touching this machine puts both on ONE line.
+     Read from the same compiled plan (valPlan) and the same brushedHookups() the floor arrows draw. */
+  function placedFindingsHTML(placed) {
+    if (!placed || !CONNECT_TYPES[placed.t]) return '';
+    let out = '';
+    const seen = {};
+    for (const e of ((valPlan && valPlan.errors) || [])) {
+      if (e.propId !== placed.id || seen[e.code] || !VAL_WHY[e.code]) continue;
+      seen[e.code] = true;
+      out += '<div class="pc-assign">⚠ ' + esc(VAL_WHY[e.code]) + '</div>';
+    }
+    if (brushedHookups().some(h => h.propId === placed.id))
+      out += '<div class="pc-assign">⚠ A belt from another lane brushes this ' + esc(propLabel(placed.t)) + ' — the floor reads them as ONE line, so it hooks here. Leave a 1-tile gap to keep them apart.</div>';
+    return out;
   }
   let propCardKey = null;
   function showPropCard(c, placed, cx, cy) {
     if (!propCard || !c) return;
     const key = placed
-      ? ('p:' + placed.id + ':' + (placed.agentId || placed.connectorId || '') + ':' + (placed.label || '') + ':' + (placed.brief ? placed.brief.length : 0))
+      ? ('p:' + placed.id + ':' + (placed.agentId || placed.connectorId || '') + ':' + (placed.label || '') + ':' + (placed.brief ? placed.brief.length : 0) + ':' + geoVer)
       : ('c:' + c.id);
     if (key !== propCardKey) { propCard.innerHTML = propCardHTML(c, placed); propCardKey = key; }
     propCard.style.display = 'block';
@@ -5774,7 +5986,7 @@ const Build = (() => {
     });
   }
 
-  const api = { init, open, close, toggle, isOpen, requisition, openAssign, noteLineDelivered, lineOfAgentInfo, nagLabel: code => VAL_LABEL[code] || code };   // nagLabel: the floor's own nag copy for a compiler code (ROUTINES RUN NOW refusal reads it)
+  const api = { init, open, close, toggle, isOpen, requisition, refitNames: guideNames, openAssign, noteLineDelivered, lineOfAgentInfo, nagLabel: code => VAL_LABEL[code] || code };   // nagLabel: the floor's own nag copy for a compiler code (ROUTINES RUN NOW refusal reads it)
   if (typeof window !== 'undefined' && window.__STARNET_DEV__) api.__test__ = __test__;
   return api;
 })();

@@ -170,7 +170,9 @@
       // on EVERY turn, so one zod-authored connector would take out every Gemini run. Prune to the
       // documented field set here, at the wire seam that owns the constraint.
       const decl = { name, description: fn.description || '' };
-      const params = toolschema.forGemini(fn.parameters || {});
+      // sanitizeKeys first: property names every wire accepts; the model's args are mapped back to the declared
+      // names on the way in (see stream()).
+      const params = toolschema.forGemini(toolschema.sanitizeKeys(fn.parameters || {}));
       if (!toolschema.isEmptyObjectSchema(params)) decl.parameters = params;
       declarations.push(decl);
     }
@@ -211,11 +213,16 @@
       extra: 'xhigh', xtra: 'xhigh', extrahigh: 'xhigh', xhigh: 'xhigh', max: 'max' };
     return map[k] || 'medium';
   }
-  // What a given model actually accepts. The 2.5 contract can genuinely switch thinking OFF; the modern one
+  // What a given model actually accepts. The 2.5 Flash contract can switch thinking OFF; the modern one
   // cannot, so 'none' is not offered there — a control that silently does nothing is worse than no control.
   function geminiEffortsFor(id) {
-    const model = String(id || '').toLowerCase();
+    const model = stripModelPrefix(String(id || '').toLowerCase());
     if (model.indexOf('gemini') < 0) return ['none'];
+    // Google documents different floors for Pro and Flash. Keep this shared by
+    // the catalog, picker, and wire so saved OFF choices cannot yield HTTP 400.
+    // https://ai.google.dev/gemini-api/docs/generate-content/thinking
+    if (/^gemini-3\.1-pro(?:-|$)/.test(model)) return ['low', 'medium', 'high'];
+    if (/^gemini-2\.5-pro(?:-|$)/.test(model)) return ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
     if (LEGACY_GEMINI_RE.test(model)) return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
     return ['minimal', 'low', 'medium', 'high'];
   }
@@ -289,21 +296,27 @@
     function applyThinking(body, req) {
       const model = String(req.model || '').toLowerCase();
       if (model.indexOf('gemini') < 0) return;            // a non-Gemini model on a Gemini-shaped endpoint
-      const want = normalizeGeminiEffort(req.reasoningEffort || defaultEffort);
+      const allowed = geminiEffortsFor(model);
+      const requested = normalizeGeminiEffort(req.reasoningEffort || defaultEffort);
+      const want = requested === 'none' && !allowed.includes('none') ? allowed[0] : requested;
       const cfg = {};
       if (LEGACY_GEMINI_RE.test(model)) {
         const budget = LEGACY_BUDGET[want];
         if (budget == null) return;
-        cfg.thinkingBudget = budget;                       // 0 disables on the 2.5 family
+        cfg.thinkingBudget = budget;                       // 0 disables only on supporting models
       } else {
         // No level means "off" on this contract — MINIMAL is the floor, and some Gemini 3 models refuse to
         // stop thinking at all, so asking for none honestly means asking for as little as the model allows.
-        cfg.thinkingLevel = MODERN_LEVEL[want] || 'MEDIUM';
+        const level = MODERN_LEVEL[want] || 'MEDIUM';
+        cfg.thinkingLevel = allowed.includes(level.toLowerCase()) ? level : allowed[0].toUpperCase();
       }
       body.generationConfig = Object.assign({}, body.generationConfig, { thinkingConfig: cfg });
     }
     function buildBody(req) {
-      const converted = messagesToGemini(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages): a functionCall left unanswered mid-history (a
+      // run that died at the tool boundary) gets its functionResponse before the next turn, instead of being
+      // followed straight by user text. Gemini's wire carries no call ids (it pairs by position), so no id rewrite.
+      const converted = messagesToGemini(provider.prepareWireMessages(req.messages || [], 'gemini'));
       const body = { contents: converted.contents };
       if (converted.systemInstruction) body.systemInstruction = converted.systemInstruction;
       const tools = toGeminiTools(req.tools);
@@ -312,7 +325,11 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const body = buildBody(req);
@@ -339,7 +356,12 @@
       }
       function* emitFrom(j) {
         if (!j || typeof j !== 'object') return;
-        if (j.error) throw new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+        if (j.error) {
+          const err = new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+          err.body = j;   // {error:{code, status:'RESOURCE_EXHAUSTED'|…}} — errorClass reads the status code
+          err.ownMessage = true;
+          throw err;
+        }
         const candidates = Array.isArray(j.candidates) ? j.candidates : [];
         let usageEmittedForFrame = false;   // usage rides the done-carrying frame; emit it exactly once, BEFORE done
         for (let ci = 0; ci < candidates.length; ci++) {
@@ -464,12 +486,17 @@
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
         catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('gemini http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js). The message above keeps only error.message, but the
+           classifier's decisive signal can be the canonical status ({error:{status:'RESOURCE_EXHAUSTED'}}); dropping
+           the body left errorClass reading prose. The message stays the adapter's own sentence (label + status —
+           what the UI routes on; err.ownMessage tells errorClass so); the body rides alongside for its code. */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model });
         err.transient = cls.retryable;
         if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }
@@ -487,11 +514,27 @@
       if (!catalogPromise) {
         catalogPromise = (async () => {
           try {
-            const res = await doFetch(baseUrl + '/models', { headers: headerBag(key, 'application/json') });
-            if (!res.ok) return [];
-            const j = await res.json();
-            const raw = Array.isArray(j.models) ? j.models : (Array.isArray(j.data) ? j.data : []);
-            return raw.map(normalizeModel).filter(Boolean);
+            const models = new Map(), seenTokens = new Set();
+            let pageToken = '';
+            // The API defaults to 50 models per page. Never cache a successful
+            // first page as the full catalog when a later page failed.
+            for (let page = 0; page < 100; page++) {
+              const url = baseUrl + '/models' + (pageToken ? '?pageToken=' + encodeURIComponent(pageToken) : '');
+              const res = await doFetch(url, { headers: headerBag(key, 'application/json') });
+              if (!res.ok) return [];
+              const j = await res.json();
+              const raw = Array.isArray(j.models) ? j.models : (Array.isArray(j.data) ? j.data : []);
+              for (const item of raw) {
+                const model = normalizeModel(item);
+                if (model) models.set(model.id, model);
+              }
+              const next = j.nextPageToken;
+              if (!next) return Array.from(models.values());
+              if (typeof next !== 'string' || seenTokens.has(next)) return [];
+              seenTokens.add(next);
+              pageToken = next;
+            }
+            return []; // a broken endpoint cannot paginate forever or poison the cache
           } catch (_) { return []; }
         })();
       }

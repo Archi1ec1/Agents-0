@@ -1,0 +1,33 @@
+/* LINE WATCH (2026-09-23) — frontend/app/cratecard.js + the Workflow panel's TODAY row (workflowpanel.js).
+   The crate card is a small body-child popover beside a clicked crate on the LIVE floor: matte station glass, VT323,
+   one hairline edge, a state accent on the top rail (amber live · red failed · green done · dim queued). No glow
+   pulses on the box itself (a glow is not an edge) — the state reads from drawn geometry and text. */
+.lw-card {
+  position: fixed; z-index: var(--z-overlay, 60); width: 300px; max-width: calc(100vw - 16px); box-sizing: border-box;
+  font-family: 'VT323', 'Courier New', monospace; color: var(--text);
+  background: var(--glass, var(--panel)), var(--panel);
+  border: 1px solid var(--ph-dim); border-top: 2px solid var(--lw-accent, var(--ph-dim));
+  box-shadow: 0 10px 28px rgba(0,0,0,.5);
+  padding: 6px 10px 8px;
+}
+.lw-card[data-state="running"] { --lw-accent: #ffb23e; }
+.lw-card[data-state="failed"]  { --lw-accent: var(--bad, #ff4a3d); }
+.lw-card[data-state="done"]    { --lw-accent: var(--ok, #62ff9e); }
+.lw-card[data-state="pending"] { --lw-accent: var(--ph-dim); }
+.lw-head { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--ph-faint, var(--ph-dim)); padding-bottom: 4px; margin-bottom: 4px; }
+.lw-kind { font-size: 17px; letter-spacing: 1.6px; color: var(--ph-bright); }
+.lw-st { font-size: 13px; letter-spacing: 1.4px; color: var(--lw-accent, var(--ph-dim)); margin-right: auto; }
+.lw-x { min-width: 24px; }
+.lw-rows { margin: 0; display: grid; gap: 2px; }
+.lw-row { display: grid; grid-template-columns: 58px 1fr; gap: 6px; align-items: baseline; }
+.lw-row dt { font-size: 13px; letter-spacing: 1.3px; color: var(--ph-dim); }
+.lw-row dd { margin: 0; font-size: 16px; line-height: 1.2; color: var(--text); overflow-wrap: anywhere; }
+.lw-card[data-state="failed"] .lw-row:last-child dd { color: #f0b3a8; }
+.lw-foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+/* the Workflow panel header: today's numbers for the line (GET /api/routing/lines/stats) */
+.wf-today { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 14px; color: var(--ph-dim); font-variant-numeric: tabular-nums; }
+.wf-today .k { letter-spacing: 1.3px; }
+.wf-today b { font-weight: normal; color: var(--text); }
+.wf-today b.bad { color: var(--bad, #ff4a3d); }
+.wf-today .wf-today-l { letter-spacing: 1.6px; color: var(--ph-dim); }

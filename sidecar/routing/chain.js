@@ -483,6 +483,7 @@ function makeChainRunner(o) {
       const turn = entryBranch ? String(originalText || '') : hopTurn({ handoffText, stageBrief, loopGateAfter, originalText, from: cur.agentId, upstream: out.text, hop, target: target.agentId, targetDock: target.dockId, lineId });
       const call = { agentId: target.agentId, text: turn, hop, from: entryBranch ? null : cur.agentId, signal: s.signal, workitemId };
       if (target.dockId) { call.dockId = target.dockId; call.fromDock = entryBranch ? null : cur.dockId; }
+      if (lineId) call.lineId = lineId;   // LINE WATCH (additive): the host stamps the hop's run row with its line
       try { r = await runAgent(call); }
       catch (e) { r = { error: (e && e.message) || String(e || 'stage failed') }; }
       r = r || {};

@@ -72,11 +72,26 @@ const World = (() => {
     _glFailed = true; _glReady = false;
     return false;
   }
-  // whole-frame per-channel means via a 16×16 GPU downscale (~1KB readback) — the probe's sampler
+  // whole-frame per-channel means via a 16×16 GPU downscale (~1KB readback) — the probe's sampler.
+  // The downscale is a chain of exact 2:1 bilinear halvings (each one a true 2×2 box average on every
+  // backend), never one big drawImage: a single ~45:1 step POINT-samples, so scanlines, grain and fine
+  // material texture alias into a biased reading that differs between the raw and the warped frame.
+  // (2026-09-23: that alias read a healthy warp as +27% brighter — true means moved +3% — tripped the
+  // "implausible magnitude" check and pinned whole sessions to the CPU warp at half frame rate.)
   function probeMeans(src) {
-    if (!_glProbeCv) { _glProbeCv = document.createElement('canvas'); _glProbeCv.width = 16; _glProbeCv.height = 16; }
-    const pctx = _glProbeCv.getContext('2d', { willReadFrequently: true });
-    pctx.clearRect(0, 0, 16, 16); pctx.drawImage(src, 0, 0, src.width, src.height, 0, 0, 16, 16);
+    if (!_glProbeCv) _glProbeCv = [];
+    const fit = n => { let s = 16; while (s * 2 <= n) s *= 2; return s; };
+    let w = fit(src.width), h = fit(src.height), from = src, fw = src.width, fh = src.height, level = 0, pctx = null;
+    for (;;) {
+      let c = _glProbeCv[level];
+      if (!c) { c = _glProbeCv[level] = document.createElement('canvas'); }
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      pctx = c.getContext('2d', w === 16 && h === 16 ? { willReadFrequently: true } : undefined);
+      pctx.imageSmoothingEnabled = true;
+      pctx.clearRect(0, 0, w, h); pctx.drawImage(from, 0, 0, fw, fh, 0, 0, w, h);
+      if (w === 16 && h === 16) break;
+      from = c; fw = w; fh = h; w = Math.max(16, w / 2); h = Math.max(16, h / 2); level++;
+    }
     const d = pctx.getImageData(0, 0, 16, 16).data;
     let r = 0, g = 0, b = 0;
     for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
@@ -981,7 +996,7 @@ const World = (() => {
       if (!g) return false;
       if (old.parentNode) old.parentNode.replaceChild(fresh, old);
       cv = fresh; ctx = g;
-      drag = null; hoverAgent = null; hoverBeltTile = null; hoverOutbox = null;   // pointer state died with the old node
+      drag = null; hoverAgent = null; hoverBeltTile = null; hoverOutbox = null; hoverCrate = null; hoverBay = null; hoverPlate = null;   // pointer state died with the old node
       wireStageInput();
       try { if (ro) { ro.disconnect(); ro.observe(cv.parentElement || cv); } } catch (_) {}
       resize();
@@ -1487,7 +1502,7 @@ const World = (() => {
         cv.style.cursor = 'grabbing'; return;
       }
       const wp = toWorld(ev);
-      if (!wp) { hoverAgent = null; hoverBeltTile = null; hoverOutbox = null; cv.style.cursor = 'default'; return; }
+      if (!wp) { hoverAgent = null; hoverBeltTile = null; hoverOutbox = null; hoverCrate = null; hoverBay = null; hoverPlate = null; cv.style.cursor = 'default'; return; }
       const nowMs = performance.now();
       // D4: stamp cursorMoveT only on a REAL displacement (> ~half a tile) — a parked-but-jittering cursor is
       // presence (feeds gaze), not "moving" (which lures THE CHASE). Compared against the PREVIOUS lastCursor.
@@ -1502,7 +1517,11 @@ const World = (() => {
       hoverBeltTile = null;
       if (!hit && beltTileSet) { const bt = tileOf(wp.x, wp.y); if (beltTileSet.has(bt.x + ',' + bt.y)) hoverBeltTile = bt; }
       hoverOutbox = hit ? null : outboxAt(wp);   // arm the hover-glance crate tag (a glance, never a window)
-      cv.style.cursor = (hit || hoverOutbox || arcadeAt(wp) || missionBoardAt(wp) || trophyCaseAt(wp) || unboundBayAt(wp) || intakeSampleAt(wp) || intakeFeedAt(wp)) ? 'pointer' : 'default';   // arcade cabinets + a stacked OUTBOX + the MISSION BOARD + the TROPHY CASE + an unbound BAY + a complete-line INBOX + a starved INTAKE are clickable too
+      hoverCrate = (hit || hoverOutbox) ? null : crateAt(wp);                  // LINE WATCH: a riding crate is inspectable
+      hoverBay = (hit || hoverOutbox || hoverCrate) ? null : boundBayAt(wp);   // LINE WATCH: a bound bay's lamp glance
+      if (hoverCrate) hoverBeltTile = null;   // one voice: the crate's glance replaces the belt's route tag under it
+      hoverPlate = (hit || hoverOutbox || hoverCrate || hoverBay) ? null : lwPlateAt(wp);   // LINE WATCH: an INBOX's whole reading
+      cv.style.cursor = (hit || hoverOutbox || hoverCrate || (hoverBay && failedBayAt(wp)) || arcadeAt(wp) || missionBoardAt(wp) || trophyCaseAt(wp) || unboundBayAt(wp) || intakeSampleAt(wp) || intakeFeedAt(wp)) ? 'pointer' : 'default';   // arcade cabinets + a stacked OUTBOX + the MISSION BOARD + the TROPHY CASE + an unbound BAY + a complete-line INBOX + a starved INTAKE are clickable too
     });
     cv.addEventListener('mouseup', ev => {
       if (kindleArmed) { kindleHolding = false; return; }   // releasing during the kindle lets the spark ebb
@@ -1521,6 +1540,11 @@ const World = (() => {
         if (onClick) onClick(hit.agentId || hit.id);
         return;
       }
+      // LINE WATCH: a crate riding a belt opens its station card; a FAILED bay's red lamp is acked by a click
+      const crate = crateAt(wp);
+      if (crate && openCrate(crate, ev)) return;
+      const fb = failedBayAt(wp);
+      if (fb && ackBay(fb)) return;
       const arc = arcadeAt(wp);
       if (arc && onArcade) { onArcade(arc); return; }
       // G2.3: a stacked OUTBOX is the collect tap — clicking it opens the oldest pending run's review
@@ -1544,7 +1568,7 @@ const World = (() => {
       const inf = intakeFeedAt(wp);
       if (inf && onIntakeFeed) onIntakeFeed(inf.id);
     });
-    cv.addEventListener('mouseleave', () => { if (kindleArmed) kindleHolding = false; hoverAgent = null; hoverBeltTile = null; hoverOutbox = null; if (!drag) cv.style.cursor = 'default'; });
+    cv.addEventListener('mouseleave', () => { if (kindleArmed) kindleHolding = false; hoverAgent = null; hoverBeltTile = null; hoverOutbox = null; hoverCrate = null; hoverBay = null; hoverPlate = null; if (!drag) cv.style.cursor = 'default'; });
   }
 
   function resize() {
@@ -6641,6 +6665,13 @@ const World = (() => {
       PropSprites.setCtx(ctx);
       PropSprites.drawBayNames(bayLabels, scale, window.devicePixelRatio || 1);
     }
+    reviewMark('overlays');
+    drawBayLamps(now);    // LINE WATCH: every bound bay's status lamp, on its name plate
+    drawLinePlates(now);  // LINE WATCH: each line's numbers at its INBOX (server truth)
+    drawBayGlance(now);   // LINE WATCH: hover a bay → one tiny glance plate (never a window)
+    drawCrateGlance(now); // LINE WATCH: hover a crate → what it is + CLICK
+    drawPlateGlance(now); // LINE WATCH: hover an INBOX → the line's whole reading today
+    reviewMark('lineWatch');
     drawBeltHoverTag(now);// BELT LEGIBILITY: hover a belt tile → where does this line flow (a glance, never a window)
     drawOutboxHoverTag(now);// OUTBOX LEGIBILITY: hover the stacked chute → what the crates are + what a click does
     drawDockFlashes(now); // LONE-BAY dock arrival: the bay visibly catches work when no belt line exists
@@ -7891,17 +7922,19 @@ const World = (() => {
   /* FEED TRUTH: is anything actually wired to drop work onto this floor? ANY registry channel configured
      (the bulk /api/channels/status covers telegram/discord/slack/matrix/signal — polling only the first two
      falsely nagged a slack/matrix/signal-only floor), or the cron scheduler armed with at least one enabled
-     routine. Server-proven only — `fed` stays true until a real response says otherwise, so a fetch hiccup
-     can never fire the nag. */
+     routine, or an armed LINE TRIGGER (a watched folder / a webhook the server reports enabled with nothing
+     blocking it — GET /api/routing/triggers blockedBy). Server-proven only — `fed` stays true until a real
+     response says otherwise, so a fetch hiccup can never fire the nag. */
   function pollFeedState() {
     if (typeof fetch === 'undefined') return;
     const get = u => { try { return fetch(apiUrl(u)).then(r => (r.ok ? r.json() : null)).catch(() => null); } catch (_) { return Promise.resolve(null); } };
-    return Promise.all([get('/api/channels/status'), get('/api/cron')]).then(([chans, cron]) => {
-      if (!chans && !cron) return;   // nothing answered — keep the last known truth
+    return Promise.all([get('/api/channels/status'), get('/api/cron'), get('/api/routing/triggers')]).then(([chans, cron, trg]) => {
+      if (!chans && !cron && !trg) return;   // nothing answered — keep the last known truth
       const chan = !!(chans && typeof chans === 'object' && Object.keys(chans).some(id => chans[id] && chans[id].configured));
       const jobs = (cron && Array.isArray(cron.jobs)) ? cron.jobs : [];
       const cronFeeds = !!(cron && cron.enabled && jobs.some(j => j && j.enabled !== false));
-      const next = { known: true, fed: chan || cronFeeds };
+      const trgFeeds = !!(trg && Array.isArray(trg.triggers) && trg.triggers.some(t => t && t.enabled && !t.blockedBy));
+      const next = { known: true, fed: chan || cronFeeds || trgFeeds };
       const changed = next.known !== feedState.known || next.fed !== feedState.fed;
       feedState = next;
       if (changed) routingNags = buildRoutingNags();   // feed truth changed → refresh the callouts
@@ -8395,6 +8428,9 @@ const World = (() => {
         const b = bodyForAgent(aid); if (b && b !== agent && b.workUntil) b.workUntil = 0;
       }
     }
+    if (Array.isArray(snap.activeRuns) && !snap.activeRuns.some(r => r && r.agentId && !r.runId)) {
+      const w = lineWatch(); if (w) w.reconcileLive(snap.activeRuns.map(r => r && r.runId).filter(Boolean), now, 15000);   // LINE WATCH
+    }
     // ---- inflight tool glyphs: authoritative rebuild ----
     if (Array.isArray(snap.inflightTools)) {
       const liveTool = new Set();
@@ -8560,6 +8596,7 @@ const World = (() => {
       for (const b of (routingPlan.dockBays || [])) b.objects = station.bayObjects(b.agentId, b.propId);
     }
     postRoutingPlan(routingPlan);
+    lineStatsSoon();   // LINE WATCH: the floor's lines changed — re-ask their numbers once the plan has landed
   }
   /* PLAN-POSTER-BEGIN (extraction marker — test/plan-poster.test.js evals this block with injected deps;
      keep it PURE: params + locals only, no module state, no direct fetch/console/setTimeout).
@@ -8646,7 +8683,7 @@ const World = (() => {
       + '|' + (plan.dockBays || []).map(b => b.propId + ':' + (b.brief || '')).join(';')
       // LINE BUDGET rides the key too (2026-08-21): limits live on `lines`, outside plan.hash (policy, not
       // topology — splitter balance must survive a cap edit), but the sidecar's copy must re-read them.
-      + '|' + JSON.stringify(plan.lineLimits || {})) : '';
+      + '|' + JSON.stringify(plan.lineLimits || {}) + '|' + JSON.stringify((plan.lines || []).map(l => [l.lineId, l.projectRoot || '']))) : '';
     planPoster.offer(plan, hash);
   }
   // junction props (splitter/filter/merger) keyed by tile — derived from the compiled plan so the VISUAL engine
@@ -8820,6 +8857,300 @@ const World = (() => {
       ctx.restore();
     }
   }
+  /* ---------- LINE WATCH (2026-09-23, owner-approved): "watch your factory work" ----------
+     Three read-outs on the LIVE floor, every one a fold of real harness state (linewatch.js holds the rules):
+       • a status LAMP on every bound bay — IDLE / WORKING (only once agent.run.start confirms a run AT that dock) /
+         WAITING (a crate queued there) / FAILED (last run there died; until the next success or a click) /
+         PAUSED (a step-through test is paused after this dock). Hover = a tiny glance plate; never a window.
+       • CRATE INSPECT — click a crate riding a belt: a small station card (cratecard.js) with what the harness
+         proved about it (job, line, route, the run working it, its outcome), plus the logbook / Workflow doors.
+       • a per-line PLATE at each line's INBOX — today's runs / shipped / failed, $ today vs the line's daily cap,
+         median time per run — straight from GET /api/routing/lines/stats, reconciled on the SHIPPED counter's
+         60 s cadence and re-asked (never ticked) shortly after a line run ends.
+     The lamp is a DRAWN lens in a housing on the bay's name plate (a glow is not an edge): the halo is secondary. */
+  let watch = null;
+  let lineStats = { known: false, byLine: {}, since: 0 };
+  let lineStatsTimer = 0, stepPollTimer = 0;
+  let hoverBay = null, hoverCrate = null;
+  let lwDrawOff = false;   // verify-only A/B switch (_dbgLineWatch().setDraw) for the frame-cost measurement — never user-facing
+  const LW_ACK_KEY = 'starnet.linewatch.acked';
+  function lineWatch() {
+    if (!watch && typeof LineWatch !== 'undefined') {
+      watch = LineWatch.create({ entryDock: aid => (routingPlan && routingPlan.entryDock) ? (routingPlan.entryDock[aid] || null) : null });
+      try { const a = JSON.parse(localStorage.getItem(LW_ACK_KEY) || '[]'); if (Array.isArray(a)) watch.setAcked(a); } catch (_) { /* per-viewer convenience only */ }
+    }
+    return watch;
+  }
+  const lwNow = () => ((typeof performance !== 'undefined') ? performance.now() : fnow);
+  function watchEvent(name, p) {
+    const w = lineWatch(); if (!w) return;
+    w.onEvent(name, p, lwNow());
+    // a LINE run just ended: re-ask the server for the line's numbers (a reconcile, never an optimistic tick)
+    if (name === 'agent.run.end' && p && p.runId) {
+      const r = w.run(p.runId);
+      if (r && r.lineId) lineStatsSoon();
+      if (r && r.steptest) setTimeout(pollStepTest, 600);   // a step-test hop ended: the session is paused/done NOW — ask once
+    }
+    if (name === 'workitem.placed' && p && p.steptest) pollStepTest();   // a step-test crate: learn the session (its 4 s poll runs only while live)
+  }
+  function pollLineStats() {
+    if (typeof fetch === 'undefined' || typeof LineWatch === 'undefined') return;
+    const since = LineWatch.localMidnight(Date.now());
+    try {
+      fetch(apiUrl('/api/routing/lines/stats?since=' + since), { cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => {
+          if (!j || !Array.isArray(j.lines)) return;   // no answer — keep the last known truth
+          const by = {};
+          for (const l of j.lines) if (l && l.lineId) by[l.lineId] = l;
+          lineStats = { known: true, byLine: by, since };
+          const w = lineWatch(); if (w) w.seedOutcomes(j.docks);
+        }).catch(() => {});
+    } catch (_) { /* offline: the plate keeps its last server answer */ }
+  }
+  function lineStatsSoon() {
+    if (lineStatsTimer) return;
+    lineStatsTimer = setTimeout(() => { lineStatsTimer = 0; pollLineStats(); }, 1500);
+  }
+  /* the step-through session: asked on the SHIPPED counter's 60 s cadence (piggyback) and pushed by the Workflow
+     panel's own poll while it shows a session; polled faster ONLY while a session is live (running/paused). */
+  function pollStepTest() {
+    if (typeof fetch === 'undefined') return;
+    try {
+      fetch(apiUrl('/api/routing/steptest'), { cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => { if (j && j.ok === true) noteStepTest(j.session || null); })
+        .catch(() => {});
+    } catch (_) { /* the seam may be absent on an older sidecar — no lamp claims PAUSED then */ }
+  }
+  function noteStepTest(s) {
+    const w = lineWatch(); if (w) w.setStepTest(s);
+    const live = !!(s && (s.state === 'running' || s.state === 'paused'));
+    if (live && !stepPollTimer) stepPollTimer = setInterval(() => { if (!bridgePaused) pollStepTest(); }, 4000);
+    else if (!live && stepPollTimer) { clearInterval(stepPollTimer); stepPollTimer = 0; }
+  }
+  // the name plate drawBayNames paints over a bound bay: centred on the bay's crown, 11 tall
+  function bayPlateBox(d) {
+    const width = Math.max(12, (d.w || 1) * T - 1), cx = (d.x + (d.w || 1) / 2) * T;
+    return { left: cx - width / 2, top: d.y * T + 1 - 5.5, width, h: 11, cx };
+  }
+  const LAMP = { idle: '#2e443b', working: '#ffb23e', waiting: '#cdb46a', failed: '#ff4a3d', paused: '#62d6e3' };
+  function drawBayLamps(now) {
+    if (lwDrawOff) return;
+    const w = lineWatch();
+    if (!w || !routingPlan || !routingPlan.dockBays || !routingPlan.dockBays.length) return;
+    const rm = reduceMotion(), t = lwNow();
+    ctx.save();
+    ctx.shadowBlur = 0;
+    for (const d of routingPlan.dockBays) {
+      if (!d.agentId || !propOnScreen(d)) continue;
+      const s = w.status(d.propId, t);
+      const b = bayPlateBox(d);
+      const hx = b.left + b.width - 7.5, hy = b.top - 2.4;   // the housing sits on the plate's top rail, right end
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+      ctx.fillStyle = '#070a0b'; ctx.fillRect(hx, hy, 5.5, 3);
+      ctx.strokeStyle = '#56626a'; ctx.lineWidth = 0.35; ctx.strokeRect(hx, hy, 5.5, 3);
+      // WORKING pulses; FAILED snaps on the caret cadence but never to zero (a flashing control never flashes out)
+      let k = 1;
+      if (s.state === 'working' && !rm) k = 0.5 + 0.5 * (0.5 + 0.5 * Math.sin(now / 240));
+      else if (s.state === 'failed' && !rm) k = (Math.floor(now / 700) % 2) ? 0.5 : 1;
+      ctx.globalAlpha = k; ctx.fillStyle = LAMP[s.state] || LAMP.idle;
+      ctx.fillRect(hx + 1, hy + 0.8, 3.5, 1.4);
+      if (s.state !== 'idle') {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.16 * k; ctx.fillRect(hx - 0.6, hy - 0.8, 6.7, 4.6);
+      }
+    }
+    ctx.restore();
+  }
+  // hit-test: a BOUND bay (footprint + its name plate) under a world point
+  function boundBayAt(wp) {
+    if (!routingPlan || !routingPlan.dockBays) return null;
+    for (const d of routingPlan.dockBays) {
+      if (!d.agentId) continue;
+      const x0 = d.x * T, y0 = d.y * T - 8, x1 = (d.x + (d.w || 1)) * T, y1 = (d.y + (d.h || 1)) * T;
+      if (wp.x >= x0 && wp.x < x1 && wp.y >= y0 && wp.y < y1) return d;
+    }
+    return null;
+  }
+  function failedBayAt(wp) {
+    const d = boundBayAt(wp), w = lineWatch();
+    return (d && w && w.status(d.propId, lwNow()).state === 'failed') ? d : null;
+  }
+  function ackBay(d) {
+    const w = lineWatch(); if (!w || !w.ack(d.propId)) return false;
+    try { localStorage.setItem(LW_ACK_KEY, JSON.stringify(w.ackedIds())); } catch (_) { /* per-viewer convenience only */ }
+    return true;
+  }
+  const lwSecs = ms => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? s + 's' : Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's'; };
+  function bayGlanceText(d) {
+    const w = lineWatch(); if (!w) return null;
+    const s = w.status(d.propId, lwNow());
+    if (s.state === 'working') return { text: 'WORKING · ' + lwSecs(lwNow() - s.since) + (s.usd > 0 ? ' · ' + U.usd(s.usd) : ''), col: LAMP.working };
+    if (s.state === 'waiting') return { text: 'WAITING · ' + s.queued + (s.queued === 1 ? ' CRATE' : ' CRATES') + ' QUEUED', col: LAMP.waiting };
+    if (s.state === 'failed') return { text: 'FAILED · ' + String(s.reason || 'error').toUpperCase().replace('_', ' ') + ' — CLICK TO CLEAR', col: LAMP.failed };
+    if (s.state === 'paused') return { text: 'PAUSED · STEP TEST WAITS HERE', col: LAMP.paused };
+    return { text: 'IDLE', col: '#9fb0a8' };
+  }
+  // the hover glance: ONE tiny screen-space plate over the bay (the agent nameplate's language, smaller)
+  function drawBayGlance(now) {
+    if (lwDrawOff || !hoverBay || hoverAgent) return;
+    // one voice per anchor: a bay already carrying a routing callout keeps that voice
+    if (routingNags && routingNags.some(n => n.x === hoverBay.x && n.y === hoverBay.y)) return;
+    const g = bayGlanceText(hoverBay); if (!g) return;
+    const b = bayPlateBox(hoverBay);
+    screenTag(g.text, g.col, b.cx, b.top + b.h + 1, true);   // BELOW the plate: the space above belongs to nags + the INBOX plate
+  }
+  function screenTag(text, col, wx, wy, below) {
+    const dpr = window.devicePixelRatio || 1;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.imageSmoothingEnabled = false;
+    ctx.font = '15px ' + PLATE_FONT;
+    const tw = ctx.measureText(text).width, h = 17, w = Math.round(tw + 12);
+    const Wc = cv.width / dpr, Hc = cv.height / dpr;
+    const ax = (wx * scale + panX) / dpr, ay = (wy * scale + panY) / dpr;
+    const x = Math.round(Math.max(4, Math.min(Wc - w - 4, ax - w / 2))), y = Math.round(Math.max(4, Math.min(Hc - h - 4, below ? ay + 2 : ay - h)));
+    ctx.fillStyle = 'rgba(6,5,4,0.92)'; ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#6b5a33'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    ctx.globalAlpha = 0.7; ctx.fillStyle = col; ctx.fillRect(x + 1, y, w - 2, 1); ctx.globalAlpha = 1;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.shadowBlur = 3; ctx.shadowColor = col; ctx.fillStyle = col;
+    ctx.fillText(text, x + 6, y + h / 2 + 1);
+    ctx.restore();
+  }
+  // hit-test: a real crate (a payload-carrying box, never the ghost engine's) riding a belt under a world point
+  const CRATE_DIRV = { E: [1, 0], W: [-1, 0], S: [0, 1], N: [0, -1] };
+  function crateAt(wp) {
+    if (!convey || !convey.peekBoxes) return null;
+    let best = null, bd = 7.5;
+    for (const bx of convey.peekBoxes()) {
+      if (!bx.payload || bx.payload.ghost || bx.sink > 0) continue;
+      const v = CRATE_DIRV[bx.dir] || [0, 0];
+      const cx = (bx.x + 0.5) * T + (bx.prog - 0.5) * T * v[0], cy = (bx.y + 0.5) * T + (bx.prog - 0.5) * T * v[1] - 1;
+      const dd = Math.hypot(wp.x - cx, wp.y - cy);
+      if (dd < bd) { bd = dd; best = Object.assign({ cx, cy }, bx); }
+    }
+    return best;
+  }
+  function drawCrateGlance(now) {
+    if (lwDrawOff || !hoverCrate || hoverAgent || typeof LineWatch === 'undefined') return;
+    const card = LineWatch.crateCard(hoverCrate.payload, crateCtx(hoverCrate.payload));
+    screenTag(card.kind + ' — CLICK TO INSPECT', '#e8c860', hoverCrate.cx, hoverCrate.cy - 7);
+  }
+  // names the card may print: live roster names, the bay's ROLE + crew, the line's INBOX label
+  function lwDockName(dockId) {
+    const p = geo && geo.props ? geo.props.find(q => q.id === dockId) : null;
+    const aid = p && p.agentId;
+    const b = aid ? bodyForAgent(aid) : null;
+    const who = (b && b.name) ? String(b.name).toUpperCase() : (aid ? String(aid).toUpperCase() : 'NO AGENT');
+    return (p && p.role ? String(p.role).toUpperCase() : 'BAY') + ' · ' + who;
+  }
+  function lwLineName(lineId) {
+    const ip = geo && geo.props ? geo.props.find(q => q.id === lineId) : null;
+    return (ip && ip.label) ? String(ip.label).toUpperCase() : 'UNNAMED LINE';   // the Workflow panel names a line; an unnamed one says so
+  }
+  function lwAgentName(aid) { const b = bodyForAgent(aid); return (b && b.name) ? String(b.name).toUpperCase() : String(aid || '?').toUpperCase(); }
+  function crateCtx(payload) {
+    const w = lineWatch(), p = payload || {};
+    const run = w ? (p.runId ? w.run(p.runId) : (p.workitemId ? w.runOfWorkitem(p.workitemId) : null)) : null;
+    return { run, row: null, nowMs: lwNow(), agentName: lwAgentName, dockName: lwDockName, lineName: lwLineName, usd: n => U.usd(n) };
+  }
+  function openCrate(bx, ev) {
+    if (typeof CrateCard === 'undefined' || typeof LineWatch === 'undefined') return false;
+    const payload = bx.payload;
+    CrateCard.open({
+      clientX: ev ? ev.clientX : 0, clientY: ev ? ev.clientY : 0,
+      payload, api: apiUrl,
+      // the card re-resolves on every refresh: the run record grows (start, cost, end) while the card is open
+      resolve: row => { const c = crateCtx(payload); c.row = row || null; return LineWatch.crateCard(payload, c); },
+      runIdOf: () => { const c = crateCtx(payload); return (c.run && c.run.runId) || payload.runId || null; },
+      runEnded: () => { const c = crateCtx(payload); return !!((c.run && c.run.ended) || payload.outbound); },
+      openRun: a => { if (!a || !a.agentId) return; if (onClick) onClick(a.agentId); if (typeof StationUI !== 'undefined' && StationUI.openTerm) StationUI.openTerm('logbook'); },
+      openWorkflow: f => { if (!f || typeof Build === 'undefined') return; try { if (!Build.isOpen()) Build.open(); if (f.dockId && Build.openAssign) Build.openAssign(f.dockId); } catch (_) { /* REFIT absent: nothing to open */ } }
+    });
+    return true;
+  }
+  // the floor rectangle of the room a local tile sits in (the nag layout's containerFor, reused)
+  function lwRoomBox(tx, ty) {
+    if (!station || !station.roomById || !geo || !geo.origin) return null;
+    const id = roomOfLocalTile(tx, ty), room = id && station.roomById(id);
+    const ox = geo.origin.tx, oy = geo.origin.ty;
+    const rr = room && room.rects.find(q => tx + ox >= q.x1 && tx + ox <= q.x2 && ty + oy >= q.y1 && ty + oy <= q.y2);
+    return rr ? { x: (rr.x1 - ox) * T + 2, y: (rr.y1 - oy) * T + 2, w: (rr.x2 - rr.x1 + 1) * T - 4, h: (rr.y2 - rr.y1 + 1) * T - 4 } : null;
+  }
+  // the INBOX plate: ONE short line of the line's counts at rest (hover the INBOX for the whole reading), only once the
+  // server has answered for this line. Laid out so it never covers a bay's name plate/lamp, a routing callout or
+  // another line's plate (one voice per anchor) — a plate with no clear spot is not drawn; the hover glance still is.
+  const lwPlateW = new Map();
+  let lwPlateMemo = null, lwPlateKey = null;
+  function lwPlateBoxes() {
+    if (!lineStats.known || !routingPlan || !Array.isArray(routingPlan.lines) || !geo || !geo.props || typeof LineWatch === 'undefined') return [];
+    const key = [routingPlan, lineStats, routingNags, geo];
+    if (lwPlateKey && lwPlateKey.every((v, i) => v === key[i])) return lwPlateMemo;
+    const out = [], taken = [];
+    const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    for (const d of (routingPlan.dockBays || [])) { if (!d.agentId) continue; const b = bayPlateBox(d); taken.push({ x: b.left, y: b.top - 3, w: b.width, h: b.h + 3 }); }
+    for (const n of (routingNags || [])) taken.push({ x: n.x * T - 24, y: n.y * T - 16, w: n.w * T + 48, h: 15 });
+    for (const bt of (geo.belts || [])) taken.push({ x: bt.x * T, y: bt.y * T + 2, w: T, h: T - 4 });   // never over a belt: crates ride there
+    ctx.save();
+    ctx.font = "5.5px 'VT323','Courier New',monospace";
+    for (const l of routingPlan.lines) {
+      const s = lineStats.byLine[l.lineId]; if (!s) continue;
+      const ip = geo.props.find(q => q.id === (l.intakes && l.intakes[0])); if (!ip) continue;
+      const lines = LineWatch.plateLines(s); if (!lines) continue;
+      let tw = lwPlateW.get(lines[0]);
+      if (tw == null) { tw = ctx.measureText(lines[0]).width; if (lwPlateW.size > 64) lwPlateW.clear(); lwPlateW.set(lines[0], tw); }
+      const w = tw + 6, h = 8, cx = (ip.x + (ip.w || 1) / 2) * T;
+      const room = lwRoomBox(ip.x, ip.y);
+      const clampX = x => room ? Math.max(room.x, Math.min(room.x + room.w - w, x)) : x;   // an INBOX at a wall must not hang into the void
+      // only spots that stay ON the INBOX's column: a plate drifting across the floor would read as another line's
+      // numbers. Above it, above its callout, one row higher; else right under it — centred, or flush to either side.
+      const ys = [ip.y * T - 2 - h, ip.y * T - 17 - h, ip.y * T - 26 - h, (ip.y + (ip.h || 1)) * T + 1];
+      const xs = [clampX(cx - w / 2), clampX(ip.x * T), clampX((ip.x + (ip.w || 1)) * T - w)];
+      let box = null;
+      for (const y of ys) {
+        if (room && (y < room.y || y + h > room.y + room.h)) continue;
+        for (const x of xs) { const b = { x, y, w, h }; if (!taken.some(t => hit(t, b))) { box = b; break; } }
+        if (box) break;
+      }
+      const entry = { lineId: l.lineId, ip, s, lines, box };
+      if (box) taken.push(box);
+      out.push(entry);
+    }
+    ctx.restore();
+    lwPlateMemo = out; lwPlateKey = key;
+    return out;
+  }
+  function drawLinePlates(now) {
+    if (lwDrawOff) return;
+    const plates = lwPlateBoxes(); if (!plates.length) return;
+    ctx.save();
+    ctx.font = "5.5px 'VT323','Courier New',monospace"; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.shadowBlur = 0;
+    ctx.globalAlpha = linkStaleDim ? 0.35 : 1;   // link down → last-known numbers, dimmed like the SHIPPED pallet
+    for (const p of plates) {
+      const b = p.box; if (!b || !propOnScreen(p.ip)) continue;
+      ctx.fillStyle = '#0d1311'; ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.strokeStyle = '#3f4c47'; ctx.lineWidth = 0.35; ctx.strokeRect(b.x, b.y, b.w, b.h);
+      ctx.strokeStyle = '#4f7f6c'; ctx.lineWidth = 0.5; ctx.beginPath(); ctx.moveTo(b.x + 2, b.y + b.h - 0.8); ctx.lineTo(b.x + b.w - 2, b.y + b.h - 0.8); ctx.stroke();
+      ctx.fillStyle = (p.s.failed | 0) > 0 ? '#e7b3a6' : '#b9cfc4';
+      ctx.fillText(p.lines[0], b.x + b.w / 2, b.y + b.h / 2 - 0.3);
+    }
+    ctx.restore();
+  }
+  // hover: an INBOX (or its plate) with a server reading → the whole reading as one glance line
+  function lwPlateAt(wp) {
+    for (const p of lwPlateBoxes()) {
+      const ip = p.ip, b = p.box;
+      if (wp.x >= ip.x * T && wp.x < (ip.x + (ip.w || 1)) * T && wp.y >= ip.y * T && wp.y < (ip.y + (ip.h || 1)) * T) return p;
+      if (b && wp.x >= b.x && wp.x < b.x + b.w && wp.y >= b.y && wp.y < b.y + b.h) return p;
+    }
+    return null;
+  }
+  let hoverPlate = null;
+  function drawPlateGlance(now) {
+    if (lwDrawOff || !hoverPlate || hoverAgent) return;
+    const p = hoverPlate, b = p.box;
+    screenTag(p.lines[2], (p.s.failed | 0) > 0 ? '#e7b3a6' : '#b9cfc4', b ? b.x + b.w / 2 : (p.ip.x + 0.5) * T, b ? b.y - 1 : p.ip.y * T - 2);
+  }
   // a belt tile to ship an outbound box from — beside the PRODUCING agent's own bay, not always the hero's.
   // The hero ships from its desk (byte-identical); a crew/summoned agent ships from a belt tile beside ITS
   // body; an unknown agent falls back to the hero desk. (WIRING_AUDIT P3: kill the single-hero-desk assumption.)
@@ -8908,10 +9239,12 @@ const World = (() => {
   // ship that re-read it later would weigh every crate 0 (crate-mass honesty).
   function productCrateSpec(p) {
     const w = (typeof Conveyor !== 'undefined' && Conveyor.weightForUsd) ? Conveyor.weightForUsd(runUsdRecon.get((p && p.runId) || '')) : 0;
-    return { outbound: true, box: 'product', weight: w, workitemId: (p && p.workitemId) || '' };
+    // LINE WATCH (additive): the run it came from, so the crate card can show its recorded outcome
+    return { outbound: true, box: 'product', weight: w, workitemId: (p && p.workitemId) || '', runId: (p && p.runId) || '', agentId: (p && p.agentId) || '' };
   }
   function emitProductCrate(aid, spec, dockId) {
     if (!convey) return;
+    if (dockId && spec && !spec.dockId) spec.dockId = dockId;   // LINE WATCH: the bay it ships from (card route)
     const t = outboundBeltTile(aid, dockId);
     if (t) convey.enqueueAt(t.x, t.y, spec);
   }
@@ -8957,12 +9290,17 @@ const World = (() => {
   }
   // an unproductive run produced no deliverable — ride a red-hot SLAG crate off the PRODUCING agent's bay
   // carrying its post-mortem one-liner, so the failed outcome is visible leaving the line.
-  function enqueueSlag(diag, aid) {
+  function enqueueSlag(diag, aid, run) {
     if (!convey) return;
-    const w = dockWorkPeek(aid);
+    // LINE WATCH: the bay this dead run was AT is known from its confirmed start (linewatch pairing); the oldest
+    // placement entry is the fallback (it can be a stale entry left by an earlier failed run)
+    const lr = (watch && run && run.runId) ? watch.run(run.runId) : null;
+    const w0 = dockWorkPeek(aid);
+    const w = (lr && lr.dockId) ? { dockId: lr.dockId, lineId: lr.lineId } : w0;
     const t = outboundBeltTile(aid, w && w.dockId ? w.dockId : null);
     const clean = s => String(s || '').replace(/\bspend\b/ig, 'run resources').replace(/\bdollars?\b/ig, 'limits');
-    if (t) convey.enqueueAt(t.x, t.y, { outbound: true, box: 'slag', postmortem: (diag && (clean(diag.title) + ' - ' + clean(diag.fix))) || 'unproductive run' });
+    if (t) convey.enqueueAt(t.x, t.y, { outbound: true, box: 'slag', postmortem: (diag && (clean(diag.title) + ' - ' + clean(diag.fix))) || 'unproductive run',
+      runId: (run && run.runId) || '', agentId: aid || '', dockId: (w && w.dockId) || '', lineId: (w && w.lineId) || '', reason: (run && run.reason) || '' });   // LINE WATCH: the card resolves the dead run
   }
   /* ---------- crew bodies (the OTHER agents, standing at their bays) ---------- */
   // a LIGHT body: the full agent field-shape (so SPRITES.drawBody/drawFallback never choke) but STATIC —
@@ -9496,6 +9834,8 @@ const World = (() => {
     });
     U.bus.on('agent.run.end', p => { if (p && p.agentId) glyphByAgent.delete(p.agentId); });
     U.bus.on('workitem.placed', p => intakeMessage(p));
+    // LINE WATCH: the bay lamps + crate cards fold the same run/crate events the floor animates (linewatch.js)
+    for (const n of ['workitem.placed', 'workitem.superseded', 'agent.run.start', 'agent.cost', 'agent.run.error', 'agent.run.end']) U.bus.on(n, p => watchEvent(n, p));
     // (workitem.delivered no longer spawns a crate — the run.end 'done' handler below is the single
     //  crate source, so channel replies can't double-crate. delivered still feeds the floor stats fold.)
     U.bus.on('workitem.superseded', p => { if (p && p.workitemId && convey) convey.dropWorkitem(p.workitemId); });
@@ -9564,7 +9904,7 @@ const World = (() => {
         const clean = s => String(s || '').replace(/\bspend\b/ig, 'run resources').replace(/\bdollars?\b/ig, 'limits');
         StationUI.notify('⚠ SLAG (a run died with nothing to show) · ' + clean(SlagLog.line(diag)), 'warn');
       }
-      enqueueSlag(diag, p && p.agentId);
+      enqueueSlag(diag, p && p.agentId, p);
     });
     // Stage 2: WATCH the lead delegate. A team.dispatch tool call opens a delegation window (until its tool_result);
     // any WORKER run that starts inside it flies a box lead→worker + lights the worker. Contract-free — rides the
@@ -9970,6 +10310,7 @@ const World = (() => {
   const shipMidnight = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
   function pollShipStats() {
     if (typeof fetch === 'undefined') return;
+    pollLineStats(); pollStepTest();   // LINE WATCH rides the SAME cadence: the INBOX plates + the PAUSED lamp
     try {
       fetch(apiUrl('/api/runs?agent=*&limit=500&since=' + shipMidnight()))
         .then(r => (r.ok ? r.json() : null))
@@ -10178,6 +10519,13 @@ const World = (() => {
     pollShip: () => pollShipStats()
   });
   return { init, rebake, frameReviewRoom, crt: CRT, slagLog: () => (slaglog ? slaglog.recent() : []),
+    // LINE WATCH: the Workflow panel pushes the step-test session it polls; reads today's numbers for a line
+    noteStepTest, lineStatsFor: id => (lineStats.known ? (lineStats.byLine[id] || null) : null), pollLineStats,
+    _dbgLineWatch: () => ({ setDraw: on => { lwDrawOff = !on; return !lwDrawOff; }, watch: watch ? watch.snapshot() : null, stats: lineStats, status: id => (watch ? watch.status(id, lwNow()) : null),
+      crates: () => (convey ? convey.peekBoxes().filter(b => b.payload && !b.payload.ghost).map(b => { const v = CRATE_DIRV[b.dir] || [0, 0]; const wx = (b.x + 0.5) * T + (b.prog - 0.5) * T * v[0], wy = (b.y + 0.5) * T + (b.prog - 0.5) * T * v[1] - 1; return { id: b.id, box: b.payload.box || null, workitemId: b.payload.workitemId || null, runId: b.payload.runId || null, sx: wx * scale + panX, sy: wy * scale + panY }; }) : []),
+      bays: () => (routingPlan && routingPlan.dockBays ? routingPlan.dockBays.filter(d => d.agentId).map(d => { const b = bayPlateBox(d); return { propId: d.propId, agentId: d.agentId, sx: b.cx * scale + panX, sy: (d.y + (d.h || 1) / 2) * T * scale + panY, lampX: (b.left + b.width - 4.75) * scale + panX, lampY: (b.top - 0.9) * scale + panY }; }) : []),
+      plates: () => (routingPlan && routingPlan.lines && geo ? routingPlan.lines.map(l => { const ip = geo.props.find(q => q.id === (l.intakes && l.intakes[0])); return ip ? { lineId: l.lineId, sx: (ip.x + (ip.w || 1) / 2) * T * scale + panX, sy: ip.y * T * scale + panY } : null; }).filter(Boolean) : []),
+      dpr: window.devicePixelRatio || 1 }),
     // REFIT freezes this world and can display its already-painted station.
     // Identity and both invalidation flags prevent borrowing another save or a
     // pre-edit bake. The editor replaces its reference on its first real edit.

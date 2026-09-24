@@ -1718,18 +1718,26 @@ const WorldModel = (() => {
         if (!CONNECTABLE[p.t] || p.id === A.id || p.id === B.id) continue;
         for (const t of ring(p)) foreignRing.add(t.x + ',' + t.y);
       }
+      /* …AND SO DOES A LANE THAT ENDS IN ONE (2026-09-23 playtest). The goal tiles used to be exempt from that
+         avoidance, so two BAYS stacked under a splitter got a lane whose last tile sat on the edge of one bay
+         and the CORNER of the other: the compiler hooked it to both and read the two parallel bays as a
+         hand-off chain nobody drew. The first pass now also prefers a goal tile no third machine touches —
+         edge first, then corner — and only when none exists does it fall back to the old goal set. */
+      const cleanGoals = new Set([...goalEdge].filter(k => !foreignRing.has(k)));
+      if (!cleanGoals.size) for (const k of goalCorner) if (!foreignRing.has(k)) cleanGoals.add(k);
       function bfs(avoid) {
+        const want = (avoid && cleanGoals.size) ? cleanGoals : goals;
         const prev = new Map(), q = [];
         for (const s of starts) { const k = s.x + ',' + s.y; if (!prev.has(k) && !(avoid && foreignRing.has(k))) { prev.set(k, null); q.push(s); } }
         let hit = null, head = 0;
         while (head < q.length && !hit) {
           const t = q[head++];
           const tk = t.x + ',' + t.y;
-          if (goals.has(tk)) { hit = t; break; }
+          if (want.has(tk)) { hit = t; break; }
           for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
             const x = t.x + dx, y = t.y + dy, k = x + ',' + y;
             if (prev.has(k) || !pathable(x, y)) continue;
-            if (avoid && foreignRing.has(k) && !goals.has(k)) continue;
+            if (avoid && foreignRing.has(k) && !want.has(k)) continue;
             prev.set(k, tk); q.push({ x, y });
           }
           if (q.length > 4096) return { err: fail('NO_PATH', 'no route found (path too long)') };
@@ -1799,6 +1807,79 @@ const WorldModel = (() => {
       }
       emit(dirty);
       return { ok: true, count: path.length, from: A.t, to: B.t };
+    }
+
+    /* ---------- CONNECTION PREVIEW: what would this placement hook? (2026-09-23 playtest) ----------
+       The compiler hooks a machine to EVERY belt tile in its 1-tile ring (corners included) — "a dock touches
+       the line wherever the line touches it". That is the routing law and it stays. What was wrong is that it
+       happened SILENTLY: a line stamped right under another joined it while the ghost stayed green, and a
+       bay dropped against a lane became a stage of it. A connection must be VISIBLE and INTENTIONAL, so the
+       ghost asks this before the drop.
+       connectionPreview({ props:[{t,x,y,w,h}], belts:[{x,y,d}], ignoreId }) -> [{ propId, t, agentId, label }]
+       — the EXISTING workflow machines the candidate would hook up with, by the compiler's own reading:
+         · a candidate machine whose footprint+ring covers an existing belt tile joins that belt's line;
+         · a candidate belt tile inside an existing machine's footprint+ring hooks that machine;
+         · a candidate belt flowing into an existing belt (or fed by one) joins that belt's line.
+       A line = the belt component (4-neighbour, direction-blind — lineComponents' rule) plus every machine
+       touching it. `ignoreId` is a machine being MOVED: it is left out, and so is every machine it is ALREADY
+       lined up with (a nudge along its own lane is not a new connection). Pure: reads the doc, writes nothing. */
+    function connectionPreview(cand) {
+      const cp = (cand && cand.props) || [], cb = (cand && cand.belts) || [], ignoreId = cand && cand.ignoreId;
+      const machines = doc.props.filter(p => CONNECTABLE[p.t] && p.id !== ignoreId);
+      const inZone = (p, x, y) => x >= p.x - 1 && x <= p.x + (p.w || 1) && y >= p.y - 1 && y <= p.y + (p.h || 1);
+      const belts = doc.belts;
+      // the line (belt component + touching machines) through a set of seed belt tiles
+      const lineThrough = (seeds, skipId) => {
+        const seen = new Set(), q = [];
+        for (const k of seeds) if (belts[k] && !seen.has(k)) { seen.add(k); q.push(k); }
+        while (q.length) {
+          const k = q.shift(), p0 = k.split(','), x = +p0[0], y = +p0[1];
+          for (const d in DIRS) { const nk = beltKey(x + DIRS[d][0], y + DIRS[d][1]); if (belts[nk] && !seen.has(nk)) { seen.add(nk); q.push(nk); } }
+        }
+        const out = new Set();
+        if (!seen.size) return out;
+        for (const m of doc.props) {
+          if (!CONNECTABLE[m.t] || m.id === skipId) continue;
+          let hit = false;
+          for (let y = m.y - 1; y <= m.y + (m.h || 1) && !hit; y++) for (let x = m.x - 1; x <= m.x + (m.w || 1) && !hit; x++) if (seen.has(beltKey(x, y))) hit = true;
+          if (hit) out.add(m.id);
+        }
+        return out;
+      };
+      const seeds = new Set(), direct = new Set();
+      for (const c of cp) {
+        if (!CONNECTABLE[c.t]) continue;
+        const w = c.w || 1, h = c.h || 1;
+        for (let y = c.y - 1; y <= c.y + h; y++) for (let x = c.x - 1; x <= c.x + w; x++) if (belts[beltKey(x, y)]) seeds.add(beltKey(x, y));
+      }
+      for (const b of cb) {
+        for (const m of machines) if (inZone(m, b.x, b.y)) direct.add(m.id);
+        const v = DIRS[b.d];
+        if (v) { const nk = beltKey(b.x + v[0], b.y + v[1]); if (belts[nk]) seeds.add(nk); }
+        for (const d in DIRS) { const nx = b.x - DIRS[d][0], ny = b.y - DIRS[d][1]; if (belts[beltKey(nx, ny)] === d) seeds.add(beltKey(nx, ny)); }
+      }
+      const hits = lineThrough(seeds, ignoreId);
+      for (const id of direct) hits.add(id);
+      if (ignoreId) {   // a MOVE: what the machine is already lined up with is not a new connection
+        const me = doc.props.find(p => p.id === ignoreId);
+        if (me) {
+          const own = [];
+          for (let y = me.y - 1; y <= me.y + (me.h || 1); y++) for (let x = me.x - 1; x <= me.x + (me.w || 1); x++) if (belts[beltKey(x, y)]) own.push(beltKey(x, y));
+          for (const id of lineThrough(own, ignoreId)) hits.delete(id);
+        }
+        hits.delete(ignoreId);
+      }
+      return doc.props.filter(p => hits.has(p.id)).sort((a, b) => (a.x - b.x) || (a.y - b.y))
+        .map(p => ({ propId: p.id, t: p.t, agentId: p.agentId || null, label: p.label || null }));
+    }
+    /* the belt tiles a machine is hooked to RIGHT NOW (its footprint + 1-tile ring) — REFIT's move ghost reads it
+       to say "its belts stay here" when a drag would leave them behind (belts never ride along with a prop) */
+    function hookedBelts(propId) {
+      const p = doc.props.find(q => q.id === propId);
+      if (!p || !CONNECTABLE[p.t]) return [];
+      const out = [];
+      for (let y = p.y - 1; y <= p.y + (p.h || 1); y++) for (let x = p.x - 1; x <= p.x + (p.w || 1); x++) if (doc.belts[beltKey(x, y)]) out.push({ x, y });
+      return out;
     }
 
     /* ---------- STARTER-LINE BLUEPRINTS (the beginner onramp, 2026-08-04) ----------
@@ -2060,6 +2141,7 @@ const WorldModel = (() => {
         if (p.brief) lp.brief = p.brief;   // a dock's standing job brief -> the compiled plan (step editor; prompt text only)
         if (p.hands) lp.hands = p.hands;   // a dock's HANDS OFF phrase -> composed into that brief by the compiler (workflow panel)
         if (p.label) lp.label = p.label;   // an INTAKE's line name (step editor; legibility only, never routing)
+        if (p.t === 'intake' && p.projectRoot) lp.projectRoot = p.projectRoot;
         if (p.limits) lp.limits = p.limits;   // an INTAKE's LINE BUDGET -> the compiled plan (pipeline normalizes; chain executor reads)
         if (p.routes) lp.routes = p.routes; if (p.def) lp.def = p.def; if (p.bufferSize) lp.bufferSize = p.bufferSize;   // junction config -> the bake/pipeline
         if (p.timeoutMin) lp.timeoutMin = p.timeoutMin; if (p.maxIter) lp.maxIter = p.maxIter; if (p.done) lp.done = p.done; if (p.when) lp.when = p.when;   // joiner / loop gate config
@@ -2356,6 +2438,21 @@ const WorldModel = (() => {
        Normalized + clamped through the ONE shared normalizer (Pipeline.normalizeLineLimits) so the doc never
        holds a number the executor would read differently; null/empty clears (= executor defaults). Mirrors
        setPropLabel: only an INBOX carries it, no-op edits take no undo slot. */
+    function setPropProject(propId, projectRoot) {
+      const p = doc.props.find(q => q.id === propId);
+      if (!p) return fail('NOT_FOUND', 'no such prop');
+      if (p.t !== 'intake') return fail('BAD_TYPE', 'only an INBOX carries a project');
+      const root = typeof projectRoot === 'string' ? projectRoot.trim().slice(0, 4096) : '';
+      // Every Inbox in one connected workflow shares the setting and one undo step.
+      const P = pipelineModule();
+      const line = P && P.lineComponents(projectGeometry()).find(c => c.intakes.includes(propId));
+      const targets = doc.props.filter(q => q.t === 'intake' && (line ? line.intakes.includes(q.id) : q.id === propId));
+      if (targets.every(q => (q.projectRoot || '') === root)) return { ok: true, projectRoot: root };
+      snapshot();
+      for (const q of targets) { if (root) q.projectRoot = root; else delete q.projectRoot; }
+      emit(targets.map(q => ({ x1: q.x, y1: q.y, x2: q.x + (q.w || 1) - 1, y2: q.y + (q.h || 1) - 1 })));
+      return { ok: true, projectRoot: root };
+    }
     function setPropLimits(propId, limits) {
       const p = doc.props.find(q => q.id === propId);
       if (!p) return fail('NOT_FOUND', 'no such prop');
@@ -2590,8 +2687,8 @@ const WorldModel = (() => {
       },
       // mutations
       addRoom, placeHallway, removeRoom, moveRoom, setFloor, setMaterial, setDeck, setWalls, setHull, paintTiles, renameRoom,
-      addProp, removeProp, moveProp, rotateProp, faceProp, mirrorProp, assignPropAgent, ensureWorkstation, configureJunction, bindConnector, setDoorState, setPropBrief, setPropHands, setPropLabel, setPropLimits,
-      setBelt, removeBelt, removeBelts, placeBeltRun, connectBelt, stampBlueprint, insertBayBetween, transact,
+      addProp, removeProp, moveProp, rotateProp, faceProp, mirrorProp, assignPropAgent, ensureWorkstation, configureJunction, bindConnector, setDoorState, setPropProject, setPropBrief, setPropHands, setPropLabel, setPropLimits,
+      setBelt, removeBelt, removeBelts, placeBeltRun, connectBelt, connectionPreview, hookedBelts, stampBlueprint, insertBayBetween, transact,
       // agent-bay binding queries
       propsByType, propsByAgent, pipelineEdges, setPipelineEdges, addPipelineEdge, removePipelineEdge, agentRoomId, bayObjects,
       capForProp: t => CAP_PROP_MAP[t] || null,   // a prop type's capability objectType (single source for the UI)
@@ -2644,7 +2741,7 @@ const WorldModel = (() => {
     // lookup is installed (i.e. a real client with the catalog); plain node tests keep every prop.
     if (propRules) doc.props = doc.props.filter(p => !(p && typeof p.t === 'string') || !!propRules(p.t));
     doc.props = doc.props.filter(p => p && typeof p === 'object' && typeof p.t === 'string')
-      .map(p => { const o = { id: p.id || null, t: p.t, x: p.x | 0, y: p.y | 0, w: Math.max(1, p.w | 0 || 1), h: Math.max(1, p.h | 0 || 1) }; if (p.block === false && !LEGACY_WALKABLE_DOCKS[p.t]) o.block = false; if (typeof p.agentId === 'string' && p.agentId) o.agentId = p.agentId; const r0 = cleanRot(p.r); if (r0) o.r = r0; if (p.m) o.m = 1; if (typeof p.role === 'string' && p.role) o.role = p.role.slice(0, 24); if (typeof p.brief === 'string' && p.brief.trim()) o.brief = p.brief.slice(0, 2000); if (p.t === 'bay' && typeof p.hands === 'string' && p.hands.trim()) o.hands = p.hands.slice(0, 160); if (typeof p.label === 'string' && p.label.trim()) o.label = p.label.slice(0, 48); if (p.t === 'intake' && p.limits && typeof p.limits === 'object') { const nl = normalizeLimits(p.limits); if (nl) o.limits = { maxHops: nl.maxHops, maxUsdPerMessage: nl.maxUsdPerMessage, maxUsdPerDay: nl.maxUsdPerDay }; } applyJunctionCfg(o, p); if (cleanDoor(p.door)) o.door = p.door; if (typeof p.connectorId === 'string' && p.connectorId.trim()) o.connectorId = p.connectorId.trim(); return o; });
+      .map(p => { const o = { id: p.id || null, t: p.t, x: p.x | 0, y: p.y | 0, w: Math.max(1, p.w | 0 || 1), h: Math.max(1, p.h | 0 || 1) }; if (p.block === false && !LEGACY_WALKABLE_DOCKS[p.t]) o.block = false; if (typeof p.agentId === 'string' && p.agentId) o.agentId = p.agentId; const r0 = cleanRot(p.r); if (r0) o.r = r0; if (p.m) o.m = 1; if (typeof p.role === 'string' && p.role) o.role = p.role.slice(0, 24); if (typeof p.brief === 'string' && p.brief.trim()) o.brief = p.brief.slice(0, 2000); if (p.t === 'bay' && typeof p.hands === 'string' && p.hands.trim()) o.hands = p.hands.slice(0, 160); if (typeof p.label === 'string' && p.label.trim()) o.label = p.label.slice(0, 48); if (p.t === 'intake' && typeof p.projectRoot === 'string' && p.projectRoot.trim()) o.projectRoot = p.projectRoot.trim().slice(0, 4096); if (p.t === 'intake' && p.limits && typeof p.limits === 'object') { const nl = normalizeLimits(p.limits); if (nl) o.limits = { maxHops: nl.maxHops, maxUsdPerMessage: nl.maxUsdPerMessage, maxUsdPerDay: nl.maxUsdPerDay }; } applyJunctionCfg(o, p); if (cleanDoor(p.door)) o.door = p.door; if (typeof p.connectorId === 'string' && p.connectorId.trim()) o.connectorId = p.connectorId.trim(); return o; });
     // Explicit, pack-owned shrinking only. Keep the rendered centre and floor line;
     // never enlarge obstacles or reinterpret a custom saved size. Idempotent on reload.
     for (const p of doc.props) {
