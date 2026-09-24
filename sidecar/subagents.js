@@ -36,9 +36,15 @@
      a cost booking, a compaction, a fallback. Quiet for STALL_MS (450s) between tool calls, or IN_TOOL_STALL_MS
      (1200s) while a tool call is still in flight (a long build/test is legitimately silent), and the host's
      sweep (checkStalls) aborts it and marks it `stale` with an honest reason and a finalization receipt. */
+  /* A worker WAITING ON ITS MODEL is alive too (2026-09-23): provider.retry (a ladder rung announced before its
+     backoff) and agent.waiting (the loop's heartbeat while a model call shows nothing yet — a slow first byte, a
+     silent reasoning stream, a retry backoff) count as progress, so a deep-reasoning worker is no longer staled at
+     450s for thinking. The model call itself stays bounded by the provider idle watchdog and the ladder; and a
+     heartbeat whose wait has already outlasted the in-tool window (a stream trickling keep-alive bytes with no
+     content) stops counting, so a wedged call can still be caught (see noteProgress). */
   const PROGRESS_EVENTS = new Set(['agent.run.start', 'agent.token', 'agent.tool_call', 'agent.tool_result', 'agent.cost',
     'cost.estimate', 'agent.compact', 'provider.fallback', 'tool.args.repaired', 'iteration.refunded', 'checkpoint.created',
-    'verify.result', 'shell.exec']);
+    'verify.result', 'shell.exec', 'provider.retry', 'agent.waiting']);
   const DEFAULT_STALL_MS = 450000;
   const DEFAULT_IN_TOOL_STALL_MS = 1200000;
   // An abort REASON the worker's runner can read back (signal.reason.code) to report WHY it stopped.
@@ -422,6 +428,8 @@
     function noteProgress(id, generation, name, payload) {
       const control = controllers.get(id);
       if (!control || control.generation !== generation || !PROGRESS_EVENTS.has(name)) return;
+      // one model call silent for longer than the longest legitimate tool silence is wedged, not slow
+      if (name === 'agent.waiting' && payload && Number(payload.sinceMs) > inToolStallMs) return;
       control.lastProgressAt = now();
       const callId = payload && payload.callId != null ? String(payload.callId) : '';
       if (name === 'agent.tool_call' && callId) control.openTools.add(callId);
