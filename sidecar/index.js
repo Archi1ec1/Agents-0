@@ -103,7 +103,7 @@ const { toolsetRows, toggleableCaps } = require('./capability/toolsets.js');   /
 const { makeCapCtx } = require('./capability/capGate.js');
 const { composeOffice, stationWithObject, stationWithConnectors } = require('./capability/office.js');   // THE MOAT: interactive office = compute freebie + placed caps
 const { summarizeCapabilities } = require('./capability/capsummary.js');   // truthful "what you can/can't do" so the agent stops over-promising
-const { starnetManual } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only)
+const { starnetManual, starnetManualIndex } = require('./manual.js');   // truthful "how StarNet works" so the agent can guide a stuck Commander (interactive only); the index form keeps rules inline + a TOC served by manual.read
 const FinishLine = require('./finish-line.js');     // immutable "crawl to the finish line" task doctrine at the final prompt seam
 const { makeHarnessSnapshot } = require('./harness-snapshot.js');   // bounded secret-free build/scheduler/connectors/diagnostics truth for station.inspect
 const { makeOpenRouterProvider } = require('./providers/openrouter.js');
@@ -175,6 +175,7 @@ const { runtimeIdentityBlock } = require('./runtimeinfo.js');
 const { makeDiagnostics, proxyHostOnly } = require('./diagnostics.js');   // T3.9: pure paste-ready bug-report assembler (redacted, truthful)
 const LiveDoctor = require('./live-doctor.js');                           // opt-in bounded live proof + secret-free receipt
 const { makeStationInspectTool } = require('./tools/builtin/station-inspect.js');
+const { makeManualReadTool } = require('./tools/builtin/manual-read.js');   // manual.read — the operator manual's reference sections, on demand
 const memcore = require('./memcore.js');
 const { makeConsentBroker } = require('./permissions.js');
 const { makeGrantManager } = require('./permgrants.js');
@@ -15961,6 +15962,10 @@ async function runOnceCore(o) {
   const loadedSkills = [];
   const managedSkills = [];
   const seenLoadedSkills = new Set();
+  // The bundled library recipes THIS run is offered (enabled + gear available), set where the prompt composes
+  // them below. skill.view resolves library:<slug> against exactly this list, so a recipe the index did not
+  // offer (disabled, or its gear absent) is never served either.
+  let runRecipes = [];
   const openrouterToolKey = providerId === 'openrouter' ? runKey : runtimeKey;
   const studioRoute = ImageTask.resolveRoute({
     providerId, runKey, providerBaseUrl: baseUrl,
@@ -16013,6 +16018,7 @@ async function runOnceCore(o) {
   makeStationInspectTool({
     inspect: () => harnessSnapshotForRun({ provider: providerId, model, agentId, runId, surface, trigger })
   }).register(registry);
+  makeManualReadTool().register(registry);   // same always-present COMPUTER grant: the manual's reference sections, verbatim
   // STUDIO media tools, built up-front so browser.vision can borrow its multimodal analyze path
   // (one provider seam, no duplication). Registered below; here we only need its vision callback.
   // STARNET_IMAGE_MODEL overrides the studio's default text->image model (image.js picks the current-gen
@@ -16112,6 +16118,12 @@ async function runOnceCore(o) {
     },
     onManage: (skill, ctx, action) => {
       if (skill) managedSkills.push({ id: skill.id, name: skill.name, action: action || 'manage' });
+    },
+    // INSTALLED SKILLS on demand: the prompt indexes the enabled recipes; skill.view serves a body by its
+    // library:<slug> name. Consulted only after the agent's own store misses (agent skills unchanged).
+    bundled: (name) => {
+      const recipe = skillsCatalog.find(runRecipes, name);
+      return recipe ? { name: recipe.name, content: skillsCatalog.viewText(recipe) } : null;
     }
   }).register(registry);   // H4: skill.write/list/view/manage — the agent's reusable procedure library (memory capability)
   Todo.makeTodoTool({ store: notebookStore }).register(registry);   // in-session task plan — shares the notebook's per-agent kv store ('todo:'+agentId)
@@ -17659,10 +17671,18 @@ async function runOnceCore(o) {
     // Class Loadouts S1: union the running agent's per-agent class SKILL PACKAGE (roster record) with the global
     // prefs — ADD-only (see catalog.compose). Still gated by the station gear + the budget; package composes first.
     const agentSkills = (rosterIdent && Array.isArray(rosterIdent.skills)) ? rosterIdent.skills : [];
+    const recipeOpts = { overrides: skillPrefs.overrides(), placedTypes: skillPlacedTypes, agentSkills: agentSkills };
+    if (isTask) runRecipes = skillsCatalog.live(SKILL_LIBRARY, recipeOpts);
     // CHAT DIET: recipes are for WORK. A greeting shipped ~12KB of skill bodies (5 library skills are default-on with
     // no gear requirement) to every provider, and a 3B local model spent minutes re-reading them before saying hi.
+    // ON DEMAND (2026-09-23): the bodies were also the largest block of every TASK call (~12.4K of ~37K). When
+    // skill.view is on THIS run's wire the prompt carries a one-line index per recipe and the body is one
+    // skill.view call away; a run without it (no notebook placed, memory toolset off) keeps the bodies inline,
+    // so the index can never point at a tool the model cannot call.
     skillBlock = isTask
-      ? skillsCatalog.compose(SKILL_LIBRARY, { overrides: skillPrefs.overrides(), placedTypes: skillPlacedTypes, agentSkills: agentSkills })
+      ? (coreNames.indexOf('skill.view') >= 0
+        ? skillsCatalog.composeIndex(SKILL_LIBRARY, recipeOpts)
+        : skillsCatalog.compose(SKILL_LIBRARY, recipeOpts))
       : '';
   } catch (_) { /* a skill-injection hiccup must never break a run */ }
   // STARNET OPERATOR MANUAL: how the station works, so the agent can guide a stuck Commander. Interactive
@@ -17670,7 +17690,10 @@ async function runOnceCore(o) {
   // BEFORE the authoritative <capabilities_ground_truth>, which it defers to, so the two never disagree.
   // CHAT DIET: ~9KB. Gated on isTask too — a 'how do I …' question classifies as a task (classify.js defaults to
   // task), so the manual still reaches the turns that need it; a bare greeting or ack does not pay for it.
-  const manualBlock = (isTask && surface === 'interactive') ? starnetManual() : '';
+  // ON DEMAND (2026-09-23): with manual.read on the wire the prompt keeps the manual's orientation + every behaviour
+  // rule verbatim and only a table of contents for its reference sections (~6.3K instead of ~9.3K); without it the
+  // whole manual stays inline. Both forms are constants, so the cached prefix is as stable as before.
+  const manualBlock = (isTask && surface === 'interactive') ? (coreNames.indexOf('manual.read') >= 0 ? starnetManualIndex() : starnetManual()) : '';
   const runtimeVersion = computeVersionSurface();
   const runtimeBlock = runtimeIdentityBlock({ provider: providerId, model, agentId, runId, surface, trigger, fallbackModels, harness: runtimeVersion.harness, app: runtimeVersion.app });
   // RUNTIME SKILL LIBRARY (skill-builder-gap): index the agent's own authored skills + preload any it invokes,
