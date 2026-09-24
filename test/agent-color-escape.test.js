@@ -14,16 +14,26 @@ const app = p => fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', p
 // ---- 1. the load-time validator (evaluated from the shipped source, not a copy) ----
 {
   const src = app('app.js');
-  const m = src.match(/function suitColor\(v, i\) \{[^\n]*\}/);
-  A.ok(!!m, 'app.js defines suitColor');
-  const SUITS = ['#6fb3bf', '#7bc88a'];
-  const suitColor = new Function('SUITS', m[0] + '; return suitColor;')(SUITS);
-  A.eq(suitColor('#cf7d96', 0), '#cf7d96', 'a real palette hex survives the load');
-  A.eq(suitColor('#abc', 0), '#abc', 'short hex survives');
-  A.eq(suitColor('x" onmouseover="alert(1)', 1), '#7bc88a', 'a markup-bearing colour falls back to the crew palette');
-  A.eq(suitColor('red;background:url(//evil)', 0), '#6fb3bf', 'a CSS-injection colour falls back too');
-  A.eq(suitColor(undefined, 3), '#7bc88a', 'a missing colour gets a palette suit');
-  A.ok(/color: suitColor\(s\.color, agents\.size\)/.test(src), 'rehydrateRoster routes saved colours through suitColor');
+  // rehydrateRoster is extracted and run standalone (here and by other tests): the validator is inline in it
+  const restore = src.match(/function rehydrateRoster\(savedAgents\) \{[\s\S]*?\n  \}/)[0];
+  A.ok(/color: \/\^#\[0-9a-f\]\{3,8\}\$\/i\.test\(String\(s\.color/.test(restore), 'rehydrateRoster validates the saved colour inline');
+  const reload = (rows, SUITS) => {
+    const agents = new Map();
+    new Function('agents', 'agent', 'DATA', 'executionProfileOf', 'agentDocs', 'composeSystemPrompt', 'registerAgent', 'SUITS',
+      restore + '; rehydrateRoster(' + JSON.stringify(rows) + ');')(agents, { model: 'm' }, { DEFAULT_SKIN: 'default' }, () => 'local', () => {}, () => '', () => {}, SUITS);
+    return agents;
+  };
+  const got = reload([
+    { id: 'evil', color: 'x" onmouseover="alert(1)' }, { id: 'css', color: 'red;background:url(//evil)' },
+    { id: 'fine', color: '#cf7d96' }, { id: 'short', color: '#abc' }, { id: 'none' }
+  ], ['#6fb3bf', '#7bc88a']);
+  A.ok(/^#[0-9a-f]{6}$/i.test(got.get('evil').color), 'a markup-bearing saved colour is replaced by a palette hex on reload');
+  A.ok(/^#[0-9a-f]{6}$/i.test(got.get('css').color), 'a CSS-injection colour is replaced too');
+  A.eq(got.get('fine').color, '#cf7d96', 'a real saved colour round-trips through reload');
+  A.eq(got.get('short').color, '#abc', 'short hex survives');
+  A.ok(/^#[0-9a-f]{6}$/i.test(got.get('none').color), 'a missing colour gets a palette suit');
+  A.ok(/^#[0-9a-f]{6}$/i.test(reload([{ id: 'evil', color: '"><img src=x>' }]).get('evil').color), 'still safe when SUITS is not in scope (extraction tests)');
+  A.ok(/function rehydrateRoster[\s\S]{0,700}name:\s*s\.name/.test(src), 'the name field stays inside the window recruit-identity-ui.test pins');
 }
 
 // ---- 2. every style="color:…" sink escapes the value ----
