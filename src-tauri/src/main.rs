@@ -78,6 +78,9 @@ struct AppState {
     // destroyed and rebuilt, so the momentary zero-window state is not taken as an app exit.
     webview_rebuilding: AtomicBool,
     webview_recovery: webview_recovery::RecoveryBudget,
+    // Set once setup has built the main window. Before that a second launch must not treat the
+    // missing window as a dead instance (see webview_recovery::second_launch_action).
+    main_window_built: AtomicBool,
 }
 
 /// What the guardian knows about the sidecar's exit history. Serialized verbatim to the frontend
@@ -4247,10 +4250,29 @@ fn main() {
         // A second launch should focus the running window, not spin up a 2nd sidecar. Registered FIRST per
         // Tauri guidance (n1): single-instance must run before other plugins so a second process bails early.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
+            let win = app.get_webview_window("main");
+            // No managed state yet = setup is still booting the sidecar: this instance is starting.
+            let (built, rebuilding) = app
+                .try_state::<AppState>()
+                .map(|state| {
+                    (
+                        state.main_window_built.load(Ordering::SeqCst),
+                        state.webview_rebuilding.load(Ordering::SeqCst),
+                    )
+                })
+                .unwrap_or((false, false));
+            let action = webview_recovery::second_launch_action(win.is_some(), built, rebuilding);
+            if let Some(win) = win {
                 let _ = win.show(); // the window may be hidden in the tray — a relaunch should reveal it
                 let _ = win.unminimize();
                 let _ = win.set_focus();
+            } else if action == webview_recovery::SecondLaunch::Wait {
+                // Starting up (a slow boot under memory pressure) or rebuilding after a WebView2
+                // crash: NOT a zombie. Quitting here killed a still-booting StarNet on 2026-09-23.
+                log_startup(
+                    &startup_log_path(app),
+                    "second-launch: main window not built yet (starting or rebuilding); leaving this instance running",
+                );
             } else {
                 // No `main` window means this resident instance can never be revealed again (every
                 // reveal path addresses that window). Get out of the way — drain on a worker thread
@@ -4367,6 +4389,7 @@ fn main() {
                 guardian: Mutex::new(GuardianStatus::default()),
                 webview_rebuilding: AtomicBool::new(false),
                 webview_recovery: webview_recovery::RecoveryBudget::default(),
+                main_window_built: AtomicBool::new(false),
             };
             // Before spawning OUR sidecar: terminate any orphan sidecars left behind by a
             // hard-killed previous shell (Drop/ExitRequested never ran there). Multiple live
@@ -4446,6 +4469,9 @@ fn main() {
             }
 
             build_main_window(app.handle(), None)?;
+            app.state::<AppState>()
+                .main_window_built
+                .store(true, Ordering::SeqCst);
 
             Ok(())
         })

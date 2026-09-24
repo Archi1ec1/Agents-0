@@ -51,6 +51,34 @@ pub(crate) fn kind_name(kind: i32) -> &'static str {
     }
 }
 
+/// What a second launch does to the running instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SecondLaunch {
+    /// The main window exists: show and focus it.
+    Reveal,
+    /// No main window YET — startup is still running (a slow sidecar boot under memory pressure
+    /// can take 30 s+) or crash recovery is rebuilding it. This instance is alive; leave it be.
+    Wait,
+    /// The window was built once and is gone with no rebuild pending: an unrevealable zombie.
+    ExitZombie,
+}
+
+/// 2026-09-23: a relaunch during a slow boot hit the zombie branch and quit the instance that was
+/// still starting, so StarNet "wouldn't load" — both processes exited and nothing stayed open.
+pub(crate) fn second_launch_action(
+    window_present: bool,
+    window_was_built: bool,
+    rebuilding: bool,
+) -> SecondLaunch {
+    if window_present {
+        SecondLaunch::Reveal
+    } else if !window_was_built || rebuilding {
+        SecondLaunch::Wait
+    } else {
+        SecondLaunch::ExitZombie
+    }
+}
+
 /// Bounded retries: under sustained memory starvation a rebuilt webview can die again at once.
 /// Recovering forever would thrash the machine; after the budget is spent the window stays as it
 /// is and the startup log says why, so a restart is the user's call.
@@ -123,6 +151,14 @@ mod tests {
         assert!(budget.try_spend(t0 + Duration::from_secs(2)));
         assert!(!budget.try_spend(t0 + Duration::from_secs(3)), "4th in window refused");
         assert!(budget.try_spend(t0 + Duration::from_secs(601)), "oldest aged out");
+    }
+
+    #[test]
+    fn relaunch_during_boot_or_rebuild_never_kills_the_instance() {
+        assert_eq!(second_launch_action(false, false, false), SecondLaunch::Wait, "still booting");
+        assert_eq!(second_launch_action(false, true, true), SecondLaunch::Wait, "rebuilding");
+        assert_eq!(second_launch_action(true, true, false), SecondLaunch::Reveal);
+        assert_eq!(second_launch_action(false, true, false), SecondLaunch::ExitZombie);
     }
 
     #[test]
