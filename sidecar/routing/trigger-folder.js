@@ -14,7 +14,7 @@
 
    makeFolderWatcher({ fsp, pathMod, settleMs?, maxEntries?, readCap? })
      baseline(dir)                         -> Promise<{ ok, keys[], error? }>
-     scan(dir, seen, pending, nowMs)       -> Promise<{ ok, ready:[{name, abs, size, mtimeMs, key}], pending, present:[key], complete, error? }>
+     scan(dir, seen, pending, nowMs)       -> Promise<{ ok, ready:[{name, abs, size, mtimeMs, key}], pending, error? }>
      readItem(abs, name)                   -> Promise<{ ok, binary, content, truncated, error? }> */
 'use strict';
 const T = require('./triggers.js');
@@ -54,10 +54,9 @@ function makeFolderWatcher(deps) {
     try { files = await listFiles(dir); }
     catch (e) { return { ok: false, ready: [], pending: new Map(), error: (e && e.code === 'ENOENT') ? 'the folder no longer exists: ' + dir : ('cannot read the folder: ' + ((e && e.message) || e)) }; }
     const prev = pending instanceof Map ? pending : new Map();
-    const next = new Map(), ready = [], present = [];
+    const next = new Map(), ready = [];
     for (const f of files) {
       const key = T.fileKey(f.name, f);
-      present.push(key);
       if (seen && Object.prototype.hasOwnProperty.call(seen, key)) continue;
       const p = prev.get(f.name);
       const same = !!(p && p.size === f.size && p.mtimeMs === f.mtimeMs);
@@ -65,8 +64,7 @@ function makeFolderWatcher(deps) {
       next.set(f.name, { size: f.size, mtimeMs: f.mtimeMs, since });
       if (same && (nowMs - since) >= settleMs && (nowMs - f.mtimeMs) >= settleMs) ready.push({ name: f.name, abs: f.abs, size: f.size, mtimeMs: f.mtimeMs, key });
     }
-    // present + complete let the host prune seen keys whose file is gone (only when the listing was complete)
-    return { ok: true, ready, pending: next, present, complete: files.length < maxEntries };
+    return { ok: true, ready, pending: next };
   }
 
   async function readItem(abs, name) {

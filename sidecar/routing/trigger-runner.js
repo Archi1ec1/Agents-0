@@ -71,6 +71,11 @@ function makeTriggerRunner(deps) {
     return commit(next) ? nx : null;
   }
   function saveSeen() {
+    // bound each trigger's record in place (callers hold references to the inner maps): drop the OLDEST stamps
+    for (const id of Object.keys(seen)) {
+      const m = seen[id], keys = m ? Object.keys(m) : [];
+      if (keys.length > T.SEEN_MAX) keys.sort((a, b) => m[a] - m[b]).slice(0, keys.length - T.SEEN_MAX).forEach(k => { delete m[k]; });
+    }
     try { seenStore.save(seen); return true; } catch (e) { warn('[triggers] fired-file record persist failed: ' + ((e && e.message) || e)); return false; }
   }
   /* an honest, de-duplicated failure note on the trigger (the UI shows lastError). Same message twice = one write. */
@@ -151,6 +156,8 @@ function makeTriggerRunner(deps) {
       onResolved: (info) => { if (s.current && !s.current.resolved) s.current.resolved = info; },
       onLineOutcome: (info) => { if (s.current) s.current.lineOutcome = info; },
       streamId: () => (s.current && s.current.streamId) || undefined,
+      // a fire is ONE standalone job: the hub's per-agent turn history lives only for this fire (never a prior fire's)
+      turns: (agentId) => { if (!s.current) return []; const k = String(agentId || ''); return s.current.turns[k] || (s.current.turns[k] = []); },
       send: (text) => { if (s.current) { s.current.replies.push(String(text == null ? '' : text)); if (s.current.replies.length > 20) s.current.replies.shift(); } }
     });
     return s.hub;
@@ -159,7 +166,7 @@ function makeTriggerRunner(deps) {
   async function dispatch(t, item, s) {
     const startedAt = now();
     const streamId = 'trigger-' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
-    s.current = { streamId, routed: null, resolved: null, lineOutcome: null, replies: [] };
+    s.current = { streamId, routed: null, resolved: null, lineOutcome: null, replies: [], turns: {} };
     patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt }));
     const hub = hubFor(t.id, s);
     const settled = Promise.resolve(hub.onInbound({ chatId: 'trg-' + t.id, userId: 'trigger', text: item.text, chatType: 'dm' }))
@@ -207,8 +214,16 @@ function makeTriggerRunner(deps) {
   }
 
   /* ---- CRUD (the host validates the folder path before calling create/update with it) ---- */
-  function list(nowMs) { const n = nowMs == null ? now() : nowMs; return records.map(t => Object.assign(T.publicView(t, n), { queued: stateOf(t.id).queue.length, running: !!stateOf(t.id).busy })); }
-  function view(id) { const t = get(id); return t ? Object.assign(T.publicView(t, now()), { queued: stateOf(id).queue.length, running: !!stateOf(id).busy }) : null; }
+  /* the live facts a record cannot hold: queue depth, a fire in flight, and blockedBy — what stops the NEXT fire
+     right now (the fire preflight, or a folder the last scan could not read). The panel, the how-it-runs sentence
+     and the floor's FEED truth all read blockedBy, so a trigger that cannot fire is never claimed as a feed. */
+  function liveView(t, n) {
+    const s = stateOf(t.id);
+    return Object.assign(T.publicView(t, n), { queued: s.queue.length, running: !!s.busy,
+      blockedBy: t.enabled ? (preflight(t) || (t.kind === 'folder' && s.scanError ? s.scanError : null)) : null });
+  }
+  function list(nowMs) { const n = nowMs == null ? now() : nowMs; return records.map(t => liveView(t, n)); }
+  function view(id) { const t = get(id); return t ? liveView(t, now()) : null; }
 
   /* create(fields, { secretHash, baselineKeys }) -> { ok, trigger } | { ok:false, error } */
   function create(fields, extra) {
@@ -221,7 +236,7 @@ function makeTriggerRunner(deps) {
     if (!t) return { ok: false, error: 'invalid trigger' };
     if (t.kind === 'folder') {
       seen[t.id] = {};
-      for (const k of ((extra && extra.baselineKeys) || [])) seen[t.id][k] = 0;
+      for (const k of ((extra && extra.baselineKeys) || [])) seen[t.id][k] = at;   // baseline = armed now (never fires)
       if (!saveSeen()) { delete seen[t.id]; return { ok: false, error: 'the folder\'s existing files could not be recorded — refused (they would all fire)' }; }
     }
     if (!commit(records.concat([t]))) return { ok: false, error: 'the trigger could not be saved' };
@@ -236,9 +251,9 @@ function makeTriggerRunner(deps) {
     if (t.kind === 'folder' && extra && Array.isArray(extra.baselineKeys)) {
       const prev = seen[id];
       seen[id] = {};
-      for (const k of extra.baselineKeys) seen[id][k] = 0;
+      { const at = now(); for (const k of extra.baselineKeys) seen[id][k] = at; }
       if (!saveSeen()) { seen[id] = prev; return { ok: false, error: 'the folder\'s existing files could not be recorded — refused' }; }
-      stateOf(id).pending = new Map();
+      stateOf(id).pending = new Map(); stateOf(id).scanError = null;
     }
     const changes = Object.assign({}, fields, { updatedAt: now() });
     if (fields.config) changes.config = Object.assign({}, t.config, fields.config);
@@ -273,15 +288,13 @@ function makeTriggerRunner(deps) {
       try {
         const mine = seen[t.id] || (seen[t.id] = {});
         const res = await d.watcher.scan(t.config.path, mine, s.pending, now());
-        if (!res.ok) { recordError(t.id, res.error); s.pending = new Map(); continue; }
+        if (!res.ok) { s.scanError = res.error; recordError(t.id, res.error); s.pending = new Map(); continue; }
+        // the folder is readable again: a scan failure on record is no longer true — clear it (a fire error stays)
+        if (s.scanError || /^(the folder no longer exists|cannot read the folder)/.test(t.lastError || '')) { s.scanError = null; clearError(t.id); }
         s.pending = res.pending;
-        // forget keys whose file is gone (bounded record); only when the listing was complete
-        if (res.complete) {
-          const present = {}; for (const k of res.present) present[k] = true;
-          let pruned = false;
-          for (const k of Object.keys(mine)) if (!present[k]) { delete mine[k]; pruned = true; }
-          if (pruned) saveSeen();
-        }
+        /* NO prune on absence (live proof 2026-09-23): a folder moved by copy+delete, a cloud-sync placeholder or a
+           flaky share makes files vanish for a moment — forgetting them would refire every one of them (real spend)
+           the instant they reappear. The record is bounded by count instead (newest SEEN_MAX per trigger). */
         const ready = res.ready.slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
         for (const f of ready) {
           const c = canAccept(t.id);

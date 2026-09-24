@@ -147,7 +147,7 @@ function validateInput(body, opts) {
 }
 
 /* normalizeSeen(v) — the folder triggers' fired-file record: { [triggerId]: { [fileKey]: firedAtMs } }. A baseline
-   (a file already there when the trigger was armed) is recorded as 0. Bounded per trigger. */
+   (a file already there when the trigger was armed) is stamped with the arming time. Bounded per trigger (newest win). */
 const SEEN_MAX = 5000;
 function normalizeSeen(v) {
   const out = {};
@@ -157,7 +157,8 @@ function normalizeSeen(v) {
     const m = v[id], row = {};
     if (!m || typeof m !== 'object' || Array.isArray(m)) { out[id] = row; continue; }
     const keys = Object.keys(m).filter(k => k.length <= 600 && typeof m[k] === 'number' && isFinite(m[k]));
-    for (const k of keys.slice(-SEEN_MAX)) row[k] = m[k];
+    const keep = keys.length > SEEN_MAX ? keys.slice().sort((x, y) => m[y] - m[x]).slice(0, SEEN_MAX) : keys;   // newest stamps win
+    for (const k of keep) row[k] = m[k];
     out[id] = row;
   }
   return out;
@@ -260,7 +261,7 @@ function webhookBody(raw, contentType) {
 
 module.exports = {
   KINDS, ID_RE, LINE_RE, HOUR_MS, MAX_PER_HOUR_DEFAULT, MAX_PER_HOUR_CEILING, MAX_TRIGGERS, CONTENT_CAP,
-  normalizeTrigger, normalizeAll, normalizeSeen, publicView, validateInput, clampPerHour,
+  normalizeTrigger, normalizeAll, normalizeSeen, SEEN_MAX, publicView, validateInput, clampPerHour,
   mintSecret, hashSecret, secretMatches, admit, recentWithin,
   isIgnoredName, fileKey, looksBinary, composeFolderItem, composeWebhookItem, webhookBody
 };

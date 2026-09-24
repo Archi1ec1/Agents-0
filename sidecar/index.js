@@ -10534,7 +10534,12 @@ const triggerFolderPolicy = makeFolderPolicy({
 function makeTriggerHub(hooks) {
   return makeChannelHub({
     channel: 'trigger', maxMessageLength: 4000, agentPrefix: 'trg_', textBatchWaitMs: 0,
-    runOnce: runOnce, store: channelStore,
+    runOnce: runOnce,
+    // the channel store for chat/outbox bookkeeping, but per-agent TURN HISTORY is this fire's own (hooks.turns): a
+    // trigger fire is one standalone job, so a later fire's hops never inherit an earlier fire's handoffs
+    store: new Proxy(channelStore, { get: (t, k) => k === 'loadHistory' ? (agentId) => hooks.turns(agentId).slice(-40)
+      : k === 'appendTurn' ? (agentId, role, content) => { hooks.turns(agentId).push({ role: role, content: content }); }
+      : k === 'clearHistory' ? () => {} : (typeof t[k] === 'function' ? t[k].bind(t) : t[k]) }),
     historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
     bindChats: false,   // every fire is UNADDRESSED: the line's own doors decide the dock, never a remembered chat binding
     send: (chatId, text) => { hooks.send(text); return Promise.resolve({ ok: true }); },
@@ -10578,8 +10583,7 @@ triggerPollTimer.unref();
 const triggerHookUrl = (id) => 'http://127.0.0.1:' + PORT + '/api/hooks/' + id;
 function triggerView(v) {
   if (!v) return v;
-  const t = triggerRunner.get(v.id);
-  const out = Object.assign({}, v, { blockedBy: (t && t.enabled) ? triggerRunner.preflight(t) : null });
+  const out = Object.assign({}, v);   // blockedBy is the runner's live answer (liveView)
   if (v.kind === 'webhook') out.url = triggerHookUrl(v.id);
   return out;
 }

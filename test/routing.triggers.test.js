@@ -251,6 +251,20 @@ const { makeFolderWatcher, makeFolderPolicy } = require('../sidecar/routing/trig
   await R4.tickFolders(); await R4.tickFolders();
   await new Promise(r => setTimeout(r, 30));
   A.eq(hubCalls.length - callsBefore, 2, 'a changed file (new mtime/size) fires once more');
+  // a folder that vanishes blocks the trigger honestly; when it is back the scan error clears itself
+  fs.renameSync(fdir, fdir + '-gone');
+  await R4.tickFolders();
+  A.ok(/no longer exists/.test(R4.view(fid).blockedBy || '') && /no longer exists/.test(R4.view(fid).lastError || ''), 'a vanished folder shows as blockedBy + lastError: ' + R4.view(fid).blockedBy);
+  fs.renameSync(fdir + '-gone', fdir);
+  await R4.tickFolders();
+  A.ok(R4.view(fid).blockedBy === null && R4.view(fid).lastError === null, 'once the folder is back the scan failure clears');
+  // a file that leaves and comes back (a copy+delete move, a sync placeholder) is NOT a new landing: no refire
+  fs.renameSync(path.join(fdir, 'landed.txt'), path.join(root, 'landed.txt'));
+  await R4.tickFolders(); await R4.tickFolders();
+  fs.renameSync(path.join(root, 'landed.txt'), path.join(fdir, 'landed.txt'));
+  await R4.tickFolders(); await R4.tickFolders();
+  await new Promise(r => setTimeout(r, 30));
+  A.eq(hubCalls.length - callsBefore, 2, 'a file that vanished for a moment and came back unchanged does not refire');
   // disabled: nothing fires
   R4.update(fid, { enabled: false });
   fs.writeFileSync(path.join(fdir, 'while-off.txt'), 'x');
