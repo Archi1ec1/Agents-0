@@ -315,8 +315,8 @@ const rowOf = (res, fp) => res.records.find(r => r.fingerprint === fp);
     A.eq(row.confidence, 'hard', 'real node: the regression passes -> hard');
     A.eq(R.ciVerdict(res, { staleDays: 7 }).ok, false, 'real clock-free ci: 51 days open -> red');
 
-    // This real-repo audit also traverses the maintainer's shared Git metadata;
-    // hundreds of branches/worktrees can take close to two minutes on Windows.
+    // This CLI scans the real repository and can exceed two minutes on a busy multi-worktree host.
+    // Keep the exit-code and JSON checks; allow the scan to finish before treating it as a hang.
     const run = spawnSync(process.execPath, [cli, '--no-write', '--no-run', '--json', '--ci', '--stale-days', '99999'], { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 300000 });
     A.eq(run.status, 0, 'the real CLI on this repo exits 0 with an absurd stale window (spawn error: ' +
       (run.error ? run.error.message : 'none') + '; stderr: ' + String(run.stderr).slice(0, 200) + ')');
