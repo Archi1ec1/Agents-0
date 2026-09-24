@@ -2057,9 +2057,21 @@ fn report_window_startup_failure(log: &Option<PathBuf>, detail: &str) {
 
 /// Retry only in response to the native dialog. Cancel is a full startup abort;
 /// the guardian must not turn a cancelled launch into hidden background work.
+/// Returns whether startup should proceed.
 fn spawn_sidecar_with_retry(state: &AppState) -> bool {
     loop {
         if spawn_sidecar(state) {
+            return true;
+        }
+        // No native Retry/Cancel dialog exists off Windows, so nobody pressed Cancel: treating the stub's
+        // `false` as one aborted setup and panicked the app on any slow or failed first spawn. Keep the
+        // pre-dialog behaviour there — open the window and let the guardian keep retrying.
+        if !cfg!(windows) {
+            show_startup_failure_dialog(&state.startup_log);
+            log_startup(
+                &state.startup_log,
+                "startup: no native dialog on this platform — continuing; the guardian keeps retrying",
+            );
             return true;
         }
         if !show_startup_failure_dialog(&state.startup_log) {
