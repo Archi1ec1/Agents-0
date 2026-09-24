@@ -18,8 +18,8 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "0f5ab95e7b7dd6a5289456b15dac3151b3253e25",
-    "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
+    "sourceCommit": "17e2f0a16f2b47fada7ffae76340a73e2d884444",
+    "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
         "path": "INSTALL.md",
@@ -153,8 +153,8 @@
       },
       {
         "path": "frontend/agent-station-demo.html",
-        "bytes": 85898,
-        "sha256": "080c1018e3efbd468eafa1553b37dea42fa11c44456a8f49999e1a7c45b355f3"
+        "bytes": 86237,
+        "sha256": "39f0c7d48de9241b929c78875c10bbe93315b7591b151c88365159216f6b84f8"
       },
       {
         "path": "frontend/app/agentid.js",
@@ -365,6 +365,11 @@
         "path": "frontend/app/conveyor.js",
         "bytes": 43450,
         "sha256": "67b119d0f631a58e368b0df031cfaaac38121f54095f553cf7884f564bdeae35"
+      },
+      {
+        "path": "frontend/app/cratecard.js",
+        "bytes": 6511,
+        "sha256": "7dd183936b4b792f4edebdc67c4399d647837e9ac4a8be64d201dbb922db452a"
       },
       {
         "path": "frontend/app/cronhuman.js",
@@ -590,6 +595,11 @@
         "path": "frontend/app/lifecycle.js",
         "bytes": 4133,
         "sha256": "071eed9f31af8d5493feed678ee21ee5b9996b6ea2560077d46a6ce297d715ce"
+      },
+      {
+        "path": "frontend/app/linewatch.js",
+        "bytes": 18843,
+        "sha256": "e435afb504b2796e39577351f56a5e80aa9621456d91f92ac21702a256226658"
       },
       {
         "path": "frontend/app/logoclip.js",
@@ -1253,8 +1263,8 @@
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 100657,
-        "sha256": "d6d828114e2a14aab5baa9861e8d1ce147f5fde27602bf82e3b59c715db01af9"
+        "bytes": 102284,
+        "sha256": "63c0449f134148216cd3d967d7ec48e8f626d4cc67ff5b28ee4d4a6011736b58"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1303,8 +1313,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 780062,
-        "sha256": "ea6370160ab7933a2790db547760972c0feb07769d144320aa8aa1b29c125ec9"
+        "bytes": 803155,
+        "sha256": "854d7cd163ab24fcb9838c92157319514fd61ab4cc2162ff0c093a432f042e39"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1425,6 +1435,11 @@
         "path": "frontend/css/interface.css",
         "bytes": 28906,
         "sha256": "2ab66b1de9f2d18a93599fbb03b4ee0802629e2f50c862a19928293acb304532"
+      },
+      {
+        "path": "frontend/css/linewatch.css",
+        "bytes": 2433,
+        "sha256": "14f4ee3554a4d098896a3b23ab4ec157a48bf1440cda657d2bb794ac6cf33394"
       },
       {
         "path": "frontend/css/marketplace.css",
@@ -1598,8 +1613,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 86978,
-        "sha256": "f0cc96f6ebf808bcbd9ae4e2ed043ead8162c0639764a6f1e02a5f2aad0d5782"
+        "bytes": 87350,
+        "sha256": "179abc41306ad754600816f79afe5ee422c02e8076cc675d26b1d43eea7b5605"
       },
       {
         "path": "frontend/js/arcade.js",
