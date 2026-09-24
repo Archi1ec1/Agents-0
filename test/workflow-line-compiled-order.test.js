@@ -65,6 +65,7 @@ function playtestFloor() {
   A.eq(flow.cols.length, 1, 'ONE group, not a column per bay');
   A.ok(flow.cols[0].detached && flow.cols[0].mode === 'apart' && flow.cols[0].docks.length === 2, 'the group is the detached \'apart\' siblings');
   A.ok(flow.order.every(pid => !flow.docks[pid].routed), 'nothing is routed');
+  A.ok(flow.outbox.reached && plan.dockChains[Wd].outbox, 'the OUTBOX claim is the compiled one: both bays still ship there');
   const txt = sentence(flow);
   A.ok(!/ then /.test(txt), 'the sentence never sequences them (was "WRITER works on it then RESEARCHER"): ' + txt);
   A.ok(/Not connected to an INBOX: WRITER, RESEARCHER/.test(txt), 'it names them as not connected: ' + txt);

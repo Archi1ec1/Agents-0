@@ -102,6 +102,8 @@
       out.edges[b.propId] = ch ? (ch.next || []).filter(mine) : [];
       if (ch && !ch.outbox && ch.deadEnd && !(ch.next || []).length && !ch.gated) out.docks[b.propId].deadEnd = true;
     }
+    // no INBOX-fed run at all: the OUTBOX claim is still the compiled one — a crewed dock whose own chain ships out
+    if (!R.outboxReached && !Object.keys(R.col).length) for (const b of bays) { const ch = b.agentId && real.dockChains[b.propId]; if (ch && ch.outbox) out.outbox.reached = true; }
 
     // 2. THE LAYOUT (where each dock sits in the strip) comes from the compiler too. An UNCREWED bay is not a
     //    dock of the real plan, so the floor is compiled once more with a probe agent on every uncrewed bay of
