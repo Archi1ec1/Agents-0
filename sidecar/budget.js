@@ -136,7 +136,7 @@
         }
       }
       if (ev.blocked) { const s = ev.scopes[ev.blocked]; return { scope: ev.blocked, usd: s.usd, cap: s.cap }; }
-      if (runId != null && ledger && typeof ledger.beginRun === 'function' && !ledger.beginRun(runId, agentId)) {
+      if (runId != null && ledger && typeof ledger.beginRun === 'function' && !ledger.beginRun(runId, agentId, spentThisRun)) {
         return { unknown: true, code: 'spend_history_unavailable' };
       }
       return null;

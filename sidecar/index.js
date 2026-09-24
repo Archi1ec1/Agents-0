@@ -968,6 +968,17 @@ const ledgerIo = {
         if (prior && JSON.stringify(prior) !== JSON.stringify(receipt.entry)) throw Object.assign(new Error('Spend settlement receipt conflicts with ledger'), { code: 'SPEND_RECEIPT_CONFLICT' });
         if (!prior) { appendJsonlDurable({ fs, note: failNote }, LEDGER_FILE, receipt.entry); rows.push(receipt.entry); settled.add(receipt.runId); }
       }
+      // An INTERRUPTED run (dispatch receipt, no settled entry): settle it at the spend it had durably booked — a
+      // flagged LOWER BOUND (only the attempt in flight at the crash is uncounted). A legacy receipt from before
+      // receipts carried bookedUsd settles as spendUnknown ($0 recorded, flagged) rather than bricking every capped
+      // run forever: there was never a path that could reconcile it. See ledger.js beginRun.
+      if (receipt && !receipt.entry && receipt.runId && !settled.has(receipt.runId)) {
+        const booked = typeof receipt.bookedUsd === 'number' && Number.isFinite(receipt.bookedUsd) && receipt.bookedUsd >= 0;
+        const row = { runId: String(receipt.runId), agentId: String(receipt.agentId || ''), turns: 0, usd: booked ? receipt.bookedUsd : 0, tokens: 0,
+          model: '(unknown)', unmetered: false, ts: Number(receipt.ts) || 0, entryId: 'interrupted:' + String(receipt.runId), interrupted: true };
+        if (booked) row.spendLowerBound = true; else row.spendUnknown = true;
+        appendJsonlDurable({ fs, note: failNote }, LEDGER_FILE, row); rows.push(row); settled.add(receipt.runId);
+      }
       if (!receipt || !receipt.runId || !settled.has(receipt.runId)) throw Object.assign(new Error('An interrupted run has unsettled spend; reconcile its provider usage before continuing with spending limits.'), { code: 'UNSETTLED_SPEND' });
       fs.unlinkSync(path.join(SPEND_PENDING_DIR, file));
     }
