@@ -39,9 +39,27 @@ Source fixed by skipping only ENOENT, printing an explicit SKIP line, and retain
 
 After the fix, the real Python-present test passes 27 assertions; the real restricted-PATH run prints `SKIP: python not on PATH` and passes 26 assertions. `test/desktop-build-macos-python-host.test.js` passes 12 assertions covering both interpreter names, an actual ENOENT subprocess result, EACCES, a Python failure, and preservation of earlier workflow failures. Linux behavior is covered through the interpreter boundary; the reported Linux container was not run locally.
 
-## Validation limits
+## Initial validation limits (historical)
 
 The canonical filtered fast runner passed both affected suites (`run-fast-tests: OK — 2 step(s) green`). JavaScript syntax checks and bug-register validation passed. The full `npm run test:fast` run exited 124 after its configured 1,200,000 ms timeout, with `chat-prompt-diet.test: OK (7 assertions)` as the last completed suite; there was no full-gate success receipt. `npm run qa:customer-journeys` stopped at step 3/38 because the unchanged `test/sidecar.http.test.js` hit a sidecar boot timeout. Local logs are `issue-40-fast.log` and `issue-40-journeys.log` in the lane worktree. The source repair is committed on the isolated branch; these incomplete/red broad gates do not authorize integration into trunk.
+
+## Merge follow-up
+
+On 2026-09-24, candidate e5bb40b7a passed the complete fast gate (923/923) and customer journeys (38/38), including the previously timed-out sidecar HTTP suite. Merge 70c9236c2 exactly matched that candidate tree. The next independent integration, 726fdb2c7, preserved the issue fix.
+
+The post-merge gate on 726fdb2c7 stopped at step 599/923: `stationbake.connections.test.mjs` passed all 408 Canvas assertions but profile deletion failed with EBUSY on Chrome's debug log. The test passed unchanged when retried. To honor the merge gate without discarding the independent integration, f8faa548d reverted only merge 70c9236c2 on trunk; 34f820e40 reapplied it in the owned lane for revalidation.
+
+The separate test-cleanup repair e23a88609 waits for graceful Chrome exit before a Windows process-tree fallback, requires parent exit, and bounds retries of transient profile-deletion errors. Rendering assertions are unchanged. The real Canvas test passed 408 assertions after the repair; a forced-shutdown probe executed the actual stop helper against a live browser and proved process exit plus profile deletion (4,107 ms). Full combined gates remain required before reintegration.
+
+The next full retry stopped at step 288/923 in the unchanged reconciliation smoke test, whose real CLI subprocess returned a null status under its two-minute limit; the isolated original test reproduced that result. A direct diagnostic invocation subsequently completed with status 0 in 95,602 ms and 128,098 stdout bytes. Test-only repair fd30781e6 gives this repository-wide Git metadata audit a bounded five-minute window and includes spawn errors in its diagnostic. The complete isolated reconciliation test then passed all 82 assertions. No reconciliation logic or exit/JSON assertion was removed.
+
+## Final integration evidence
+
+Candidate d0324708b merged the independent test-gate repairs from trunk 762cb07c4 and passed the full unfiltered fast manifest (923/923) plus customer journeys (38/38). Fast verification used the same canonical runner with an explicit 2,400,000 ms outer watchdog, rather than the package script's 1,200,000 ms watchdog; no steps were filtered or assertions suppressed. The prior candidate 275da0d6b also passed all 923 steps under this extended watchdog.
+
+Merge 056553417aa2f5e185b59f10efd8982e7d90da71 has exactly the tested Git tree 51fb2dcd64e81d1827a03bd8db7c4cfe7b2da535. Existing shared operational notes were byte-preserved. The final gate includes ledger reconciliation (82 assertions), the independent parallel-tools regression (15), real Canvas rendering and cleanup (408), Python-present receipt validation (27), and the missing/error interpreter regression (12).
+
+On the pinned merge, the two affected suites passed again (2/2); a real process with PATH restricted to Node printed the explicit missing-Python SKIP and passed 26 static assertions. The complete suite was run on the identical pre-merge tree; it was not repeated a third time after this final merge. Logs are retained in C:/Users/andro/gen-trees/_evidence/issue-40-2026-09-24-SDGlqI, including issue-40-combined-fast.log, issue-40-combined-journeys.log, and issue-40-final-postmerge-*.log. This closes the source/integration work; the original Linux reporter's recovery remains unconfirmed.
 
 ## Sibling coverage
 
