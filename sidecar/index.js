@@ -3493,11 +3493,37 @@ function persistOwnerClaim(id, uid) {
 }
 // A local pairing request persists only a salted verifier. The raw code goes straight back to the authenticated
 // desktop caller and is deliberately never written to status, logs, or the bot/model transcript.
-function telegramOwnerAdmission(record, message) {
-  const text = String(message && message.text || '');
-  const match = /^\/pair\s+([^\s]+)\s*$/i.exec(text);
-  if (!match || !telegramOwnerPairing.verify(record && record.ownerPairing, match[1], Date.now())) return false;
-  return { allow: true, consume: true, reply: 'Owner paired. This Telegram DM is now the trusted control channel.' };
+function telegramOwnerAdmission(record, message, label) {
+  // "/pair CODE" or "pair CODE" — the pure decision lives in channels/owner-pairing.js (admission).
+  return telegramOwnerPairing.admission(record && record.ownerPairing, message && message.text, Date.now(), label);
+}
+/* OWNER PAIRING FOR EVERY CHANNEL (2026-09-23 security audit). Discord/Slack/Matrix/Signal used to fall back to
+   the adapter's trust-on-first-use: whoever DMed the bot first — a guild member, anyone in a joined Matrix room —
+   became the Commander, with owner-trusted runs. They now use the same one-time local pairing code Telegram does.
+   An owner already bound on disk is unaffected (the adapter never consults admission once owner is set). */
+const CHANNEL_OWNER_LABEL = { discord: 'Discord', slack: 'Slack', matrix: 'Matrix', signal: 'Signal', telegram: 'Telegram' };
+function channelOwnerAdmission(id, message) {
+  return telegramOwnerAdmission((channelSecrets && channelSecrets[id]) || {}, message, CHANNEL_OWNER_LABEL[id] || id);
+}
+function issueChannelOwnerPairing(id) {
+  const record = (channelSecrets && channelSecrets[id]) || {};
+  const issued = telegramOwnerPairing.issue({ now: Date.now() });
+  const patch = {}; patch[id] = Object.assign({}, record, { ownerPairing: issued.state });
+  channelSecrets = Object.assign({}, channelSecrets, patch);
+  const persisted = saveChannelSecrets(channelSecrets) || saveChannelSecrets(channelSecrets);
+  if (!persisted) return { ok: false, error: 'could not save the pairing challenge; no code was issued' };
+  return { ok: true, code: issued.code, expiresAt: issued.state.expiresAt, persisted: true };
+}
+// Fold a pairing challenge into a connect response when the channel has no bound owner yet (the raw code is
+// returned ONLY here, to the authenticated local caller — never in status, logs or a transcript).
+function withOwnerPairing(id, out) {
+  const rec = (channelSecrets && channelSecrets[id]) || {};
+  out.pairingRequired = !rec.ownerId;
+  if (!out.pairingRequired) return out;
+  const pairing = issueChannelOwnerPairing(id);
+  if (pairing.ok) { out.pairingCode = pairing.code; out.pairingExpiresAt = pairing.expiresAt; }
+  else out.pairingError = pairing.error;
+  return out;
 }
 function ownerPairingStatus(record) {
   const state = record && record.ownerPairing;
@@ -8859,6 +8885,7 @@ function startDiscord(token, key, model, agentCfg) {
       }),
       ownerUserId: (channelSecrets.discord && channelSecrets.discord.ownerId) || '',
       onOwnerClaim: (uid) => { try { persistOwnerClaim('discord', uid); } catch (_) {} },
+      ownerAdmission: (message) => channelOwnerAdmission('discord', message),   // pairing code, never first-DM-wins
       onStatus: (s) => {
         // The gateway's onState (above) is authoritative for CONNECTION truth (connecting/up/reconnecting/down/error),
         // since the transport's getUpdates just drains a buffer and never surfaces the real WS health. Here we only
@@ -9068,6 +9095,7 @@ function startGenericChannel(id, token, key, model, agentCfg) {
     fetch: globalThis.fetch, clock: { now: () => Date.now() },
     ownerUserId: record.ownerId || '',
     onOwnerClaim: (uid) => { try { persistOwnerClaim(id, uid); } catch (_) {} },
+    ownerAdmission: (message) => channelOwnerAdmission(id, message),   // pairing code, never first-DM-wins
     onStatus: (s) => {
       const state = (s && s.state) || 'down';
       // Truthful telemetry: CONNECTED only when the transport actually proved 'up' AND the adapter is still live.
@@ -9297,7 +9325,9 @@ const GENERIC_CHANNEL_RX = {
   connect: /^\/api\/channels\/(slack|matrix|signal)\/connect$/,
   sync: /^\/api\/channels\/(slack|matrix|signal)\/sync$/,
   disconnect: /^\/api\/channels\/(slack|matrix|signal)\/disconnect$/,
-  status: /^\/api\/channels\/(slack|matrix|signal)\/status$/
+  status: /^\/api\/channels\/(slack|matrix|signal)\/status$/,
+  // owner pairing (2026-09-23 audit): discord rides this family too — it has no other owner route
+  ownerPair: /^\/api\/channels\/(discord|slack|matrix|signal)\/owner\/pair$/
 };
 // multi-bot telegram: add a new agent-bound bot (token probe via getMe), and per-bot resume/disconnect.
 // STEP-THROUGH TEST (declared ahead of ROUTES and the E-STOP quiesce, which both read them): the /:id[/verb]
@@ -9555,6 +9585,7 @@ const ROUTES = [
   { m: 'POST', rx: GENERIC_CHANNEL_RX.sync, h: (req, res, gm) => handleGenericChannelSync(req, res, gm[1]) },
   { m: 'POST', rx: GENERIC_CHANNEL_RX.disconnect, h: (req, res, gm) => handleGenericChannelDisconnect(req, res, gm[1]) },
   { m: 'GET', rx: GENERIC_CHANNEL_RX.status, h: (req, res, gm) => handleGenericChannelStatus(req, res, gm[1]) },
+  { m: 'POST', rx: GENERIC_CHANNEL_RX.ownerPair, h: (req, res, gm) => handleChannelOwnerPair(req, res, gm[1]) },
   { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries a ?token= query now
   { m: 'POST', exact: '/api/routing', h: handleRouting },
   { m: 'GET', qsplit: '/api/routing/chain', h: handleRoutingChain },   // qsplit, not exact: `exact` compares the FULL url and this route always carries a query
@@ -19974,7 +20005,7 @@ async function handleDiscordConnect(req, res) {
   if (!providerHasCredential(provider, key, baseUrl)) return json(400, { error: providerCredentialError(provider) });
   let started; try { started = startDiscord(token, providerUsesCodex(provider) ? '' : key, model, { agentId, system, name, provider, reasoningEffort, baseUrl }); } catch (e) { return json(500, { error: (e && e.message) || 'failed to start' }); }
   // report the REAL post-start status ('connecting' until the gateway reaches READY) — the panel repaints from /status.
-  json(200, { connected: !!discordStatus.connected, state: discordStatus.state, persisted: !!(started && started.secretsPersisted) });
+  json(200, withOwnerPairing('discord', { connected: !!discordStatus.connected, state: discordStatus.state, persisted: !!(started && started.secretsPersisted) }));
 }
 
 // POST /api/channels/discord/sync — refresh the agent identity the Discord bot runs as (mirrors handleChannelSync).
@@ -20079,13 +20110,14 @@ function channelStatusPayload(id) {
   // re-attempts the save and clears the warning the moment the disk agrees — so the line is never stale-pessimistic.
   if (channelWarn[id]) { try { if (saveChannelSecrets(channelSecrets)) channelWarn[id] = ''; } catch (_) {} }
   const ownerLocked = !!rec.ownerId;
-  const acceptingDms = id === 'telegram' ? (!!st.connected && ownerLocked) : !!st.connected;
+  // Every channel is owner-paired now (2026-09-23 audit): a connected bot with no bound owner refuses every DM.
+  const acceptingDms = !!st.connected && ownerLocked;
   const out = {
     id: id, connected: !!st.connected, configured: configured, durable: durable,
     state: st.state || 'down', detail: st.detail || '', delivery: id === 'telegram' ? (st.delivery || { state: 'unknown', detail: '', at: 0 }) : undefined, warning: String(channelWarn[id] || ''),
     notifyAutonomous: !!(channelSecrets && channelSecrets.notifyAutonomous), ownerLocked, acceptingDms,
-    ownerPairingActive: id === 'telegram' && ownerPairingStatus(rec).active,
-    ownerPairingExpiresAt: id === 'telegram' ? ownerPairingStatus(rec).expiresAt : 0,
+    ownerPairingActive: ownerPairingStatus(rec).active,
+    ownerPairingExpiresAt: ownerPairingStatus(rec).expiresAt,
     // the agent NAME the channel answers as (never a secret) — the panel renders "ANSWERS AS: <name>" so the
     // Commander can see which agent a DM will reach. Empty until a config is saved.
     agentName: String(rec.name || '')
@@ -20147,7 +20179,20 @@ async function handleGenericChannelConnect(req, res, id) {
   let started; try { started = startGenericChannel(id, token, providerUsesCodex(provider) ? '' : key, model, { agentId, system, name, provider, reasoningEffort, baseUrl, endpoint, account }); }
   catch (e) { return json(500, { error: (e && e.message) || 'failed to start' }); }
   // report the REAL post-start status (now 'connecting', not an assumed 'up') — the panel repaints from /status.
-  json(200, { connected: !!(genericStatus[id] && genericStatus[id].connected), state: (genericStatus[id] && genericStatus[id].state) || 'connecting', persisted: !!(started && started.secretsPersisted) });
+  json(200, withOwnerPairing(id, { connected: !!(genericStatus[id] && genericStatus[id].connected), state: (genericStatus[id] && genericStatus[id].state) || 'connecting', persisted: !!(started && started.secretsPersisted) }));
+}
+
+// POST /api/channels/<id>/owner/pair (discord|slack|matrix|signal) — mint a fresh one-time owner code for a connected
+// channel that has no bound owner (a lost/expired code, or a bot connected before pairing existed). Same contract as
+// the Telegram route: the raw code is in this one response only; disk holds a salted digest.
+async function handleChannelOwnerPair(req, res, id) {
+  const cur = (channelSecrets && channelSecrets[id]) || {};
+  const configured = id === 'signal' ? !!(cur.endpoint && cur.account) : !!channelToken(id, '', cur);
+  if (!configured) return respondJson(res, 409, { error: 'connect the channel before pairing an owner' });
+  if (cur.ownerId) return respondJson(res, 409, { error: 'an owner is already paired on this channel' });
+  const pairing = issueChannelOwnerPairing(id);
+  if (!pairing.ok) return respondJson(res, 500, { error: pairing.error });
+  respondJson(res, 200, { code: pairing.code, expiresAt: pairing.expiresAt, persisted: true });
 }
 
 // POST /api/channels/<id>/sync — refresh the agent identity the channel runs as (mirrors handleChannelSync).
