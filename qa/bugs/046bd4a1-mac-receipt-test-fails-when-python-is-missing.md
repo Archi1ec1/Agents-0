@@ -43,6 +43,14 @@ After the fix, the real Python-present test passes 27 assertions; the real restr
 
 The canonical filtered fast runner passed both affected suites (`run-fast-tests: OK — 2 step(s) green`). JavaScript syntax checks and bug-register validation passed. The full `npm run test:fast` run exited 124 after its configured 1,200,000 ms timeout, with `chat-prompt-diet.test: OK (7 assertions)` as the last completed suite; there was no full-gate success receipt. `npm run qa:customer-journeys` stopped at step 3/38 because the unchanged `test/sidecar.http.test.js` hit a sidecar boot timeout. Local logs are `issue-40-fast.log` and `issue-40-journeys.log` in the lane worktree. The source repair is committed on the isolated branch; these incomplete/red broad gates do not authorize integration into trunk.
 
+## Merge follow-up
+
+On 2026-09-24, candidate e5bb40b7a passed the complete fast gate (923/923) and customer journeys (38/38), including the previously timed-out sidecar HTTP suite. Merge 70c9236c2 exactly matched that candidate tree. The next independent integration, 726fdb2c7, preserved the issue fix.
+
+The post-merge gate on 726fdb2c7 stopped at step 599/923: `stationbake.connections.test.mjs` passed all 408 Canvas assertions but profile deletion failed with EBUSY on Chrome's debug log. The test passed unchanged when retried. To honor the merge gate without discarding the independent integration, f8faa548d reverted only merge 70c9236c2 on trunk; 34f820e40 reapplied it in the owned lane for revalidation.
+
+The separate test-cleanup repair e23a88609 waits for graceful Chrome exit before a Windows process-tree fallback, requires parent exit, and bounds retries of transient profile-deletion errors. Rendering assertions are unchanged. The real Canvas test passed 408 assertions after the repair; a forced-shutdown probe executed the actual stop helper against a live browser and proved process exit plus profile deletion (4,107 ms). Full combined gates remain required before reintegration.
+
 ## Sibling coverage
 
 {
