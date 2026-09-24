@@ -54,7 +54,9 @@ const RELEASED = {
    `earlyAccess: true` in its bundled registration, which opens every Google service BEFORE Google's verification:
    Google then shows its "unverified app" warning at sign-in and caps the app at 100 users. The catalog labels
    every card so nobody mistakes it for a verified release. Legacy endpoints stay deferred; the relay guard applies. */
-const EARLY_ACCESS = false;
+// ON in source since 2026-09-23 (Andrew): users need Google NOW while verification is pending. Every build is
+// early access until Google approves; then set this back to false and release services through RELEASED.
+const EARLY_ACCESS = true;
 function loadEarlyAccess({ readFile }) {
   try { return JSON.parse(readFile() || '{}').earlyAccess === true; }
   catch (e) { return false; }   // no staged registration (dev, public build) => not early access

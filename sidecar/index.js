@@ -204,10 +204,11 @@ const { makeSseHub, runTeeView } = require('./channels/sse.js');
 const { makeRouter } = require('./routing/router.js');
 const { makeChainRunner, effectiveLimits: chainEffectiveLimits } = require('./routing/chain.js');
 const { makeStepTest } = require('./routing/steptest.js');   // the conveyor STEP-THROUGH TEST engine (/api/routing/steptest)
-const { makeLineSpend } = require('./routing/line-spend.js');
+const { lineStats: foldLineStats } = require('./routing/line-stats.js');   // LINE WATCH: per-line runs/shipped/failed/$ + each bay's last outcome (GET /api/routing/lines/stats)
+const { makeLineSpend } = require('./routing/line-spend.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
 const LineTriggers = require('./routing/triggers.js');   // LINE TRIGGERS (2026-09-23): folder/webhook events that start ONE line
 const { makeTriggerRunner } = require('./routing/trigger-runner.js');
-const { makeFolderWatcher, makeFolderPolicy } = require('./routing/trigger-folder.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
+const { makeFolderWatcher, makeFolderPolicy } = require('./routing/trigger-folder.js');
 const { makeConnectorManager } = require('./mcp/manager.js');
 const { makeHttpTransport } = require('./mcp/transport.http.js');
 const googleApiTransport = require('./mcp/transport.google.js');
@@ -5127,7 +5128,6 @@ function placeCronWorkitem(agentId, prompt, runId, dockId) {
   try {
     const preview = String(prompt || '').replace(/\s+/g, ' ').slice(0, 40);
     const workitemId = crypto.randomUUID();
-    if (runId) cronItems.set(runId, { agentId, workitemId });
     const depth = bumpQueue(agentId, +1);
     // A ROUTINE IS ONE OF ITS LINE'S OWN TRIGGERS (work belongs to a line, 2026-08-07): a routine firing at a
     // docked agent is that line running on schedule, so its crate carries the dock's lineId. Derived here from
@@ -5135,7 +5135,11 @@ function placeCronWorkitem(agentId, prompt, runId, dockId) {
     // unlock downstream spend). No dock / no armed plan -> absent -> terminal, exactly like a direct order.
     // dockId (additive, multi-bay): a routine FIRES AT one bay; its crate lands there, and its line is that bay's
     const dk = dockId ? router.dockOf(agentId, dockId) : null;
-    chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'cron', lineId: router.lineOfAgent(agentId, dk || undefined) || undefined, dockId: dk || undefined, preview, queueDepth: depth, ts: Date.now() });
+    const cronLine = router.lineOfAgent(agentId, dk || undefined) || null;
+    // LINE WATCH: remember the bay + line this crate named, so the run's row records where it worked (the fire
+    // wrapper and Run Now read it back by runId). No bay named -> the agent's entry dock (the router's own read).
+    if (runId) cronItems.set(runId, { agentId, workitemId, dockId: dk || router.dockOf(agentId) || null, lineId: cronLine });
+    chanEmit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'cron', lineId: cronLine || undefined, dockId: dk || undefined, preview, queueDepth: depth, ts: Date.now() });
     chanEmit('queue.status', { queueId: agentId, depth, maxCapacity: QUEUE_CAP, nextAdvanceAt: 0 });
   } catch (_) {}
 }
@@ -5314,6 +5318,8 @@ const cronDriver = makeCronDriver({
     // mid-run (the app asserting idle over a provably live run). Run Now (handleCronRun), nightshift,
     // loops and the channel hubs all already register; this was the one autonomous lane that didn't.
     const schedRunId = opts && opts.runId ? String(opts.runId) : '';
+    const placed = schedRunId ? cronItems.get(schedRunId) : null;
+    if (placed && opts) opts = Object.assign({}, opts, { lineId: placed.lineId || undefined, dockId: placed.dockId || undefined });   // LINE WATCH: the row says where it worked
     if (schedRunId) runsMeta.set(schedRunId, { agentId: String((opts && opts.agentId) || 'agent'), startedAt: Date.now(), source: 'cron' });
     return Promise.resolve(runOnce(opts)).finally(() => { if (schedRunId) runsMeta.delete(schedRunId); });
   },
@@ -5400,6 +5406,7 @@ const cronDriver = makeCronDriver({
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId,
           surface: 'autonomous', trigger: 'schedule', reflect: true,
           station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
+          lineId: h.lineId || undefined, dockId: h.dockId || undefined,   // LINE WATCH: the hop's line + bay on its run row
           preloadSkills: o.preloadSkills, requiredPreloads: o.requiredPreloads, workdir: o.workdir, enabledToolsets: o.enabledToolsets,
           // GRANTS NEVER FLOW DOWN A LINE (2026-08-04): every runAgent call here is a DOWNSTREAM hop (stage one
           // ran in the driver, with the job's own grants). Whatever the caller passes, a hop runs ungranted —
@@ -9575,6 +9582,9 @@ const ROUTES = [
   // STEP-THROUGH TEST (2026-09-22): GET is the active-or-latest session (the panel's feature probe + poll);
   // POST starts one; /:id answers one session and /:id/<verb> drives it. Every refusal 409, never 404.
   { m: 'GET', qsplit: '/api/routing/steptest', h: handleStepTestLatest },
+  // LINE WATCH (2026-09-23): the per-line numbers the INBOX plate + Workflow panel header show, and each bay's last
+  // recorded outcome (the lamp's FAILED after a reload). Read-only fold of the run rows + the line $ ledger.
+  { m: 'GET', qsplit: '/api/routing/lines/stats', h: handleLineStats },
   { m: 'POST', exact: '/api/routing/steptest', h: handleStepTestStart },
   { m: ['GET', 'POST'], rx: STEPTEST_RX, h: handleStepTestId },
   // LINE TRIGGERS (2026-09-23): folder/webhook events that start ONE line. CRUD is token-gated like every /api route;
@@ -10741,12 +10751,27 @@ async function stepTestRunDock(h) {
   let station = null;
   try { station = router.stationFor(h.agentId, h.dockId); } catch (e) { failNote('steptest.station', e); station = null; }
   const t0 = Date.now();
+  /* EVERY STEP IS A CRATE (line watch, 2026-09-23): a step-test hop is a real run at a real bay, so the floor draws it
+     exactly like a line hop — the SAME workitem.placed/delivered/superseded plumbing chain.js uses (additive fields
+     only: `steptest` names the session so the crate's card can jump to the Workflow panel). The entry step rides in
+     from the line's INBOX; a later step rides from the bay that handed it the crate (from/fromDock). */
+  const workitemId = crypto.randomUUID();
+  const stPreview = String(h.preview != null ? h.preview : (h.text || '')).replace(/\s+/g, ' ').slice(0, 40);   // what the dock was HANDED
+  try {
+    const placed = { workitemId, queueId: h.agentId, agentId: h.agentId, kind: h.entry ? 'sample' : 'chain', steptest: String(h.sessionId || ''), preview: stPreview, ts: t0 };
+    if (h.lineId) placed.lineId = h.lineId;
+    if (h.dockId) placed.dockId = h.dockId;
+    if (!h.entry && h.from && isAgentId(String(h.from))) placed.from = String(h.from);
+    if (!h.entry && h.fromDock) placed.fromDock = h.fromDock;
+    chanEmit('workitem.placed', placed);
+  } catch (e) { failNote('steptest.crate', e); }
   try {
     await runOnce({
       key: cfg.key, model: cfg.model, provider: cfg.provider, baseUrl: cfg.baseUrl || cfg.base_url || '',
       reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
       messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
       runId, trigger: 'event', streamId: h.streamId,
+      lineId: h.lineId || undefined, dockId: h.dockId || undefined,   // LINE WATCH: the row records the step's line + bay
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
       station: station || undefined,
@@ -10754,6 +10779,11 @@ async function stepTestRunDock(h) {
       handoffEdited: h.edited === true   // the run row says the owner edited what this dock was handed
     });
   } catch (e) { st.err = st.err || ('run failed: ' + ((e && e.message) || e)); }
+  try {
+    const done = !st.err && String(st.buf || '').trim();
+    if (done) chanEmit('workitem.delivered', { workitemId, finalQueueId: h.agentId, agentId: h.agentId, box: '', ms: Date.now() - t0, ts: Date.now(), dockId: h.dockId || undefined });
+    else chanEmit('workitem.superseded', { workitemId, agentId: h.agentId, ts: Date.now(), dockId: h.dockId || undefined });
+  } catch (e) { failNote('steptest.crate', e); }
   return { text: st.buf, usd: st.usd, tools: st.tools, runId, ms: Date.now() - t0, error: st.err };
 }
 function getStepTest() {
@@ -10810,6 +10840,31 @@ async function stepTestBody(req, res) {
   let body = null;
   try { body = JSON.parse(raw); } catch (_) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'bad json' })); return null; }
   return (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+}
+/* GET /api/routing/lines/stats?since=<ms> — LINE WATCH. `since` is the caller's local midnight (the same window the
+   SHIPPED counter reads /api/runs with); absent/invalid -> the start of the current UTC day. Every number is a fold of
+   durable state (routing/line-stats.js): run rows stamped with the line, the line-spend ledger, the line's clamped
+   daily cap. Lines come from the armed plan — a floor with no plan answers an empty list, never a guess. */
+function handleLineStats(req, res) {
+  const json = (code, obj) => respondJson(res, code, obj);
+  try {
+    const u = new URL(req.url, 'http://127.0.0.1');
+    const nowMs = Date.now();
+    const q = Number(u.searchParams.get('since'));
+    const utcDay = nowMs - (nowMs % (24 * 60 * 60 * 1000));
+    const since = (isFinite(q) && q > 0 && q <= nowMs) ? q : utcDay;
+    const plan = router.getPlan();
+    const lines = (plan && Array.isArray(plan.lines)) ? plan.lines : [];
+    const pool = (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null;
+    const out = foldLineStats({
+      rows: runStore.list(null, { limit: 1000 }) || [], lines, since,
+      spentToday: id => lineSpend.spentToday(id),
+      capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay
+    });
+    return json(200, Object.assign({ ok: true }, out));
+  } catch (e) {
+    return json(500, { ok: false, error: 'line stats unreadable: ' + String((e && e.message) || e).slice(0, 200) });
+  }
 }
 function handleStepTestLatest(_req, res) { stepTestJson(res, getStepTest().get(null)); }
 async function handleStepTestStart(req, res) {
@@ -11720,7 +11775,7 @@ function handleConnectorCatalog(req, res) {
       e.releaseDeferred = googleConnectorDeferred(e);
       if (!e.releaseDeferred && googleClientConfig.EARLY_ACCESS === true && !googleClientConfig.isSelectedFiles(e)) {
         e.earlyAccess = true;
-        e.blurb = 'Early access — not yet verified by Google; Google shows a warning when you sign in. ' + e.blurb;   // catalog entries are fresh clones per request
+        e.blurb = 'Early access — Google has not finished verifying StarNet yet. When Google says the app isn’t verified, choose Advanced, then Go to StarNet. ' + e.blurb;   // catalog entries are fresh clones per request
       }
       if (e.releaseDeferred) e.blurb = 'Planned for a later update. ' + e.blurb.replace(/^Planned for a later update\. /, '').replace(' Sign in with Google to connect your account.', '');
       e.signInAvailable = !connectorStorageError && !e.releaseDeferred && !e.needsClient && (!googleClientConfig.isSelectedFiles(e) || connectorVault.protected);
@@ -13010,6 +13065,8 @@ async function handleCronRun(req, res) {
       // identical cron.fire/cron.result events, can fetch the real output via /api/transcript?stream=cron-<runId>.
       // Per-run id keeps the seed empty (index.js reconstructs a stream only when messages<=1) — no behavior drift.
       runId: runId, streamId: 'cron-' + runId, surface: 'autonomous', trigger: 'schedule', provider: provider, broadcast: true,
+      // LINE WATCH: the row records the bay + line this Run Now's crate named (placeCronWorkitem above)
+      lineId: (cronItems.get(runId) || {}).lineId || undefined, dockId: (cronItems.get(runId) || {}).dockId || undefined,
       reflect: true,   // Run Now must match the scheduled fire's posture exactly, memory included (see the reflect note on /api/run)
       // Run Now must exercise the REAL unattended posture, grant included — otherwise "test it now" would
       // prove a capability set the scheduled fire does not get (the whole point of this route).
@@ -13084,6 +13141,7 @@ async function handleCronRun(req, res) {
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId,
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
                 station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
+                lineId: h.lineId || undefined, dockId: h.dockId || undefined,   // LINE WATCH: the hop's line + bay on its run row
                 /* GRANTS NEVER FLOW DOWN A LINE (2026-08-04): the unattended grant was approved for the
                    routine's OWN agent (stage one, above) — a downstream hop is a DIFFERENT agent, and a drawn
                    belt must not silently widen its authority. Mirrors the scheduled fire (cron-driver.js). */
@@ -18513,7 +18571,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, lineId: o.lineId || '', dockId: o.dockId || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new

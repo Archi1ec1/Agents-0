@@ -146,3 +146,4 @@ test/payload.budget.test.js
 test/byok-linked-credit.e2e.test.js
 test/workflow-project.e2e.test.js
 test/workflow-project-multibay.e2e.test.js
+test/routing.linestats.e2e.test.js

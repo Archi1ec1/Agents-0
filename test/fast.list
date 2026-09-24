@@ -921,3 +921,5 @@ test/threshold.anchored.test.js
 test/tail.token-budget.test.js
 test/fold.user-verbatim.test.js
 test/compaction.images.test.js
+test/line-stats.test.js
+test/linewatch.test.js
