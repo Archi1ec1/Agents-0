@@ -18,8 +18,8 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "78122405658cb333befd148e9a9c447b9d56047f",
-    "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
+    "sourceCommit": "0f5ab95e7b7dd6a5289456b15dac3151b3253e25",
+    "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
         "path": "INSTALL.md",
@@ -153,8 +153,8 @@
       },
       {
         "path": "frontend/agent-station-demo.html",
-        "bytes": 86237,
-        "sha256": "39f0c7d48de9241b929c78875c10bbe93315b7591b151c88365159216f6b84f8"
+        "bytes": 85898,
+        "sha256": "080c1018e3efbd468eafa1553b37dea42fa11c44456a8f49999e1a7c45b355f3"
       },
       {
         "path": "frontend/app/agentid.js",
@@ -313,8 +313,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 392197,
-        "sha256": "db6009d2ec8d5bc97e885b4743dde0e0a9e5525ad59ce5d35e1305e87370091f"
+        "bytes": 408888,
+        "sha256": "d967658c0561d978c7e117b9877dc463ae73af54c58bece3f1c6e6842f52b105"
       },
       {
         "path": "frontend/app/channels.js",
@@ -365,11 +365,6 @@
         "path": "frontend/app/conveyor.js",
         "bytes": 43450,
         "sha256": "67b119d0f631a58e368b0df031cfaaac38121f54095f553cf7884f564bdeae35"
-      },
-      {
-        "path": "frontend/app/cratecard.js",
-        "bytes": 6511,
-        "sha256": "7dd183936b4b792f4edebdc67c4399d647837e9ac4a8be64d201dbb922db452a"
       },
       {
         "path": "frontend/app/cronhuman.js",
@@ -597,11 +592,6 @@
         "sha256": "071eed9f31af8d5493feed678ee21ee5b9996b6ea2560077d46a6ce297d715ce"
       },
       {
-        "path": "frontend/app/linewatch.js",
-        "bytes": 18843,
-        "sha256": "e435afb504b2796e39577351f56a5e80aa9621456d91f92ac21702a256226658"
-      },
-      {
         "path": "frontend/app/logoclip.js",
         "bytes": 4016,
         "sha256": "8fb9d2499e5f46c71631eaa8b1a6422abfafe3dcf3caa07bdd94baf18e8dfb34"
@@ -793,8 +783,8 @@
       },
       {
         "path": "frontend/app/propsprites.js",
-        "bytes": 801395,
-        "sha256": "52c48c445c9e49ce46619a0411359eadda880a4980337500bf0a4f26f2df39ed"
+        "bytes": 801784,
+        "sha256": "dd73cc3157eb68dc583974b2b17ca067c5cd27f1c8ff2744bf02fbfb5a95bee1"
       },
       {
         "path": "frontend/app/prospect.js",
@@ -1148,8 +1138,8 @@
       },
       {
         "path": "frontend/app/tutorial.js",
-        "bytes": 97608,
-        "sha256": "d264e2a6178d65b080b51c1b2f6c4aa18b0efff2c8cbea9be5b52fa482987a5f"
+        "bytes": 99558,
+        "sha256": "27fd10be68479c1d986f332c75229f4e5c2025363465b9c29122cb202342dc1a"
       },
       {
         "path": "frontend/app/understanding.js",
@@ -1248,8 +1238,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 56820,
-        "sha256": "e1b3783a4bab5392a607ae224e00968e1527d7e43d6b6309dee04b377768c0e9"
+        "bytes": 59969,
+        "sha256": "13d821ce3b9dea597aafe920fad823f0984ace914532ee9deeb490d649d785f9"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1258,13 +1248,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 27765,
-        "sha256": "a3b28141937646ff68b3453c4ed01423770caaadcefdecd05d13141a8747e77d"
+        "bytes": 34982,
+        "sha256": "09289f7a7b9e42937fcca13620cb00d78120721cf8693e473940469a3a4f0d87"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 87140,
-        "sha256": "e3603bd4d294431d4b2e11f40542e017542fa8dc0d877ed26e6d65442feae19d"
+        "bytes": 100657,
+        "sha256": "d6d828114e2a14aab5baa9861e8d1ce147f5fde27602bf82e3b59c715db01af9"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1313,8 +1303,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 801817,
-        "sha256": "43987e3c03c0e38b5e1c62502c1666022cca22c3d7cdad5e5441693f79043139"
+        "bytes": 780062,
+        "sha256": "ea6370160ab7933a2790db547760972c0feb07769d144320aa8aa1b29c125ec9"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1328,8 +1318,8 @@
       },
       {
         "path": "frontend/app/worldmodel.js",
-        "bytes": 177857,
-        "sha256": "df01468e428d58a96dcaf6cae42349da034199eb21d787f5691cfc2f310241b7"
+        "bytes": 183511,
+        "sha256": "755f4f878f84d7ec26a15436986577d34a9d8df733704fe83cdf7e222f5669a7"
       },
       {
         "path": "frontend/app/worldrenderer.js",
@@ -1388,8 +1378,8 @@
       },
       {
         "path": "frontend/css/app.css",
-        "bytes": 401106,
-        "sha256": "7e2906bb72674b985b6bc21e5bdcaa4f47a1e2bbc3222dfed81be10ac624335f"
+        "bytes": 402619,
+        "sha256": "c596923a374f8851178ddf73474bf9790da75deec8c1ba132fb7fef3db9a2dc4"
       },
       {
         "path": "frontend/css/asciifx.css",
@@ -1435,11 +1425,6 @@
         "path": "frontend/css/interface.css",
         "bytes": 28906,
         "sha256": "2ab66b1de9f2d18a93599fbb03b4ee0802629e2f50c862a19928293acb304532"
-      },
-      {
-        "path": "frontend/css/linewatch.css",
-        "bytes": 2433,
-        "sha256": "14f4ee3554a4d098896a3b23ab4ec157a48bf1440cda657d2bb794ac6cf33394"
       },
       {
         "path": "frontend/css/marketplace.css",
@@ -1493,8 +1478,8 @@
       },
       {
         "path": "frontend/css/refit-polish.css",
-        "bytes": 28346,
-        "sha256": "2283d7a0747cd36600b0918731af2c5949e93fae433091dfbcca29205e8106b8"
+        "bytes": 28560,
+        "sha256": "dd3ddee4e0cc3799a966aa05a2fbc1430bd7e39370f27b660fd223828c81749f"
       },
       {
         "path": "frontend/css/refit.css",
@@ -1553,8 +1538,8 @@
       },
       {
         "path": "frontend/css/workflow-panel.css",
-        "bytes": 16117,
-        "sha256": "42471a0af424a42d2db8e4d273b5fdf81799b6c644f2b48d5cabdbd436328e1d"
+        "bytes": 17107,
+        "sha256": "5be2878d589d3a93217957bc09daf144f0d4c94190ce12054499a6dd8d926a50"
       },
       {
         "path": "frontend/css/workhub.css",
@@ -1613,8 +1598,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 87350,
-        "sha256": "179abc41306ad754600816f79afe5ee422c02e8076cc675d26b1d43eea7b5605"
+        "bytes": 86978,
+        "sha256": "f0cc96f6ebf808bcbd9ae4e2ed043ead8162c0639764a6f1e02a5f2aad0d5782"
       },
       {
         "path": "frontend/js/arcade.js",

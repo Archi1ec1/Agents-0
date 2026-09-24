@@ -72,11 +72,26 @@ const World = (() => {
     _glFailed = true; _glReady = false;
     return false;
   }
-  // whole-frame per-channel means via a 16×16 GPU downscale (~1KB readback) — the probe's sampler
+  // whole-frame per-channel means via a 16×16 GPU downscale (~1KB readback) — the probe's sampler.
+  // The downscale is a chain of exact 2:1 bilinear halvings (each one a true 2×2 box average on every
+  // backend), never one big drawImage: a single ~45:1 step POINT-samples, so scanlines, grain and fine
+  // material texture alias into a biased reading that differs between the raw and the warped frame.
+  // (2026-09-23: that alias read a healthy warp as +27% brighter — true means moved +3% — tripped the
+  // "implausible magnitude" check and pinned whole sessions to the CPU warp at half frame rate.)
   function probeMeans(src) {
-    if (!_glProbeCv) { _glProbeCv = document.createElement('canvas'); _glProbeCv.width = 16; _glProbeCv.height = 16; }
-    const pctx = _glProbeCv.getContext('2d', { willReadFrequently: true });
-    pctx.clearRect(0, 0, 16, 16); pctx.drawImage(src, 0, 0, src.width, src.height, 0, 0, 16, 16);
+    if (!_glProbeCv) _glProbeCv = [];
+    const fit = n => { let s = 16; while (s * 2 <= n) s *= 2; return s; };
+    let w = fit(src.width), h = fit(src.height), from = src, fw = src.width, fh = src.height, level = 0, pctx = null;
+    for (;;) {
+      let c = _glProbeCv[level];
+      if (!c) { c = _glProbeCv[level] = document.createElement('canvas'); }
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      pctx = c.getContext('2d', w === 16 && h === 16 ? { willReadFrequently: true } : undefined);
+      pctx.imageSmoothingEnabled = true;
+      pctx.clearRect(0, 0, w, h); pctx.drawImage(from, 0, 0, fw, fh, 0, 0, w, h);
+      if (w === 16 && h === 16) break;
+      from = c; fw = w; fh = h; w = Math.max(16, w / 2); h = Math.max(16, h / 2); level++;
+    }
     const d = pctx.getImageData(0, 0, 16, 16).data;
     let r = 0, g = 0, b = 0;
     for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
@@ -7907,17 +7922,19 @@ const World = (() => {
   /* FEED TRUTH: is anything actually wired to drop work onto this floor? ANY registry channel configured
      (the bulk /api/channels/status covers telegram/discord/slack/matrix/signal — polling only the first two
      falsely nagged a slack/matrix/signal-only floor), or the cron scheduler armed with at least one enabled
-     routine. Server-proven only — `fed` stays true until a real response says otherwise, so a fetch hiccup
-     can never fire the nag. */
+     routine, or an armed LINE TRIGGER (a watched folder / a webhook the server reports enabled with nothing
+     blocking it — GET /api/routing/triggers blockedBy). Server-proven only — `fed` stays true until a real
+     response says otherwise, so a fetch hiccup can never fire the nag. */
   function pollFeedState() {
     if (typeof fetch === 'undefined') return;
     const get = u => { try { return fetch(apiUrl(u)).then(r => (r.ok ? r.json() : null)).catch(() => null); } catch (_) { return Promise.resolve(null); } };
-    return Promise.all([get('/api/channels/status'), get('/api/cron')]).then(([chans, cron]) => {
-      if (!chans && !cron) return;   // nothing answered — keep the last known truth
+    return Promise.all([get('/api/channels/status'), get('/api/cron'), get('/api/routing/triggers')]).then(([chans, cron, trg]) => {
+      if (!chans && !cron && !trg) return;   // nothing answered — keep the last known truth
       const chan = !!(chans && typeof chans === 'object' && Object.keys(chans).some(id => chans[id] && chans[id].configured));
       const jobs = (cron && Array.isArray(cron.jobs)) ? cron.jobs : [];
       const cronFeeds = !!(cron && cron.enabled && jobs.some(j => j && j.enabled !== false));
-      const next = { known: true, fed: chan || cronFeeds };
+      const trgFeeds = !!(trg && Array.isArray(trg.triggers) && trg.triggers.some(t => t && t.enabled && !t.blockedBy));
+      const next = { known: true, fed: chan || cronFeeds || trgFeeds };
       const changed = next.known !== feedState.known || next.fed !== feedState.fed;
       feedState = next;
       if (changed) routingNags = buildRoutingNags();   // feed truth changed → refresh the callouts

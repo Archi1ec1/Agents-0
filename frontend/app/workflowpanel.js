@@ -27,6 +27,7 @@ const WorkflowPanel = (() => {
     seam: null, trying: {}, tryErr: {}, session: null, sessionErr: null, pollTimer: 0, pollFor: null,
     hop: null, handoff: null, handoffFor: null, busy: false,
     cron: null, chans: null, trgOpen: false, trgDock: null, drafts: {}, testJob: {},
+    lt: null, ltForm: null, ltMsg: null, ltReveal: null, ltTimer: 0,   // LINE TRIGGERS (folder / webhook), server truth + the once-only key
   };
   const WL = () => (typeof WorkflowLine !== 'undefined' ? WorkflowLine : null);
   const esc = s => (H && H.esc ? H.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
@@ -73,8 +74,10 @@ const WorkflowPanel = (() => {
   const dockAgents = f => f ? f.order.map(p => f.docks[p].agentId).filter(Boolean) : [];
 
   function triggers(f) {
-    const W = WL(); const out = { schedules: [], channels: [], routines: [], chanRows: [] };
+    const W = WL(); const out = { schedules: [], channels: [], routines: [], chanRows: [], events: [] };
     if (!W || !f) return out;
+    // LINE TRIGGERS: only the ones the server reports enabled with nothing blocking them start the line
+    if (S.lt && W.lineEventTriggers) out.events = W.lineEventTriggers(S.lt.triggers, S.lineKey).sentences;
     if (S.cron && Array.isArray(S.cron.jobs)) {
       out.routines = W.lineRoutines(S.cron.jobs, dockAgents(f), entryAgents(f), entryDocks(f));
       const armed = !!(S.cron.enabled && !S.cron.halted);
@@ -89,6 +92,7 @@ const WorkflowPanel = (() => {
   function refreshServerFacts() {
     api('/api/cron').then(r => { if (r.j && Array.isArray(r.j.jobs)) S.cron = r.j; paint(); }).catch(() => {});
     api('/api/channels/status').then(r => { if (r.j && typeof r.j === 'object' && r.status === 200) S.chans = r.j; paint(); }).catch(() => {});
+    ltRefresh();
     H.pollFeed().then(() => paint(), () => {});   // the floor-wide FEED truth, re-asked now (never a 60 s-stale NO FEED)
   }
   function probeSeam() {
@@ -112,9 +116,11 @@ const WorkflowPanel = (() => {
     S.lineKey = c ? c.key : null; S.lone = c ? null : propId;
     S.sel = propId; S.insertAt = null;
     if (!el) mount();
-    if (newLine) { S.drafts = {}; S.trgOpen = false; S.trgMsg = null; S.hop = null; if (!S.session || S.session.lineId !== S.lineKey) S.view = 'edit'; refreshServerFacts(); refreshToday(); }
+    if (newLine) { S.drafts = {}; S.trgOpen = false; S.trgMsg = null; S.ltForm = null; S.ltMsg = null; S.ltReveal = null; S.hop = null; if (!S.session || S.session.lineId !== S.lineKey) S.view = 'edit'; refreshServerFacts(); refreshToday(); }
     if (!todayTimer) todayTimer = setInterval(() => { if (el) paintToday(); }, 60000);
     probeSeam();
+    // line triggers change on their own (a file lands, a webhook is called): re-read them while the INBOX is open
+    if (!S.ltTimer) S.ltTimer = setInterval(() => { const sp = el && S.sel ? prop(S.sel) : null; if (sp && sp.t === 'intake') ltRefresh(); }, 5000);
     paint(true);
     H.highlight(propId);
     // the panel may have just docked over the line: a newly shown line is framed in the visible floor; a part
@@ -139,6 +145,8 @@ const WorkflowPanel = (() => {
     saveOpenFields();
     stopPoll();
     if (todayTimer) { clearInterval(todayTimer); todayTimer = 0; }
+    if (S.ltTimer) { clearInterval(S.ltTimer); S.ltTimer = 0; }
+    S.ltReveal = null; S.ltForm = null;   // a key shown once is gone once the panel closes
     el.remove(); el = null;
     S.sel = null; S.lineKey = null; S.lone = null;
     H.highlight(null); H.pausedMarker(null);
@@ -262,10 +270,11 @@ const WorkflowPanel = (() => {
     const tr = triggers(f);
     if (f && comp()) {
       const ip = f.trigger.propId;
-      const sch = tr.schedules.length, ch = tr.channels.length;
-      nodes.push({ kind: 'trigger', propId: ip, cls: 'wf-term' + (ip ? '' : ' none'), ok: !!ip && (sch + ch) > 0,
-        html: '<span class="k">INBOX</span><span class="t">' + (ip ? (sch && ch ? 'AUTO' : sch ? 'SCHEDULE' : ch ? 'CHANNEL' : 'MANUAL') : 'NO INBOX') + '</span>'
-          + '<span class="a">' + esc(ip ? (tr.channels.concat(tr.schedules.slice(0, 1)).join(' · ') || 'no trigger yet') : 'add one on the floor') + '</span>' });
+      const sch = tr.schedules.length, ch = tr.channels.length, ev = tr.events.length;
+      const kinds = (sch ? 1 : 0) + (ch ? 1 : 0) + (ev ? 1 : 0);
+      nodes.push({ kind: 'trigger', propId: ip, cls: 'wf-term' + (ip ? '' : ' none'), ok: !!ip && (sch + ch + ev) > 0,
+        html: '<span class="k">INBOX</span><span class="t">' + (ip ? (kinds > 1 ? 'AUTO' : sch ? 'SCHEDULE' : ch ? 'CHANNEL' : ev ? 'TRIGGER' : 'MANUAL') : 'NO INBOX') + '</span>'
+          + '<span class="a">' + esc(ip ? (tr.channels.concat(tr.schedules.slice(0, 1), tr.events.length ? [tr.events.length === 1 ? tr.events[0].replace(/^when /, '') : tr.events.length + ' events'] : []).join(' · ') || 'no trigger yet') : 'add one on the floor') + '</span>' });
       f.cols.forEach(col => {
         nodes.push({ kind: 'col', col, ok: col.docks.every(d => d.agentId && H.hasCompute(d.agentId)) });
         if (col.gate) nodes.push({ kind: 'gate', gate: col.gate, propId: col.gate.propId });
@@ -278,7 +287,8 @@ const WorkflowPanel = (() => {
     let html = '';
     const machineOf = n => n.kind === 'trigger' || n.kind === 'outbox' ? n.propId : n.kind === 'col' && n.col.docks.length === 1 ? n.col.docks[0].propId : null;
     nodes.forEach((n, i) => {
-      if (i > 0) {
+      if (i > 0 && n.kind === 'col' && n.col.detached) html += '<div class="wf-belt gap"><span class="carry">not connected</span></div>';
+      else if (i > 0) {
         const prev = nodes[i - 1], a = machineOf(prev), b = machineOf(n);
         const carry = prev.kind === 'trigger' ? 'the job' : prev.kind === 'col' && prev.col.docks.length === 1 ? ((prop(prev.col.docks[0].propId) || {}).hands || '…') : prev.kind === 'gate' ? (prev.gate.kind === 'loop' ? 'on DONE' : 'as one') : '…';
         const canPlus = !!(a && b && S.lineKey);
@@ -333,7 +343,7 @@ const WorkflowPanel = (() => {
         + (t ? '<span class="badge">✓ TESTED</span>' : '') + '</button>';
     }).join('');
     if (col.docks.length === 1) return inner;
-    return '<div class="wf-colgroup ' + col.mode + '"><span class="wf-colmode">' + (col.mode === 'all' ? 'ALL RUN' : col.mode === 'turns' ? 'TAKE TURNS' : 'ONE BY CONTENT') + '</span>' + inner + '</div>';
+    return '<div class="wf-colgroup ' + col.mode + '"><span class="wf-colmode">' + (col.detached ? 'NOT CONNECTED' : col.mode === 'all' ? 'ALL RUN' : col.mode === 'turns' ? 'TAKE TURNS' : 'ONE BY CONTENT') + '</span>' + inner + '</div>';
   }
   function drawArcs(strip, f) {
     if (!f) return;
@@ -419,7 +429,8 @@ const WorkflowPanel = (() => {
     const d = f && f.docks[p.id];
     let gets = 'work addressed to ' + (p.agentId ? nameOf(p.agentId) : 'its agent') + ' (not on a line)';
     if (nb) {
-      if (nb.first || !nb.prev.length) gets = f.trigger.propId ? 'the job from the INBOX' : 'nothing — no INBOX feeds this line';
+      if (nb.detached && !nb.prev.length) gets = 'nothing — no INBOX reaches this step';
+      else if (nb.first || !nb.prev.length) gets = f.trigger.propId ? 'the job from the INBOX' : 'nothing — no INBOX feeds this line';
       else gets = nb.prev.map(pid => { const pp = prop(pid) || {}; return (pp.hands ? pp.hands + ' from ' : 'the output of ') + dockLabel(f, pid); }).join(' or ');
       if (nb.backFrom && nb.backFrom.length) gets += ', or the draft sent back by the LOOP gate';
     }
@@ -638,7 +649,7 @@ const WorkflowPanel = (() => {
         + (r.feeds === true ? '<b class="wf-okc">a message runs this whole line</b>' : r.feeds === false ? 'not this line’s first step — a message runs only that agent' : 'the floor routes it')
         + (r.connected ? '' : ' · <span class="trg-warn">not connected</span>') + '</div></div>').join('');
     const feed = H.feedState();
-    const feedTxt = !feed.known ? 'Checking what feeds this floor…' : feed.fed ? '✓ FED — a channel or an armed routine is wired to drop work on this floor.' : 'NO FEED — nothing is wired to drop work on this floor yet.';
+    const feedTxt = !feed.known ? 'Checking what feeds this floor…' : feed.fed ? '✓ FED — a channel, an armed routine, a watched folder or a webhook is wired to drop work on this floor.' : 'NO FEED — nothing is wired to drop work on this floor yet.';
     const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
     const dockHint = pid => { const order = docks.map(d => d.propId), i = order.indexOf(pid); if (i <= 0) return 'starts at the first step — the whole line runs, ' + docks.length + ' step' + (docks.length === 1 ? '' : 's');
       return 'skips ' + order.slice(0, i).map(x => nameOf(docks[order.indexOf(x)].agentId)).join(' and ') + ' — the line runs from ' + nameOf(docks[i].agentId) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
@@ -650,7 +661,7 @@ const WorkflowPanel = (() => {
     const limField = (id, k, label, ph, step) => '<label class="refit-field lb-field" for="' + id + '">' + label
       + '<input id="' + id + '" class="refit-num lb-num" type="number" min="0" step="' + step + '" data-k="' + k + '" placeholder="' + esc(ph) + '" value="' + esc(limVal(k)) + '" /></label>';
     body.innerHTML = '<section class="wf-sec"><h3><span class="n">INBOX</span>What starts this line?</h3>'
-      + '<p class="wf-help">A schedule, or a message on a connected channel, runs the <b>whole line</b>. A direct COMMS message only runs the agent you message.</p>'
+      + '<p class="wf-help">A schedule, a message on a connected channel, a file landing in a watched folder, or a webhook call runs the <b>whole line</b>. A direct COMMS message only runs the agent you message.</p>'
       + '<h4>Schedules</h4><div class="trg-list" id="wf-routines">' + rtRows + '</div>'
       + '<div class="wf-row"><button type="button" class="bb sm' + (S.trgOpen ? ' active' : '') + '" id="trg-new" aria-expanded="' + S.trgOpen + '" aria-controls="trg-form">⊕ ADD A SCHEDULE</button><button type="button" class="bb sm" id="trg-auto">MANAGE SCHEDULES</button></div>'
       + '<div id="trg-form" class="trg-form"' + (S.trgOpen ? '' : ' hidden') + '>'
@@ -666,6 +677,7 @@ const WorkflowPanel = (() => {
         + '</div><div class="wf-help trg-msg' + (S.trgMsg && S.trgMsg.bad ? ' bad' : '') + '" id="trg-msg"' + (S.trgMsg ? '' : ' hidden') + '>' + esc(S.trgMsg ? S.trgMsg.t : '') + '</div>'
       + '<h4>Channels</h4><div class="trg-list" id="wf-chans">' + chanRows + '</div>'
       + '<div class="wf-row"><button type="button" class="bb sm" id="trg-chan">CONNECT A CHANNEL ▸</button></div>'
+      + (S.lineKey ? ltSectionHtml() : '')
       + '<p class="wf-help dim" id="trg-feed">' + esc(feedTxt) + '</p></section>'
       + '<section class="wf-sec"><h3>Test job</h3><p class="wf-help">What a test sends in, as if it arrived at the INBOX. Used by Try this step and the step test. Not saved to the line.</p>'
       + '<textarea id="wf-job" class="refit-input refit-brief" rows="3" maxlength="4000" placeholder="e.g. Find this week’s most useful research on sleep and memory.">' + esc(S.testJob[S.lineKey] || (routines.find(r => r.startsLine) || {}).prompt || '') + '</textarea>'
@@ -703,9 +715,142 @@ const WorkflowPanel = (() => {
       n.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveLimits(); } if (e.key === 'Escape') { e.stopPropagation(); n.blur(); } });
     }
     wireScheduleForm(p, docks, dockHint);
+    if (S.lineKey) wireLineTriggers();
     $('#trg-chan').onclick = () => { H.sfx('click'); saveOpenFields(); H.openTerm('messaging'); };
     $('#trg-auto').onclick = () => { H.sfx('click'); saveOpenFields(); H.openTerm('routines'); };
   }
+  /* ===== LINE TRIGGERS (2026-09-23): "when a file lands in a folder" · "when a webhook is called" =====
+     Every row is the SERVER's record (GET /api/routing/triggers): enabled, blockedBy (the same preflight a fire
+     runs), fires, lastFiredAt, lastOutcome, lastError. The webhook key is answered ONCE by create/regenerate and
+     lives only in S.ltReveal until the Commander dismisses it or leaves the line — it is never fetched again.
+     Email is not offered: the server reports email.available:false (no mail connector exists). */
+  const ago = iso => { const t = Date.parse(iso || ''); if (!isFinite(t)) return ''; const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : s < 172800 ? Math.round(s / 3600) + 'h ago' : Math.round(s / 86400) + 'd ago'; };
+  const ltMine = () => (S.lt && Array.isArray(S.lt.triggers) ? S.lt.triggers : []).filter(t => t.lineId === S.lineKey);
+  function ltRefresh() {
+    return api('/api/routing/triggers').then(r => { if (r.status === 200 && r.j && Array.isArray(r.j.triggers)) S.lt = r.j; paint(); }).catch(() => {});
+  }
+  function ltRowHtml(t) {
+    const blocked = t.enabled && t.blockedBy;
+    const glyph = !t.enabled ? '○' : blocked ? '◍' : '●';
+    const title = t.kind === 'folder' ? ((t.config && t.config.path) || 'a folder') : (t.name ? '“' + t.name + '”' : '(unnamed)');
+    const lo = t.lastOutcome;
+    const last = t.running ? '<b class="wf-okc">running now</b>'
+      : t.lastFiredAt ? 'last fired ' + esc(ago(t.lastFiredAt)) + (lo ? (lo.ok ? ' · <b class="wf-okc">✓ reached the OUTBOX</b>' + (lo.runs ? ' (' + lo.runs + ' run' + (lo.runs === 1 ? '' : 's') + ')' : '') : ' · <span class="trg-warn">✕ did not finish</span>') : '')
+      : 'never fired';
+    const state = !t.enabled ? 'paused' : blocked ? '<span class="trg-warn">waiting — ' + esc(t.blockedBy) + '</span>'
+      : t.kind === 'folder' ? 'watching — each new file runs the whole line' : 'listening — each call runs the whole line';
+    let html = '<div class="trg-row lt-row" data-lt="' + esc(t.id) + '"><span class="trg-state' + (t.enabled && !blocked ? ' on' : '') + '">' + glyph + '</span> <b>' + (t.kind === 'folder' ? 'FOLDER ' : 'WEBHOOK ') + '</b>' + esc(title)
+      + '<div class="trg-row-meta">' + state + '</div>'
+      + '<div class="trg-row-meta">fired ' + (t.fires || 0) + '× · ' + last + (t.queued ? ' · ' + t.queued + ' waiting' : '') + ' · at most ' + t.maxPerHour + '/hour</div>'
+      + (t.config && t.config.task ? '<div class="trg-row-meta">task: ' + esc(t.config.task.length > 90 ? t.config.task.slice(0, 88) + '…' : t.config.task) + '</div>' : '')
+      + (t.lastError ? '<div class="trg-row-meta"><span class="trg-warn">last error: ' + esc(t.lastError) + '</span></div>' : '');
+    if (t.kind === 'webhook') {
+      html += '<div class="trg-row-meta lt-url">POST <code class="lt-code">' + esc(t.url || '') + '</code> <button type="button" class="bb sm" data-lt-copy="' + esc(t.url || '') + '">COPY URL</button></div>';
+      const rv = S.ltReveal && S.ltReveal.id === t.id ? S.ltReveal : null;
+      if (rv) html += '<div class="lt-reveal" role="status"><div class="trg-form-k">YOUR KEY — SHOWN ONCE</div>'
+        + '<code class="lt-code lt-key">' + esc(rv.secret) + '</code>'
+        + '<div class="wf-row"><button type="button" class="bb sm refit-primary" data-lt-copy="' + esc(rv.secret) + '">COPY KEY</button><button type="button" class="bb sm" id="lt-reveal-done">I SAVED IT</button></div>'
+        + '<p class="wf-help">Send it as the <b>X-StarNet-Hook-Key</b> header (or <b>Authorization: Bearer …</b>, or <b>?key=</b> on the URL). StarNet keeps only a fingerprint of it: once this box closes it cannot be shown again. Lost it? Make a new key.</p></div>';
+    }
+    html += '<div class="wf-row lt-acts"><button type="button" class="bb sm" data-lt-act="toggle">' + (t.enabled ? 'PAUSE' : 'RESUME') + '</button>'
+      + '<button type="button" class="bb sm" data-lt-act="edit">EDIT</button>'
+      + (t.kind === 'webhook' ? '<button type="button" class="bb sm" data-lt-act="rekey">NEW KEY</button>' : '')
+      + '<button type="button" class="bb sm" data-lt-act="delete">DELETE</button></div></div>';
+    return html;
+  }
+  function ltFormHtml(kind) {
+    const F = S.ltForm, editing = !!(F && F.id), cur = editing ? ltMine().find(t => t.id === F.id) : null;
+    const ceil = (S.lt && S.lt.maxPerHourCeiling) || 120;
+    const val = (k, dflt) => esc(S.drafts['lt:' + k] != null ? S.drafts['lt:' + k] : dflt);
+    return '<div class="trg-form lt-form" id="lt-form">'
+      + (kind === 'folder'
+        ? '<label class="trg-form-k" for="lt-path">Folder to watch (full path)</label>'
+          + '<input id="lt-path" data-keep="lt:path" class="refit-input" type="text" maxlength="1024" spellcheck="false" placeholder="e.g. C:\\Users\\you\\Drops\\invoices" value="' + val('path', cur ? cur.config.path : '') + '" />'
+          + '<p class="wf-help dim">Files placed directly in this folder (not in its subfolders) start the line — once each, after the file finishes writing. Files already there are skipped. It must be inside your home folder or a project you added; system folders are refused.</p>'
+        : '<p class="wf-help dim">You get a web address and a secret key. Anything that POSTs to the address with the key starts the line; the request body becomes the job.</p>')
+      + '<label class="trg-form-k" for="lt-task">What should the line do with ' + (kind === 'folder' ? 'each file' : 'each call') + '? (optional)</label>'
+      + '<textarea id="lt-task" data-keep="lt:task" class="refit-input refit-brief" maxlength="2000" rows="2" placeholder="' + (kind === 'folder' ? 'e.g. Pull out the total and the due date.' : 'e.g. Summarize this order for the team.') + '">' + val('task', cur ? cur.config.task : '') + '</textarea>'
+      + '<label class="trg-form-k" for="lt-name">Name (optional)</label>'
+      + '<input id="lt-name" data-keep="lt:name" class="refit-input" type="text" maxlength="60" placeholder="' + (kind === 'folder' ? 'e.g. Invoices' : 'e.g. New orders') + '" value="' + val('name', cur ? cur.name : '') + '" />'
+      + '<label class="refit-field lb-field" for="lt-rate">at most this many runs an hour'
+      + '<input id="lt-rate" data-keep="lt:rate" class="refit-num lb-num" type="number" min="1" max="' + ceil + '" step="1" value="' + val('rate', cur ? String(cur.maxPerHour) : '20') + '" /></label>'
+      + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="lt-save">' + (editing ? '▸ SAVE CHANGES' : kind === 'folder' ? '▸ WATCH THIS FOLDER' : '▸ CREATE WEBHOOK') + '</button><button type="button" class="bb sm" id="lt-cancel">CANCEL</button></div></div>';
+  }
+  function ltSectionHtml() {
+    const mine = ltMine();
+    const F = S.ltForm;
+    const rows = kind => {
+      if (!S.lt) return '<div class="wf-help dim">reading triggers…</div>';
+      const list = mine.filter(t => t.kind === kind);
+      return list.length ? list.map(ltRowHtml).join('') : '<div class="wf-help dim">' + (kind === 'folder' ? 'No folder is watched for this line.' : 'No webhook starts this line.') + '</div>';
+    };
+    const port = (S.lt && /:(\d+)\//.exec(S.lt.hookBase || '')) ? /:(\d+)\//.exec(S.lt.hookBase)[1] : '';
+    return '<h4>When a file lands in a folder</h4><div class="trg-list" id="lt-folders">' + rows('folder') + '</div>'
+      + (F && F.kind === 'folder' ? ltFormHtml('folder') : '<div class="wf-row"><button type="button" class="bb sm" id="lt-new-folder">⊕ WATCH A FOLDER</button></div>')
+      + '<h4>When a webhook is called</h4><div class="trg-list" id="lt-hooks">' + rows('webhook') + '</div>'
+      + (F && F.kind === 'webhook' ? ltFormHtml('webhook') : '<div class="wf-row"><button type="button" class="bb sm" id="lt-new-hook">⊕ ADD A WEBHOOK</button></div>')
+      + '<p class="wf-help dim">A webhook address lives on this computer (127.0.0.1' + (port ? ':' + port : '') + '). Nothing outside this machine can reach it unless you set up a tunnel yourself (for example cloudflared or ngrok) pointed at that port.</p>'
+      + '<div class="wf-help trg-msg' + (S.ltMsg && S.ltMsg.bad ? ' bad' : '') + '" id="lt-msg"' + (S.ltMsg ? '' : ' hidden') + '>' + esc(S.ltMsg ? S.ltMsg.t : '') + '</div>';
+  }
+  function wireLineTriggers() {
+    const say = (t, bad) => { S.ltMsg = { t, bad: !!bad }; const m = $('#lt-msg'); if (m) { m.hidden = false; m.classList.toggle('bad', !!bad); m.textContent = t; } };
+    const clearForm = () => { for (const k of ['path', 'task', 'name', 'rate']) delete S.drafts['lt:' + k]; S.ltForm = null; };
+    const after = (msg, bad) => { S.ltMsg = msg ? { t: msg, bad: !!bad } : null; return ltRefresh().then(() => H.pollFeed()).then(() => paint(true), () => paint(true)); };
+    const open = kind => { H.sfx('click'); clearForm(); S.ltForm = { kind, id: null }; S.ltMsg = null; paint(true); const i = $(kind === 'folder' ? '#lt-path' : '#lt-task'); if (i) i.focus(); };
+    const nf = $('#lt-new-folder'); if (nf) nf.onclick = () => open('folder');
+    const nh = $('#lt-new-hook'); if (nh) nh.onclick = () => open('webhook');
+    const cancel = $('#lt-cancel'); if (cancel) cancel.onclick = () => { H.sfx('click'); clearForm(); paint(true); };
+    const save = $('#lt-save');
+    if (save) save.onclick = () => {
+      const F = S.ltForm; if (!F) return;
+      const path = $('#lt-path') ? $('#lt-path').value.trim() : '';
+      const task = $('#lt-task').value.trim(), name = $('#lt-name').value.trim(), rate = parseInt($('#lt-rate').value, 10);
+      if (F.kind === 'folder' && !path) { H.sfx('bad'); say('enter the folder to watch', true); return; }
+      if (!S.lineKey) { H.sfx('bad'); say('connect this INBOX to a line first', true); return; }
+      const config = F.kind === 'folder' ? { path, task } : { task };
+      const body = { name, config, maxPerHour: isFinite(rate) && rate > 0 ? rate : 20 };
+      save.disabled = true; say('saving…');
+      const req = F.id ? api('/api/routing/triggers/' + encodeURIComponent(F.id), 'PATCH', body)
+        : api('/api/routing/triggers', 'POST', Object.assign({ kind: F.kind, lineId: S.lineKey }, body));
+      req.then(({ status, j }) => {
+        save.disabled = false;
+        if (status !== 200 || !j || !j.ok || !j.trigger) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not saved'), true); return; }
+        H.sfx('chime'); clearForm();
+        if (j.secret) S.ltReveal = { id: j.trigger.id, secret: j.secret };
+        return after(F.id ? '✓ saved' : F.kind === 'folder' ? '✓ watching ' + j.trigger.config.path + ' — files already there are skipped' : '✓ webhook created — copy the key now, it is shown once');
+      }).catch(() => { save.disabled = false; H.sfx('bad'); say('✕ not saved — check the connection and try again', true); });
+    };
+    const done = $('#lt-reveal-done'); if (done) done.onclick = () => { H.sfx('click'); S.ltReveal = null; paint(true); };
+    $$('[data-lt-copy]').forEach(b => b.onclick = () => {
+      const v = b.dataset.ltCopy || '', rest = b.textContent;
+      const ok = () => { H.sfx('click'); b.textContent = 'COPIED'; setTimeout(() => { if (b.isConnected) b.textContent = rest; }, 1400); };
+      try { navigator.clipboard.writeText(v).then(ok, () => say('copy failed — select the text and copy it by hand', true)); } catch (e) { say('copy failed — select the text and copy it by hand', true); }
+    });
+    $$('.lt-row').forEach(row => {
+      const id = row.dataset.lt, t = ltMine().find(x => x.id === id); if (!t) return;
+      row.querySelectorAll('[data-lt-act]').forEach(b => {
+        const act = b.dataset.ltAct;
+        if (act === 'toggle') b.onclick = () => { b.disabled = true; api('/api/routing/triggers/' + encodeURIComponent(id), 'PATCH', { enabled: !t.enabled })
+          .then(({ status, j }) => { if (status !== 200 || !j || !j.ok) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not changed'), true); b.disabled = false; return; } H.sfx('click'); return after(t.enabled ? '✓ paused' : '✓ resumed' + (t.kind === 'folder' ? ' — files already in the folder are skipped' : '')); })
+          .catch(() => { b.disabled = false; say('✕ not changed', true); }); };
+        else if (act === 'edit') b.onclick = () => { H.sfx('click'); clearForm(); S.ltForm = { kind: t.kind, id }; paint(true); };
+        else if (act === 'rekey' && typeof ArmConfirm !== 'undefined') ArmConfirm.wire(b, { armedLabel: 'OLD KEY STOPS — SURE?', onArm: () => H.sfx('bad'),
+          onConfirm: () => api('/api/routing/triggers/' + encodeURIComponent(id) + '/secret', 'POST', {}).then(({ status, j }) => {
+            if (status !== 200 || !j || !j.secret) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'no new key'), true); return; }
+            S.ltReveal = { id, secret: j.secret }; H.sfx('chime'); return after('✓ new key made — the old one no longer works; copy this one now');
+          }) });
+        else if (act === 'delete' && typeof ArmConfirm !== 'undefined') ArmConfirm.wire(b, { armedLabel: 'REALLY DELETE?', onArm: () => H.sfx('bad'),
+          onConfirm: () => api('/api/routing/triggers/' + encodeURIComponent(id), 'DELETE').then(({ status, j }) => {
+            if (status !== 200 || !j || !j.ok) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not deleted'), true); return; }
+            if (S.ltReveal && S.ltReveal.id === id) S.ltReveal = null;
+            if (S.ltForm && S.ltForm.id === id) clearForm();
+            H.sfx('click'); return after('✓ trigger deleted');
+          }) });
+      });
+    });
+  }
+
   /* the schedule form: the SAME SchedPicker + /api/cron/preview + the SAME create body the AUTOMATION
      window posts, plus runsLine:true — minted here, under FOR THIS LINE, it is the Commander asking for the
      line to run (cron-store `runsLine`). No unattendedGrants, no toolsets. Read-back confirms the saved id. */

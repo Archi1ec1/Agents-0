@@ -9,9 +9,12 @@
    PURE, zero-dep, UMD (the pipeline.js idiom): params in, plain data out, no DOM, no clock, no module
    state — so test/workflow-line.test.js can hold every sentence to the truthful-telemetry law.
 
-   The one place geometry (not the plan) speaks is an UNCREWED dock: the compiler never routes a bay with
-   no agent, so its slot in the strip comes from a physical belt walk and the node says "not routed until
-   it has an agent". A bound dock's position is always the compiled chain's. */
+   ORDER AND HAND-OFFS ARE COMPILED, NEVER INFERRED (2026-09-23 playtest). A crewed dock's position and every
+   hand-off it claims come from the real plan's dock maps (reachDock / dockChains / chainStepDock). An UNCREWED
+   bay is not a dock of the real plan, so the floor is compiled once more with probe agents on the uncrewed bays
+   (probePlan) to place it — it still says "not routed until it has an agent" and hands off to nothing. A dock no
+   INBOX reaches even then is listed as NOT CONNECTED (one 'apart' group), never chained in bay order, and
+   neighbours() reads prev/next off compiled edges only — two parallel bays are siblings, never a sequence. */
 'use strict';
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) module.exports = factory();
@@ -75,25 +78,88 @@
      DOCK layer (reachDock / dockChains / Pipeline.chainStepDock) — writer@A → editor@B → writer@C is three
      columns with the writer in two of them. A plan without the dock layer derives it (Pipeline.dockLayer). */
   function lineFlow(plan, comp, P, props) {
-    const out = { cols: [], docks: {}, gates: [], order: [], outbox: { propId: null, reached: false }, trigger: { propId: null } };
+    const out = { cols: [], docks: {}, gates: [], order: [], edges: {}, probeIn: {}, outbox: { propId: null, reached: false }, trigger: { propId: null } };
     if (!comp) return out;
     out.trigger.propId = (comp.intakes && comp.intakes[0]) || null;
     out.outbox.propId = (comp.outboxes && comp.outboxes[0]) || null;
-    const lineId = comp.key;
-    const L = (P && P.dockLayer && plan) ? P.dockLayer(plan) : { dockChains: {}, reachDock: {} };
-    const chains = L.dockChains || {}, reach = L.reachDock || {};
     const bays = comp.bays || [];
     for (const b of bays) {
       out.docks[b.propId] = { propId: b.propId, agentId: b.agentId || null, role: b.role || null,
-        bound: !!b.agentId, routed: false, col: null, deadEnd: false, reachedBy: null };
+        bound: !!b.agentId, routed: false, col: null, deadEnd: false, reachedBy: null, detached: false };
     }
-    // a node is a DOCK id (the walk never confuses the writer's two bays); step answers carry { dockId }
-    const pidOf = n => (n && typeof n === 'object') ? (n.dockId || null) : (n && out.docks[n] ? n : null);
-    const step = pid => { try { return (P && P.chainStepDock && plan) ? P.chainStepDock(plan, pid, { lineId }) : null; } catch (e) { return null; } };
-    // the junction prop at a plan junction key (the compiler's attach rule: own tile if on a belt, else the ring)
+    const mine = pid => !!out.docks[pid];
+    const layerOf = pl => (P && P.dockLayer && pl) ? P.dockLayer(pl) : { dockChains: {}, reachDock: {} };
+    const real = layerOf(plan);
+
+    // 1. THE REAL PLAN decides what is ROUTED today, whether the line reaches the OUTBOX, and every hand-off a
+    //    CREWED dock makes (edges). Nothing here comes from belt order or bay order.
+    const R = walkCompiled(plan, comp, P, props, bays.filter(b => b.agentId && real.reachDock[b.propId]).map(b => b.propId));
+    for (const pid in R.col) if (out.docks[pid] && out.docks[pid].bound) out.docks[pid].routed = true;
+    if (R.outboxReached) out.outbox.reached = true;
+    for (const b of bays) {
+      if (!b.agentId) continue;
+      const ch = real.dockChains[b.propId];
+      out.edges[b.propId] = ch ? (ch.next || []).filter(mine) : [];
+      if (ch && !ch.outbox && ch.deadEnd && !(ch.next || []).length && !ch.gated) out.docks[b.propId].deadEnd = true;
+    }
+    // no INBOX-fed run at all: the OUTBOX claim is still the compiled one — a crewed dock whose own chain ships out
+    if (!R.outboxReached && !Object.keys(R.col).length) for (const b of bays) { const ch = b.agentId && real.dockChains[b.propId]; if (ch && ch.outbox) out.outbox.reached = true; }
+
+    // 2. THE LAYOUT (where each dock sits in the strip) comes from the compiler too. An UNCREWED bay is not a
+    //    dock of the real plan, so the floor is compiled once more with a probe agent on every uncrewed bay of
+    //    this line: the columns are then the compiler's own answer for "once every bay is crewed". An uncrewed
+    //    dock stays routed:false and hands off to nothing (its contract says "decided once it has an agent");
+    //    a crewed dock's hand-offs are still read ONLY off the real plan (step 1).
+    const probe = probePlan(plan, comp, P, props);
+    const pl = probe ? layerOf(probe) : real;
+    const L = walkCompiled(probe || plan, comp, P, props, bays.filter(b => (probe || b.agentId) && pl.reachDock[b.propId]).map(b => b.propId));
+    for (const pid in L.col) if (out.docks[pid]) { out.docks[pid].col = L.col[pid]; out.docks[pid].reachedBy = L.reachedBy[pid] || null; }
+    out.gates = L.gates;
+    // an uncrewed dock's upstream (its GETS) is the probe compile's — the only compiled answer for a dock with no agent
+    if (probe) for (const b of bays) {
+      if (b.agentId) continue;
+      for (const x of bays) { const ch = pl.dockChains[x.propId]; if (x.propId !== b.propId && ch && (ch.next || []).indexOf(b.propId) >= 0) (out.probeIn[b.propId] = out.probeIn[b.propId] || []).push(x.propId); }
+    }
+
+    // 3. NOT CONNECTED: a dock no INBOX reaches even once crewed has no place in the run order. It is never
+    //    chained in bay order: every such dock is listed together in ONE trailing 'apart' group.
+    const placed = Object.values(out.docks).filter(d => d.col != null);
+    const loose = bays.map(b => out.docks[b.propId]).filter(d => d.col == null);
+    const colKeys = [...new Set(placed.map(d => d.col))].sort((a, b) => a - b);
+    const bayOrder = {}; bays.forEach((b, i) => { bayOrder[b.propId] = i; });
+    for (const ck of colKeys) {
+      const docks = placed.filter(d => d.col === ck).sort((a, b) => bayOrder[a.propId] - bayOrder[b.propId]);
+      const mode = docks.length < 2 ? 'single' : docks.some(d => d.reachedBy === 'all') ? 'all' : docks.some(d => d.reachedBy === 'turns') ? 'turns' : 'oneof';
+      const c = { docks, mode, gate: null };
+      const g = out.gates.find(gg => gg.col === ck && gg.after.some(pid => docks.some(d => d.propId === pid)));
+      if (g) c.gate = g;
+      out.cols.push(c);
+      for (const d of docks) out.order.push(d.propId);
+    }
+    if (loose.length) {
+      const top = colKeys.length ? Math.floor(colKeys[colKeys.length - 1]) + 1 : 0;
+      for (const d of loose) { d.col = top; d.detached = true; d.routed = false; }
+      out.cols.push({ docks: loose, mode: loose.length > 1 ? 'apart' : 'single', gate: null, detached: true });
+      for (const d of loose) out.order.push(d.propId);
+    }
+    return out;
+  }
+
+  /* the compiled walk: columns by longest forward path from `entries` along Pipeline.chainStepDock (loop back
+     edges excluded), plus the loop/join gates it meets. Pure over one plan. */
+  function walkCompiled(plan, comp, P, props, entries) {
+    const res = { col: {}, reachedBy: {}, gates: [], outboxReached: false };
+    if (!plan || !comp) return res;
+    const lineId = comp.key;
+    const L = (P && P.dockLayer) ? P.dockLayer(plan) : { dockChains: {}, reachDock: {} };
+    const chains = L.dockChains || {};
+    const isDock = {}; for (const b of (comp.bays || [])) isDock[b.propId] = true;
+    const pidOf = n => (n && typeof n === 'object') ? (n.dockId || null) : (n && isDock[n] ? n : null);
+    const step = pid => { try { return (P && P.chainStepDock) ? P.chainStepDock(plan, pid, { lineId }) : null; } catch (e) { return null; } };
     const I = (P && P._internals) || {};
+    // the junction prop at a plan junction key (the compiler's attach rule: own tile if on a belt, else the ring)
     const jprop = (jk) => {
-      const map = (plan && plan.belts) || {};
+      const map = plan.belts || {};
       for (const p of (props || [])) {
         if (!(p.t === 'loop' || p.t === 'joiner') || (comp.props || []).indexOf(p.id) < 0) continue;
         const t = map[key(p.x, p.y)] ? { x: p.x, y: p.y } : (I.beltTileNear ? I.beltTileNear(map, p.x, p.y, p.w || 1, p.h || 1) : null);
@@ -101,27 +167,22 @@
       }
       return null;
     };
-
-    // 1. the compiled DAG: columns by longest forward path from the entry docks (reach = fed by an INBOX)
-    const col = {}, gateByKey = {};
-    const entries = bays.filter(b => b.agentId && reach[b.propId]).map(b => b.propId);
+    const col = res.col, gateByKey = {};
     const srcStarts = [];
-    for (const s of ((plan && plan.sources) || [])) if ((comp.intakes || []).indexOf(s.propId) >= 0) for (const t of ((s.tiles && s.tiles.length) ? s.tiles : (s.tile ? [s.tile] : []))) srcStarts.push(t);
+    for (const s of (plan.sources || [])) if ((comp.intakes || []).indexOf(s.propId) >= 0) for (const t of ((s.tiles && s.tiles.length) ? s.tiles : (s.tile ? [s.tile] : []))) srcStarts.push(t);
     const entryBy = entries.length > 1 ? (forkKind(plan, srcStarts, I) || 'oneof') : 'entry';
     const q = entries.map(a => ({ a, c: 0, by: entryBy }));
     let guard = 0;
     while (q.length && guard++ < 4096) {
       const { a, c, by } = q.shift();
       const pid = pidOf(a); if (!pid) continue;
-      const d = out.docks[pid];
       if (col[pid] != null && col[pid] >= c) continue;
-      col[pid] = c; d.routed = true;
-      if (!d.reachedBy || by === 'all' || by === 'turns') d.reachedBy = by;
+      col[pid] = c;
+      if (!res.reachedBy[pid] || by === 'all' || by === 'turns') res.reachedBy[pid] = by;
       const s = step(pid), ch = chains[pid];
       const statics = (ch && ch.next) || [];
       if (!s) {
-        if (ch && !ch.outbox && ch.deadEnd) d.deadEnd = true;
-        if (ch && ch.outbox) out.outbox.reached = true;
+        if (ch && ch.outbox) res.outboxReached = true;
         for (const n of statics) q.push({ a: n, c: c + 1, by: 'oneof' });   // a static fork chainStep's default tag didn't take
         continue;
       }
@@ -137,47 +198,40 @@
         if (!g) {
           g = gateByKey[k] = { kind: s.loop ? 'loop' : 'join', key: k, propId: jprop(k), after: [], backTo: null, backAgent: null,
             max: s.max || null, when: s.when || null, next: null, nextAgent: (s.next && s.next.agentId) || null, nextDock: pidOf(s.next), timeoutMin: s.timeoutMin || null, col: c };
-          out.gates.push(g);
+          res.gates.push(g);
         }
         if (g.after.indexOf(pid) < 0) g.after.push(pid);
         if (c > g.col) g.col = c;
         if (s.loop) { g.backAgent = (s.backTo && s.backTo.agentId) || null; g.backTo = pidOf(s.backTo); }
         const nd = pidOf(s.next), bd = pidOf(s.backTo);
         if (nd) q.push({ a: nd, c: c + 1, by: 'single' });
-        else if (ch && ch.outbox) out.outbox.reached = true;
+        else if (ch && ch.outbox) res.outboxReached = true;
         // a loop's back lane re-enters UPSTREAM: never a forward edge (it is drawn as the back-arc)
         for (const n of statics) if (n !== nd && n !== bd) q.push({ a: n, c: c + 1, by: 'oneof' });
       }
-      if (ch && ch.outbox && !s.dockId && !s.branches) out.outbox.reached = true;
+      if (ch && ch.outbox && !s.dockId && !s.branches) res.outboxReached = true;
     }
-    for (const g of out.gates) g.next = g.nextDock || null;
-    for (const pid in col) if (out.docks[pid]) out.docks[pid].col = col[pid];
+    for (const g of res.gates) g.next = g.nextDock || null;
+    return res;
+  }
 
-    // 2. the physical walk: where do UNCREWED (or unrouted) docks sit? Forward along the belts from the INBOX
-    // mouths, passing THROUGH every dock (a dock's other ring belts continue the work), fanning junctions.
-    const phys = physicalOrder(plan, comp, I);
-    let last = -1;
-    for (const pid of phys) {
-      const d = out.docks[pid]; if (!d) continue;
-      if (d.col != null) { last = d.col; continue; }
-      last = last + 0.01; d.col = last;
-    }
-    let tail = Math.max(-1, ...Object.values(out.docks).map(d => (d.col == null ? -1 : d.col)));
-    for (const b of bays) { const d = out.docks[b.propId]; if (d.col == null) { tail = Math.floor(tail) + 1; d.col = tail; d.detached = true; } }
-
-    // 3. fold into columns (docks sharing a column run as a fan-out ('all') or a content fork ('oneof'))
-    const colKeys = [...new Set(Object.values(out.docks).map(d => d.col))].sort((a, b) => a - b);
-    const bayOrder = {}; bays.forEach((b, i) => { bayOrder[b.propId] = i; });
-    for (const ck of colKeys) {
-      const docks = Object.values(out.docks).filter(d => d.col === ck).sort((a, b) => bayOrder[a.propId] - bayOrder[b.propId]);
-      const mode = docks.length < 2 ? 'single' : docks.some(d => d.reachedBy === 'all') ? 'all' : docks.some(d => d.reachedBy === 'turns') ? 'turns' : 'oneof';
-      const c = { docks, mode, gate: null };
-      const g = out.gates.find(gg => gg.col === ck && gg.after.some(pid => docks.some(d => d.propId === pid)));
-      if (g) c.gate = g;
-      out.cols.push(c);
-      for (const d of docks) out.order.push(d.propId);
-    }
-    return out;
+  /* the floor compiled once more with a probe agent on every UNCREWED bay of this line (null when the line has
+     none — the real plan already answers everything). Memoized per compiled plan object. */
+  const probeMemo = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+  function probePlan(plan, comp, P, props) {
+    if (!plan || !P || !P.compileRoutingPlan || !props || !props.length) return null;
+    const unbound = (comp.bays || []).filter(b => !b.agentId).map(b => b.propId);
+    if (!unbound.length) return null;
+    const sig = comp.key + '|' + unbound.join(',');
+    const m = probeMemo && probeMemo.get(plan);
+    if (m && m.sig === sig && m.props === props) return m.probe;
+    const set = {}; for (const id of unbound) set[id] = true;
+    const belts = [];
+    for (const k in (plan.belts || {})) { const p = k.split(','); belts.push({ x: +p[0], y: +p[1], dir: plan.belts[k] }); }
+    let probe = null;
+    try { probe = P.compileRoutingPlan({ props: props.map(p => set[p.id] ? Object.assign({}, p, { agentId: '__probe_' + p.id }) : p), belts }); } catch (e) { probe = null; }
+    if (probeMemo) probeMemo.set(plan, { sig, props, probe });
+    return probe;
   }
 
   /* what kind of FORK sits on a lane: walk forward from `starts` to the first junction that has more than
@@ -240,29 +294,40 @@
     if (!d) return { prev: [], next: [], gate: null, first: false, last: false };
     const i = flow.cols.findIndex(c => c.docks.some(x => x.propId === propId));
     const colHere = flow.cols[i];
-    const prevCol = i > 0 ? flow.cols[i - 1] : null, nextCol = i >= 0 && i < flow.cols.length - 1 ? flow.cols[i + 1] : null;
     const gate = colHere && colHere.gate && colHere.gate.after.indexOf(propId) >= 0 ? colHere.gate : null;
     // loop re-entry: the gate that sends work BACK to this dock
     const backFrom = flow.gates.filter(g => g.kind === 'loop' && g.backTo === propId);
-    return { prev: prevCol ? prevCol.docks.map(x => x.propId) : [], next: nextCol ? nextCol.docks.map(x => x.propId) : [],
-      gate, backFrom, first: i === 0, last: i === flow.cols.length - 1, index: i };
+    /* HAND-OFFS ARE COMPILED EDGES, NEVER COLUMN ADJACENCY (2026-09-23): two parallel bays under a splitter, or
+       docks no INBOX reaches, used to read as a chain because they sat in neighbouring columns. next = the real
+       plan's dockChains for a crewed dock (an uncrewed dock hands off to nothing yet); prev = the crewed docks
+       whose compiled next is this one (+ the probe compile's answer for an uncrewed dock). */
+    const E = flow.edges || {}, order = flow.order || [];
+    const next = (E[propId] || []).slice();
+    const prev = Object.keys(E).filter(x => x !== propId && (E[x] || []).indexOf(propId) >= 0);
+    for (const x of ((flow.probeIn || {})[propId] || [])) if (prev.indexOf(x) < 0) prev.push(x);
+    const byOrder = (a, b) => order.indexOf(a) - order.indexOf(b);
+    prev.sort(byOrder); next.sort(byOrder);
+    const lastRun = flow.cols.reduce((n, c, k) => (c.detached ? n : k), -1);
+    return { prev, next, gate, backFrom, first: i === 0 && !d.detached, last: !d.detached && i === lastRun, index: i, detached: !!d.detached };
   }
 
   /* ---------- "how it runs": the sentence, as segments the panel paints ----------
      seg = { t:'text', s } | { t:'agent', s, propId } | { t:'miss', s, propId } | { t:'loop', s } | { t:'end', s }
-     triggers = { schedules:[sentence…], channels:[label…] } — ONLY triggers that run the WHOLE line
-     (a runsLine routine at an entry dock, a channel answering as an entry dock). */
+     triggers = { schedules:[sentence…], channels:[label…], events:[sentence…] } — ONLY triggers that run the WHOLE
+     line (a runsLine routine at an entry dock, a channel answering as an entry dock, an armed LINE TRIGGER —
+     'when a file lands in C:\Drops' / 'when its webhook is called', see lineEventTriggers). */
   function howItRuns(flow, opt) {
     const o = opt || {}, nameOf = o.nameOf || (a => String(a || '').toUpperCase()), segs = [];
     const T = s => segs.push({ t: 'text', s });
     const trig = o.triggers || { schedules: [], channels: [] };
-    const starts = [].concat((trig.schedules || []), (trig.channels || []).map(c => 'when a ' + c + ' message arrives'));
+    const starts = [].concat((trig.schedules || []), (trig.channels || []).map(c => 'when a ' + c + ' message arrives'), (trig.events || []));
     if (!flow || !flow.trigger.propId) T('This line has no INBOX yet, so nothing can start it. ');
-    else if (!starts.length) T('Nothing starts it on its own yet (no schedule or channel runs this line); it runs when you test it. ');
+    else if (!starts.length) T('Nothing starts it on its own yet (no schedule, channel, folder or webhook runs this line); it runs when you test it. ');
     else T(cap(joinOr(starts)) + ', ');
     if (!flow || !flow.cols.length) { T('there is no BAY on it yet.'); return segs; }
-    flow.cols.forEach((c, i) => {
-      if (i > 0) T(i === flow.cols.length - 1 && !c.gate ? ' then ' : '; ');
+    const run = flow.cols.filter(c => !c.detached), apart = flow.cols.filter(c => c.detached);
+    run.forEach((c, i) => {
+      if (i > 0) T(i === run.length - 1 && !c.gate ? ' then ' : '; ');
       c.docks.forEach((d, j) => {
         if (j > 0) T(c.mode === 'all' ? ' and ' : ' or ');
         if (d.agentId) segs.push({ t: 'agent', s: nameOf(d.agentId), propId: d.propId });
@@ -280,6 +345,16 @@
         segs.push({ t: 'loop', s: ' and sends it back to ' + who + ' ' + until + ' (' + (g.max || 5) + ' tries max)' });
       } else if (g && g.kind === 'join') T(' and the parts wait at the JOINER, then continue as one');
     });
+    /* NOT CONNECTED (2026-09-23): a dock no INBOX reaches is named, never sequenced — the old walk chained such
+       docks in bay order ("WRITER then RESEARCHER") though the plan held no hand-off between them. */
+    for (const c of apart) {
+      T(run.length ? '; not connected to ' + (flow.trigger.propId ? 'the INBOX' : 'an INBOX') + ': ' : 'Not connected to ' + (flow.trigger.propId ? 'the INBOX' : 'an INBOX') + ': ');
+      c.docks.forEach((d, j) => {
+        if (j > 0) T(', ');
+        if (d.agentId) segs.push({ t: 'agent', s: nameOf(d.agentId), propId: d.propId });
+        else segs.push({ t: 'miss', s: '[pick ' + (d.role ? 'a ' + d.role.toLowerCase() : 'an agent') + ']', propId: d.propId });
+      });
+    }
     T('; ');
     if (flow.outbox.reached) segs.push({ t: 'end', s: 'the result goes to the OUTBOX.' });
     else if (flow.outbox.propId) segs.push({ t: 'miss', s: '[the last step is not connected to the OUTBOX]', propId: flow.outbox.propId });
@@ -308,6 +383,7 @@
       if (f.hasCompute && !f.hasCompute(d.agentId)) blocking.push({ what: label + ' needs a workstation', propId: pid });
       if (f.briefOf && !f.briefOf(pid)) hints.push({ what: label + ' has no instructions', propId: pid });
     }
+    if (flow.trigger.propId) { let k = 0; for (const pid of flow.order) { k++; const d = flow.docks[pid]; if (d.detached && d.agentId) blocking.push({ what: 'BAY ' + k + ' is not connected to the INBOX', propId: pid }); } }
     if (!flow.order.length) blocking.push({ what: 'add a BAY', propId: null });
     else if (!flow.outbox.reached) blocking.push({ what: flow.outbox.propId ? 'connect the last step to the OUTBOX' : 'add an OUTBOX', propId: flow.outbox.propId });
     const mine = {}; for (const id of (comp.props || [])) mine[id] = true;
@@ -318,7 +394,7 @@
       blocking.push({ what: 'fix: ' + (f.labelOf ? f.labelOf(e.code) : e.code), propId: e.propId });
     }
     const t = f.triggers || {};
-    if (flow.trigger.propId && !((t.schedules || []).length || (t.channels || []).length)) hints.push({ what: 'no schedule or channel starts it yet', propId: flow.trigger.propId });
+    if (flow.trigger.propId && !((t.schedules || []).length || (t.channels || []).length || (t.events || []).length)) hints.push({ what: 'nothing starts it yet (no schedule, channel, folder or webhook)', propId: flow.trigger.propId });
     return { ready: !blocking.length, blocking, hints };
   }
   function pillText(r) {
@@ -388,6 +464,22 @@
       startsLine: j.runsLine === true && atEntry(j) && j.enabled !== false }));
   }
 
+  /* ---------- LINE TRIGGERS: the folder / webhook events that start THIS line ----------
+     list = GET /api/routing/triggers .triggers. A trigger belongs to ONE line by id (lineId = the compiled line key).
+     It counts as starting the line only when the SERVER says it is enabled and nothing blocks it (blockedBy null —
+     the same preflight a fire runs: E-STOP, armed plan, the line on the floor, a crewed dock, the day cap). */
+  function lineEventTriggers(list, lineId) {
+    const mine = (Array.isArray(list) ? list : []).filter(t => t && t.lineId === lineId);
+    const live = mine.filter(t => t.enabled && !t.blockedBy);
+    const sentences = [];
+    const folders = live.filter(t => t.kind === 'folder').map(t => 'when a file lands in ' + ((t.config && t.config.path) || 'its folder'));
+    const hooks = live.filter(t => t.kind === 'webhook');
+    for (const s of folders) sentences.push(s);
+    if (hooks.length === 1) sentences.push('when its webhook' + (hooks[0].name ? ' "' + hooks[0].name + '"' : '') + ' is called');
+    else if (hooks.length > 1) sentences.push('when one of its ' + hooks.length + ' webhooks is called');
+    return { mine, live, sentences };
+  }
+
   /* ---------- the test input a dock's "Try this step" starts from ----------
      the previous dock's last test OUTPUT (what it would really hand over), or the line's test job for the
      first dock. null = nothing honest to offer yet ("test <prev> first"). */
@@ -415,5 +507,5 @@
   const isLive = s => !!s && !TERMINAL[s.state];
 
   return { ROLE, GENERIC, roleInfo, starters, lineFlow, physicalOrder, neighbours, howItRuns, readiness, pillText,
-    costEstimate, channelFeeds, lineRoutines, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
+    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
 });
