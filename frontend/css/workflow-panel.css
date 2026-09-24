@@ -179,6 +179,18 @@ textarea.wf-io:focus { outline: none; border-color: var(--gold); }
 .wf-foot-note { flex: 1; min-width: 150px; font-size: 13px; color: var(--ph-dim); }
 .wf-sample-res { flex: 1 1 100%; font-size: 14px; }
 
+/* LINE TRIGGERS (2026-09-23): folder / webhook rows on the INBOX. The URL and the once-only key are readouts the
+   Commander copies, so they wrap anywhere and select as one token; the key box is the only lit (gold-edged) object. */
+.lt-row { padding: 4px 0 6px; border-bottom: 1px dashed var(--refit-edge, var(--ph-faint)); }
+.lt-row:last-child { border-bottom: 0; }
+.lt-acts { padding-left: 1.15em; margin-top: 3px; }
+.lt-url { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.lt-code { font-family: 'VT323', monospace; font-size: 14px; color: var(--ph-bright); background: rgba(0,0,0,.35); border: 1px solid var(--ph-dim);
+  padding: 0 5px; overflow-wrap: anywhere; user-select: all; }
+.lt-reveal { margin: 5px 0 3px 1.15em; padding: 6px 8px; border: 1px solid var(--gold); border-left-width: 3px; background: rgba(var(--gold-rgb),.06); display: grid; gap: 4px; }
+.lt-reveal .lt-key { font-size: 16px; color: var(--gold); }
+.lt-form .lb-field { margin-top: 4px; }
+
 @media (prefers-reduced-motion: reduce) {
   .wf-belt .rail::after, .wf-arcs path.chev, .wf-spin { animation: none; }
 }

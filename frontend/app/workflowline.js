@@ -313,15 +313,16 @@
 
   /* ---------- "how it runs": the sentence, as segments the panel paints ----------
      seg = { t:'text', s } | { t:'agent', s, propId } | { t:'miss', s, propId } | { t:'loop', s } | { t:'end', s }
-     triggers = { schedules:[sentence…], channels:[label…] } — ONLY triggers that run the WHOLE line
-     (a runsLine routine at an entry dock, a channel answering as an entry dock). */
+     triggers = { schedules:[sentence…], channels:[label…], events:[sentence…] } — ONLY triggers that run the WHOLE
+     line (a runsLine routine at an entry dock, a channel answering as an entry dock, an armed LINE TRIGGER —
+     'when a file lands in C:\Drops' / 'when its webhook is called', see lineEventTriggers). */
   function howItRuns(flow, opt) {
     const o = opt || {}, nameOf = o.nameOf || (a => String(a || '').toUpperCase()), segs = [];
     const T = s => segs.push({ t: 'text', s });
     const trig = o.triggers || { schedules: [], channels: [] };
-    const starts = [].concat((trig.schedules || []), (trig.channels || []).map(c => 'when a ' + c + ' message arrives'));
+    const starts = [].concat((trig.schedules || []), (trig.channels || []).map(c => 'when a ' + c + ' message arrives'), (trig.events || []));
     if (!flow || !flow.trigger.propId) T('This line has no INBOX yet, so nothing can start it. ');
-    else if (!starts.length) T('Nothing starts it on its own yet (no schedule or channel runs this line); it runs when you test it. ');
+    else if (!starts.length) T('Nothing starts it on its own yet (no schedule, channel, folder or webhook runs this line); it runs when you test it. ');
     else T(cap(joinOr(starts)) + ', ');
     if (!flow || !flow.cols.length) { T('there is no BAY on it yet.'); return segs; }
     const run = flow.cols.filter(c => !c.detached), apart = flow.cols.filter(c => c.detached);
@@ -393,7 +394,7 @@
       blocking.push({ what: 'fix: ' + (f.labelOf ? f.labelOf(e.code) : e.code), propId: e.propId });
     }
     const t = f.triggers || {};
-    if (flow.trigger.propId && !((t.schedules || []).length || (t.channels || []).length)) hints.push({ what: 'no schedule or channel starts it yet', propId: flow.trigger.propId });
+    if (flow.trigger.propId && !((t.schedules || []).length || (t.channels || []).length || (t.events || []).length)) hints.push({ what: 'nothing starts it yet (no schedule, channel, folder or webhook)', propId: flow.trigger.propId });
     return { ready: !blocking.length, blocking, hints };
   }
   function pillText(r) {
@@ -463,6 +464,22 @@
       startsLine: j.runsLine === true && atEntry(j) && j.enabled !== false }));
   }
 
+  /* ---------- LINE TRIGGERS: the folder / webhook events that start THIS line ----------
+     list = GET /api/routing/triggers .triggers. A trigger belongs to ONE line by id (lineId = the compiled line key).
+     It counts as starting the line only when the SERVER says it is enabled and nothing blocks it (blockedBy null —
+     the same preflight a fire runs: E-STOP, armed plan, the line on the floor, a crewed dock, the day cap). */
+  function lineEventTriggers(list, lineId) {
+    const mine = (Array.isArray(list) ? list : []).filter(t => t && t.lineId === lineId);
+    const live = mine.filter(t => t.enabled && !t.blockedBy);
+    const sentences = [];
+    const folders = live.filter(t => t.kind === 'folder').map(t => 'when a file lands in ' + ((t.config && t.config.path) || 'its folder'));
+    const hooks = live.filter(t => t.kind === 'webhook');
+    for (const s of folders) sentences.push(s);
+    if (hooks.length === 1) sentences.push('when its webhook' + (hooks[0].name ? ' "' + hooks[0].name + '"' : '') + ' is called');
+    else if (hooks.length > 1) sentences.push('when one of its ' + hooks.length + ' webhooks is called');
+    return { mine, live, sentences };
+  }
+
   /* ---------- the test input a dock's "Try this step" starts from ----------
      the previous dock's last test OUTPUT (what it would really hand over), or the line's test job for the
      first dock. null = nothing honest to offer yet ("test <prev> first"). */
@@ -490,5 +507,5 @@
   const isLive = s => !!s && !TERMINAL[s.state];
 
   return { ROLE, GENERIC, roleInfo, starters, lineFlow, physicalOrder, neighbours, howItRuns, readiness, pillText,
-    costEstimate, channelFeeds, lineRoutines, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
+    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
 });
