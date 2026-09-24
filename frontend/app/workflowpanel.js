@@ -255,9 +255,11 @@ const WorkflowPanel = (() => {
       nodes.push({ kind: 'col', col: { docks: [{ propId: S.lone, agentId: (prop(S.lone) || {}).agentId || null, role: (prop(S.lone) || {}).role || null, routed: false }], mode: 'single' }, ok: false });
     }
     let html = '';
+    const prev0 = i => nodes[i - 1];
     const machineOf = n => n.kind === 'trigger' || n.kind === 'outbox' ? n.propId : n.kind === 'col' && n.col.docks.length === 1 ? n.col.docks[0].propId : null;
     nodes.forEach((n, i) => {
-      if (i > 0) {
+      if (i > 0 && ((n.kind === 'col' && n.col.detached) || (prev0(i).kind === 'col' && prev0(i).col.detached))) html += '<div class="wf-belt gap"><span class="carry">not connected</span></div>';
+      else if (i > 0) {
         const prev = nodes[i - 1], a = machineOf(prev), b = machineOf(n);
         const carry = prev.kind === 'trigger' ? 'the job' : prev.kind === 'col' && prev.col.docks.length === 1 ? ((prop(prev.col.docks[0].propId) || {}).hands || '…') : prev.kind === 'gate' ? (prev.gate.kind === 'loop' ? 'on DONE' : 'as one') : '…';
         const canPlus = !!(a && b && S.lineKey);
@@ -312,7 +314,7 @@ const WorkflowPanel = (() => {
         + (t ? '<span class="badge">✓ TESTED</span>' : '') + '</button>';
     }).join('');
     if (col.docks.length === 1) return inner;
-    return '<div class="wf-colgroup ' + col.mode + '"><span class="wf-colmode">' + (col.mode === 'all' ? 'ALL RUN' : col.mode === 'turns' ? 'TAKE TURNS' : 'ONE BY CONTENT') + '</span>' + inner + '</div>';
+    return '<div class="wf-colgroup ' + col.mode + '"><span class="wf-colmode">' + (col.detached ? 'NOT CONNECTED' : col.mode === 'all' ? 'ALL RUN' : col.mode === 'turns' ? 'TAKE TURNS' : 'ONE BY CONTENT') + '</span>' + inner + '</div>';
   }
   function drawArcs(strip, f) {
     if (!f) return;
@@ -398,7 +400,8 @@ const WorkflowPanel = (() => {
     const d = f && f.docks[p.id];
     let gets = 'work addressed to ' + (p.agentId ? nameOf(p.agentId) : 'its agent') + ' (not on a line)';
     if (nb) {
-      if (nb.first || !nb.prev.length) gets = f.trigger.propId ? 'the job from the INBOX' : 'nothing — no INBOX feeds this line';
+      if (nb.detached && !nb.prev.length) gets = 'nothing — no INBOX reaches this step';
+      else if (nb.first || !nb.prev.length) gets = f.trigger.propId ? 'the job from the INBOX' : 'nothing — no INBOX feeds this line';
       else gets = nb.prev.map(pid => { const pp = prop(pid) || {}; return (pp.hands ? pp.hands + ' from ' : 'the output of ') + dockLabel(f, pid); }).join(' or ');
       if (nb.backFrom && nb.backFrom.length) gets += ', or the draft sent back by the LOOP gate';
     }
