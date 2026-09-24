@@ -13,8 +13,8 @@
   let routineAgentId = 'agent'; // selected roster agent for new scheduled routines (window-local state)
 
   // the browser's IANA zone, or undefined when the runtime won't resolve one (then the host default
-  // applies server-side, exactly as before). Sent with every create / preview / reschedule so all three
-  // agree about which 9:00 they mean.
+  // applies server-side, exactly as before). Sent with create and its preview; rescheduling uses the
+  // routine's saved zone so opening it on another device cannot move its wall-clock time.
   function deviceTz() {
     try { return (Intl.DateTimeFormat().resolvedOptions().timeZone) || undefined; } catch (_) { return undefined; }
   }
@@ -143,7 +143,7 @@
     // schedulerArmed mirrors GET /api/cron `.enabled` (set in refresh) so the create-confirm can tell the honest
     // armed/disarmed story via AutoJobs.armStateLine. #rt-out lives in the ACTIVE pane (sibling of #rt-list); when a
     // run fires we splice it in right AFTER its row, and after every list re-render positionOut() re-slots it there.
-    let lastRunId = null, schedulerArmed = false, listedJobs = [];
+    let lastRunId = null, schedulerArmed = false, listedJobs = [], editSaving = false;
     function showRunOut(rowEl, id) {
       lastRunId = id;
       const nmEl = rowEl && rowEl.querySelector('.mc-top b');
@@ -289,9 +289,11 @@
       // at 9:00 AM", and the audit string that actually fires the job is one hover away, never hidden.
       const sched = j.scheduleDisplay || '';
       const schedHuman = human(sched);
-      return '<div class="mc-row" data-id="' + esc(j.id) + '" data-on="' + (on ? '1' : '0') + '" data-sched="' + esc(sched) + '">' +
+      const schedTz = j.schedule && j.schedule.kind === 'cron' ? String(j.schedule.tz || '') : '';
+      const tzLabel = schedTz ? ' [' + schedTz + ']' : '';
+      return '<div class="mc-row" data-id="' + esc(j.id) + '" data-on="' + (on ? '1' : '0') + '" data-sched="' + esc(sched) + '" data-tz="' + esc(schedTz) + '">' +
         '<div class="mc-top"><b>' + esc(j.name || '(unnamed)') + '</b> <span class="dim"' +
-          (schedHuman !== sched ? ' title="' + esc(sched) + '"' : '') + '>' + esc(schedHuman) + '</span> ' + stateBadge + termBadge + runtimeBadge + fromRecipe + '</div>' +
+          (schedHuman !== sched ? ' title="' + esc(sched) + '"' : '') + '>' + esc(schedHuman + tzLabel) + '</span> ' + stateBadge + termBadge + runtimeBadge + fromRecipe + '</div>' +
         '<div class="mc-url dim">' + runsLine(j) + ' · next ' + next + ' · last ' + lastResult(j) + spendLine(j) + '</div>' +
         (j.lastError ? '<div class="mc-detail">' + esc(j.lastError === 'schedule-unfireable' ? 'schedule can never fire — reschedule this routine' : j.lastError) + '</div>' : '') +
         failureStreakLine(j) +
@@ -430,7 +432,7 @@
     /* live schedule preview (debounced) — the honest "next fires", straight from the server math. Bound
        as a function so the RESCHEDULE editor previews through the IDENTICAL path: two implementations of
        "when does this run" would eventually disagree, and this panel's entire job is to be right about it. */
-    function wirePreview(inp, pvEl) {
+    function wirePreview(inp, pvEl, scheduleTz) {
       let pvTimer = null, previewRevision = 0, previewAbort = null;
       inp.addEventListener('input', () => {
       clearTimeout(pvTimer);
@@ -446,7 +448,7 @@
         try {
           // tz honesty in the PREVIEW too: the create POST sends the device zone, so a preview computed
           // without it would quote a different 9:00 than the routine will actually keep.
-          const response = await post('/api/cron/preview', { schedule: v, tz: deviceTz() }, controller.signal);
+          const response = await post('/api/cron/preview', { schedule: v, tz: scheduleTz === undefined ? deviceTz() : scheduleTz }, controller.signal);
           const r = await response.json();
           if (!current()) return;
           if (response.ok && r && r.ok === true) {
@@ -500,7 +502,7 @@
     }));
 
     /* RESCHEDULE — the same WHEN picker, inline under the row, opened on the routine's CURRENT schedule.
-       It patches only `schedule` (plus the device tz, which the update route folds onto schedule.tz), so
+       It patches only `schedule`; the update route retains the saved zone, so
        the routine keeps its id, its history and its grants — moving a routine an hour used to mean
        deleting it and re-creating it from scratch. */
     function closeResched() {
@@ -528,28 +530,41 @@
       const nameEl = host.querySelector('[data-edit-name]');
       const promptEl = host.querySelector('[data-edit-prompt]');
       const errorEl = host.querySelector('[data-edit-error]');
+      const cancelBtn = host.querySelector('[data-edit="cancel"]');
       nameEl.value = job.name || '';
       promptEl.value = job.prompt || '';
       nameEl.focus();
       host.addEventListener('click', async ev2 => {
         const action = ev2.target.closest('button[data-edit]'); if (!action) return;
+        if (editSaving) return;
         if (action.dataset.edit === 'cancel') { sfx('click'); closeEdit(); return; }
         const name = nameEl.value.trim(), prompt = promptEl.value.trim();
         const error = !name ? 'give this routine a name' : (!prompt && !job.script ? 'enter instructions for this routine' : '');
         if (error) { errorEl.textContent = error; errorEl.hidden = false; sfx('bad'); return; }
+        // Only send changed fields. An agent may have edited the other field since this form opened;
+        // posting both old values would silently undo that newer edit.
+        const patch = {};
+        if (name !== (job.name || '')) patch.name = name;
+        if (prompt !== (job.prompt || '')) patch.prompt = prompt;
+        if (!Object.keys(patch).length) { closeEdit(); return; }
+        editSaving = true;
         action.disabled = true; action.textContent = '… saving';
+        cancelBtn.disabled = true;
         errorEl.hidden = true;
         try {
-          const response = await post('/api/cron/update', { id, patch: { name, prompt } });
+          const response = await post('/api/cron/update', { id, patch });
           const result = await response.json();
-          if (!response.ok || !result || !result.ok || !result.job || result.job.name !== name || result.job.prompt !== prompt) {
+          if (!response.ok || !result || !result.ok || !result.job || Object.keys(patch).some(k => result.job[k] !== patch[k])) {
             throw new Error((result && result.error) || 'could not verify the saved changes');
           }
           notify('routine updated', 'good'); sfx('click'); closeEdit(); refresh();
         } catch (e) {
           errorEl.textContent = (e && e.message) || 'could not reach the station — changes were not saved';
           errorEl.hidden = false; sfx('bad');
+        } finally {
+          editSaving = false;
           action.disabled = false; action.textContent = '✓ SAVE CHANGES';
+          cancelBtn.disabled = false;
         }
       });
     }
@@ -564,8 +579,11 @@
         '<button class="bb xs" data-resched="cancel">CANCEL</button></div>';
       rowEl.insertAdjacentElement('afterend', host);
       btn.classList.add('on');
+      const savedTz = rowEl.dataset.tz || '';
+      const zoneLabel = host.querySelector('.sp-tz');
+      if (zoneLabel) zoneLabel.textContent = 'repeating: ' + (savedTz || 'station time') + ' · once: your time';
       const inp = host.querySelector('[data-sp-input]'), pv = host.querySelector('.rt-resched-pv');
-      if (inp && pv) wirePreview(inp, pv);
+      if (inp && pv) wirePreview(inp, pv, savedTz);
       const p = (typeof SchedPicker !== 'undefined') ? SchedPicker.mount(host, {}) : null;
       if (p) p.set(rowEl.dataset.sched || '');
       else if (inp) { inp.value = String(rowEl.dataset.sched || '').replace(/^cron /, ''); inp.dispatchEvent(new Event('input', { bubbles: true })); }
@@ -578,7 +596,7 @@
         // A RESCHEDULE CLAIM MUST BE PROVEN: fetch resolves on 4xx, so a rejected schedule would otherwise
         // toast "rescheduled" over a routine still firing on its old time.
         try {
-          const r = await (await post('/api/cron/update', { id, patch: { schedule: value, tz: deviceTz() } })).json();
+          const r = await (await post('/api/cron/update', { id, patch: { schedule: value } })).json();
           if (r && r.ok) { notify('rescheduled — ' + human((r.job && r.job.scheduleDisplay) || value), 'good'); sfx('click'); closeResched(); }
           else { notify((r && r.error) || 'could not reschedule — it still runs on its old schedule', 'warn'); sfx('bad'); b.disabled = false; b.textContent = '✓ SAVE SCHEDULE'; return; }
         } catch (_) {
@@ -592,6 +610,7 @@
     // row actions: run-now (stream + show the reply), toggle enable/disable, delete (two-step arm/confirm).
     listEl.addEventListener('click', async ev => {
       const btn = ev.target.closest('button[data-act]'); if (!btn) return;
+      if (editSaving) return;
       const rowEl = ev.target.closest('.mc-row'); const id = rowEl && rowEl.dataset.id; if (!id) return;
       const act = btn.dataset.act;
       if (act === 'edit') {
