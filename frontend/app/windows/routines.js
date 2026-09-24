@@ -143,7 +143,7 @@
     // schedulerArmed mirrors GET /api/cron `.enabled` (set in refresh) so the create-confirm can tell the honest
     // armed/disarmed story via AutoJobs.armStateLine. #rt-out lives in the ACTIVE pane (sibling of #rt-list); when a
     // run fires we splice it in right AFTER its row, and after every list re-render positionOut() re-slots it there.
-    let lastRunId = null, schedulerArmed = false, listedJobs = [];
+    let lastRunId = null, schedulerArmed = false, listedJobs = [], editSaving = false;
     function showRunOut(rowEl, id) {
       lastRunId = id;
       const nmEl = rowEl && rowEl.querySelector('.mc-top b');
@@ -528,28 +528,41 @@
       const nameEl = host.querySelector('[data-edit-name]');
       const promptEl = host.querySelector('[data-edit-prompt]');
       const errorEl = host.querySelector('[data-edit-error]');
+      const cancelBtn = host.querySelector('[data-edit="cancel"]');
       nameEl.value = job.name || '';
       promptEl.value = job.prompt || '';
       nameEl.focus();
       host.addEventListener('click', async ev2 => {
         const action = ev2.target.closest('button[data-edit]'); if (!action) return;
+        if (editSaving) return;
         if (action.dataset.edit === 'cancel') { sfx('click'); closeEdit(); return; }
         const name = nameEl.value.trim(), prompt = promptEl.value.trim();
         const error = !name ? 'give this routine a name' : (!prompt && !job.script ? 'enter instructions for this routine' : '');
         if (error) { errorEl.textContent = error; errorEl.hidden = false; sfx('bad'); return; }
+        // Only send changed fields. An agent may have edited the other field since this form opened;
+        // posting both old values would silently undo that newer edit.
+        const patch = {};
+        if (name !== (job.name || '')) patch.name = name;
+        if (prompt !== (job.prompt || '')) patch.prompt = prompt;
+        if (!Object.keys(patch).length) { closeEdit(); return; }
+        editSaving = true;
         action.disabled = true; action.textContent = '… saving';
+        cancelBtn.disabled = true;
         errorEl.hidden = true;
         try {
-          const response = await post('/api/cron/update', { id, patch: { name, prompt } });
+          const response = await post('/api/cron/update', { id, patch });
           const result = await response.json();
-          if (!response.ok || !result || !result.ok || !result.job || result.job.name !== name || result.job.prompt !== prompt) {
+          if (!response.ok || !result || !result.ok || !result.job || Object.keys(patch).some(k => result.job[k] !== patch[k])) {
             throw new Error((result && result.error) || 'could not verify the saved changes');
           }
           notify('routine updated', 'good'); sfx('click'); closeEdit(); refresh();
         } catch (e) {
           errorEl.textContent = (e && e.message) || 'could not reach the station — changes were not saved';
           errorEl.hidden = false; sfx('bad');
+        } finally {
+          editSaving = false;
           action.disabled = false; action.textContent = '✓ SAVE CHANGES';
+          cancelBtn.disabled = false;
         }
       });
     }
@@ -592,6 +605,7 @@
     // row actions: run-now (stream + show the reply), toggle enable/disable, delete (two-step arm/confirm).
     listEl.addEventListener('click', async ev => {
       const btn = ev.target.closest('button[data-act]'); if (!btn) return;
+      if (editSaving) return;
       const rowEl = ev.target.closest('.mc-row'); const id = rowEl && rowEl.dataset.id; if (!id) return;
       const act = btn.dataset.act;
       if (act === 'edit') {
