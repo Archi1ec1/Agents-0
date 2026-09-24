@@ -481,7 +481,7 @@
         // in index.js) — say so, or the model promises the Commander a routine that will now be locked out.
         const cleared = updated && Array.isArray(updated._grantsCleared) ? updated._grantsCleared : [];
         const out = { ok: true, action: action, changed: touched, job: packJob(updated || job) };
-        if (cleared.length) out.unattendedGrantsCleared = { grants: cleared, note: 'the new instruction was not approved by the Commander, so its unattended ' + cleared.join('/') + ' grant was removed; the Commander can re-grant it in ROUTINES' };
+        if (cleared.length) out.standingGrantsCleared = { grants: cleared, note: 'the new instruction was not approved by the Commander, so its unattended ' + cleared.join('/') + ' grant was removed; the Commander can re-grant it in ROUTINES' };
         return {
           content: JSON.stringify(out),
           summary: 'updated routine "' + job.name + '" (' + touched.join(', ') + ')' + (cleared.length ? ' — unattended grants cleared' : '')
