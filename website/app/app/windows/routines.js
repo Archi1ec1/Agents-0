@@ -143,7 +143,7 @@
     // schedulerArmed mirrors GET /api/cron `.enabled` (set in refresh) so the create-confirm can tell the honest
     // armed/disarmed story via AutoJobs.armStateLine. #rt-out lives in the ACTIVE pane (sibling of #rt-list); when a
     // run fires we splice it in right AFTER its row, and after every list re-render positionOut() re-slots it there.
-    let lastRunId = null, schedulerArmed = false;
+    let lastRunId = null, schedulerArmed = false, listedJobs = [];
     function showRunOut(rowEl, id) {
       lastRunId = id;
       const nmEl = rowEl && rowEl.querySelector('.mc-top b');
@@ -300,6 +300,7 @@
           '<button class="bb xs" data-act="run"' + (running ? ' disabled title="already running — one run per routine"' : '') + '>▶ RUN NOW</button>' +
           // RESCHEDULE — the same picker, opened on this routine's current schedule. Before this you could
           // only DELETE and re-create a routine to move it an hour, which also threw away its run history.
+          '<button class="bb xs" data-act="edit">✎ EDIT TASK</button>' +
           '<button class="bb xs" data-act="resched">◷ RESCHEDULE</button>' +
           // no toggle on a settled one-shot: ENABLE can't re-arm it (see completedOnce above)
           (completedOnce ? '' : '<button class="bb xs" data-act="toggle">' + (on ? '⏸ DISABLE' : '▶ ENABLE') + '</button>') +
@@ -316,6 +317,7 @@
         const j = typeof QuerySpine !== 'undefined' && QuerySpine.refresh
           ? (await QuerySpine.refresh('cron')).data : await Harness.api.get('/api/cron');
         const jobs = (j && j.jobs) || [];
+        listedJobs = jobs;
         // the live cronArmed — feeds the create-confirm's honest arm-state line. A HALTED scheduler is not armed no
         // matter what the intent flag says, or the create-confirm promises a fire that an E-STOP is holding down.
         schedulerArmed = !!(j && j.enabled && !j.halted);
@@ -404,6 +406,7 @@
         positionOut();   // re-slot a live RUN NOW result under its row after the list re-renders (P0 #11)
       } catch (_) {
         schedulerArmed = false;
+        listedJobs = [];
         const createState = body.querySelector('#rt-create-state');
         if (createState) createState.textContent = 'Scheduling status could not be checked. Reconnect to the station before relying on an automatic run.';
         listEl.innerHTML = '<div class="mc-detail">sidecar offline — start it to manage routines.</div>';
@@ -504,6 +507,52 @@
       listEl.querySelectorAll('.rt-resched').forEach(el => el.remove());
       listEl.querySelectorAll('button[data-act="resched"]').forEach(b => b.classList.remove('on'));
     }
+
+    function closeEdit() {
+      listEl.querySelectorAll('.rt-edit').forEach(el => el.remove());
+      listEl.querySelectorAll('button[data-act="edit"]').forEach(b => b.classList.remove('on'));
+    }
+    function openEdit(rowEl, id, btn) {
+      const job = listedJobs.find(j => j.id === id);
+      if (!job) { notify('could not load this routine — refresh and try again', 'warn'); return; }
+      const host = document.createElement('div');
+      host.className = 'rt-edit mc-form';
+      host.innerHTML =
+        '<label class="sn-menu-field">Name<input class="key-input" data-edit-name maxlength="80" autocomplete="off"></label>' +
+        '<label class="sn-menu-field">What should it do?<textarea class="key-input" data-edit-prompt rows="5" style="resize:vertical"></textarea></label>' +
+        '<div class="mc-detail" data-edit-error role="alert" hidden></div>' +
+        '<div class="mc-acts"><button class="bb xs" data-edit="save">✓ SAVE CHANGES</button>' +
+        '<button class="bb xs" data-edit="cancel">CANCEL</button></div>';
+      rowEl.insertAdjacentElement('afterend', host);
+      btn.classList.add('on');
+      const nameEl = host.querySelector('[data-edit-name]');
+      const promptEl = host.querySelector('[data-edit-prompt]');
+      const errorEl = host.querySelector('[data-edit-error]');
+      nameEl.value = job.name || '';
+      promptEl.value = job.prompt || '';
+      nameEl.focus();
+      host.addEventListener('click', async ev2 => {
+        const action = ev2.target.closest('button[data-edit]'); if (!action) return;
+        if (action.dataset.edit === 'cancel') { sfx('click'); closeEdit(); return; }
+        const name = nameEl.value.trim(), prompt = promptEl.value.trim();
+        const error = !name ? 'give this routine a name' : (!prompt && !job.script ? 'enter instructions for this routine' : '');
+        if (error) { errorEl.textContent = error; errorEl.hidden = false; sfx('bad'); return; }
+        action.disabled = true; action.textContent = '… saving';
+        errorEl.hidden = true;
+        try {
+          const response = await post('/api/cron/update', { id, patch: { name, prompt } });
+          const result = await response.json();
+          if (!response.ok || !result || !result.ok || !result.job || result.job.name !== name || result.job.prompt !== prompt) {
+            throw new Error((result && result.error) || 'could not verify the saved changes');
+          }
+          notify('routine updated', 'good'); sfx('click'); closeEdit(); refresh();
+        } catch (e) {
+          errorEl.textContent = (e && e.message) || 'could not reach the station — changes were not saved';
+          errorEl.hidden = false; sfx('bad');
+          action.disabled = false; action.textContent = '✓ SAVE CHANGES';
+        }
+      });
+    }
     function openResched(rowEl, id, btn) {
       const host = document.createElement('div');
       host.className = 'rt-resched';
@@ -545,10 +594,17 @@
       const btn = ev.target.closest('button[data-act]'); if (!btn) return;
       const rowEl = ev.target.closest('.mc-row'); const id = rowEl && rowEl.dataset.id; if (!id) return;
       const act = btn.dataset.act;
+      if (act === 'edit') {
+        sfx('click');
+        const wasOpen = btn.classList.contains('on');
+        closeEdit(); closeResched();
+        if (!wasOpen) openEdit(rowEl, id, btn);
+        return;
+      }
       if (act === 'resched') {
         sfx('click');
         const wasOpen = btn.classList.contains('on');
-        closeResched();                       // one editor at a time; the button toggles its own
+        closeEdit(); closeResched();          // one editor at a time; the button toggles its own
         if (!wasOpen) openResched(rowEl, id, btn);
         return;
       }
