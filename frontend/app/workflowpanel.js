@@ -27,6 +27,7 @@ const WorkflowPanel = (() => {
     seam: null, trying: {}, tryErr: {}, session: null, sessionErr: null, pollTimer: 0, pollFor: null,
     hop: null, handoff: null, handoffFor: null, busy: false,
     cron: null, chans: null, trgOpen: false, trgDock: null, drafts: {}, testJob: {},
+    projects: null, projectMsg: null,   // GET /api/projects answer (trusted folders for the INBOX working-folder pick)
   };
   const WL = () => (typeof WorkflowLine !== 'undefined' ? WorkflowLine : null);
   const esc = s => (H && H.esc ? H.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
@@ -89,6 +90,10 @@ const WorkflowPanel = (() => {
   function refreshServerFacts() {
     api('/api/cron').then(r => { if (r.j && Array.isArray(r.j.jobs)) S.cron = r.j; paint(); }).catch(() => {});
     api('/api/channels/status').then(r => { if (r.j && typeof r.j === 'object' && r.status === 200) S.chans = r.j; paint(); }).catch(() => {});
+    api('/api/projects').then(r => {
+      S.projects = (r.status === 200 && r.j && Array.isArray(r.j.projects)) ? { rows: r.j.projects.filter(x => x && x.blessed === true) } : { err: 'Could not load trusted projects.' };
+      paint();
+    }).catch(() => { S.projects = { err: 'Could not load trusted projects.' }; paint(); });
     H.pollFeed().then(() => paint(), () => {});   // the floor-wide FEED truth, re-asked now (never a 60 s-stale NO FEED)
   }
   function probeSeam() {
@@ -646,6 +651,7 @@ const WorkflowPanel = (() => {
       + '<h4>Channels</h4><div class="trg-list" id="wf-chans">' + chanRows + '</div>'
       + '<div class="wf-row"><button type="button" class="bb sm" id="trg-chan">CONNECT A CHANNEL ▸</button></div>'
       + '<p class="wf-help dim" id="trg-feed">' + esc(feedTxt) + '</p></section>'
+      + projectSectionHtml(p)
       + '<section class="wf-sec"><h3>Test job</h3><p class="wf-help">What a test sends in, as if it arrived at the INBOX. Used by Try this step and the step test. Not saved to the line.</p>'
       + '<textarea id="wf-job" class="refit-input refit-brief" rows="3" maxlength="4000" placeholder="e.g. Find this week’s most useful research on sleep and memory.">' + esc(S.testJob[S.lineKey] || (routines.find(r => r.startsLine) || {}).prompt || '') + '</textarea>'
       + (docks[0] ? '<div class="wf-row"><button type="button" class="bb sm" data-go="' + esc(f.order[0]) + '">Set up the first step ▸</button></div>' : '') + '</section>'
@@ -681,9 +687,51 @@ const WorkflowPanel = (() => {
       n.addEventListener('blur', saveLimits);
       n.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveLimits(); } if (e.key === 'Escape') { e.stopPropagation(); n.blur(); } });
     }
+    wireProjectPick(p);
     wireScheduleForm(p, docks, dockHint);
     $('#trg-chan').onclick = () => { H.sfx('click'); saveOpenFields(); H.openTerm('messaging'); };
     $('#trg-auto').onclick = () => { H.sfx('click'); saveOpenFields(); H.openTerm('routines'); };
+  }
+  /* WORKING FOLDER (#25): the trusted project every stage of this line runs in. The value shown is the INBOX's own
+     saved field (setPropProject writes every connected INBOX in one step, and the compiler copies it onto the plan
+     line the sidecar routes by — the compiled line only answers if the prop is gone). Only folders the server reports as still trusted are offered; a saved folder that lost its trust
+     stays visible, disabled, and says so — the sidecar refuses to run a stage there anyway. */
+  function projectOf(p) {
+    const live = prop(p.id);
+    if (live) return live.projectRoot || '';
+    const plan = H.plan(), line = plan && (plan.lines || []).find(l => (l.intakes || []).indexOf(p.id) >= 0);
+    return (line && line.projectRoot) || '';
+  }
+  function projectSectionHtml(p) {
+    const cur = projectOf(p), P = S.projects;
+    let opts = '', note = 'All workflow stages use this folder. Add trusted folders in Projects.', dis = ' disabled';
+    if (!P) opts = '<option>Loading projects…</option>';
+    else if (P.err) { opts = '<option>Unavailable</option>'; note = P.err; }
+    else {
+      dis = '';
+      opts = '<option value="">Agent workspace (default)</option>'
+        + P.rows.map(r => '<option value="' + esc(r.root) + '"' + (r.root === cur ? ' selected' : '') + '>' + esc(r.displayPath || r.root) + '</option>').join('');
+      if (cur && !P.rows.some(r => r.root === cur)) {
+        opts += '<option value="' + esc(cur) + '" disabled selected>' + esc(cur) + ' (unavailable)</option>';
+        note = 'This project is no longer trusted. Restore access in Projects or choose another folder.';
+      }
+    }
+    if (S.projectMsg && S.projectMsg.id === p.id) note = S.projectMsg.t;
+    return '<section class="wf-sec"><h3>Working folder</h3><label class="trg-form-k" for="wf-project">Trusted project</label>'
+      + '<select id="wf-project" class="refit-input"' + dis + '>' + opts + '</select>'
+      + '<p class="wf-help" id="wf-project-note">' + esc(note) + '</p></section>';
+  }
+  function wireProjectPick(p) {
+    const pick = $('#wf-project');
+    if (!pick || pick.disabled) return;
+    pick.onchange = () => {
+      const st = H.station();
+      const res = typeof st.setPropProject === 'function' ? st.setPropProject(p.id, pick.value) : { ok: false, message: 'this station model cannot save a project' };
+      S.projectMsg = { id: p.id, t: res && res.ok ? 'Working folder saved for all workflow stages. Existing tool permissions still apply.' : ((res && (res.msg || res.message)) || 'Could not save the project.') };
+      H.sfx(res && res.ok ? 'click' : 'bad');
+      H.layoutChanged();
+      paint();
+    };
   }
   /* the schedule form: the SAME SchedPicker + /api/cron/preview + the SAME create body the AUTOMATION
      window posts, plus runsLine:true — minted here, under FOR THIS LINE, it is the Commander asking for the

@@ -5393,7 +5393,7 @@ const cronDriver = makeCronDriver({
           key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
           baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
           system: cronSystemFor(h.agentId),
-          messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true,
+          messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : null, isTask: true,
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId,
           surface: 'autonomous', trigger: 'schedule', reflect: true,
           station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
@@ -12782,7 +12782,7 @@ async function handleCronRun(req, res) {
       postconditions: (job.meta && job.meta.postconditions != null) ? job.meta.postconditions : undefined,
       preloadSkills: Array.isArray(job.skills) ? job.skills.slice() : [], requiredPreloads: true, cronScript: job.script || null,
       scriptTimeoutMs: job.scriptTimeoutMs,
-      noAgent: job.noAgent === true, workdir: job.workdir || null,
+      noAgent: job.noAgent === true, runsLine: job.runsLine === true, dockId: job.dockId || undefined, workdir: job.workdir || null,
       enabledToolsets: Array.isArray(job.enabledToolsets) ? job.enabledToolsets.slice() : null,
       initialTaint: !!(job.contextFrom && job.contextFrom.length)
     });
@@ -12844,7 +12844,7 @@ async function handleCronRun(req, res) {
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
                 baseUrl: hopConfig.baseUrl || '', reasoningEffort: hopConfig.reasoningEffort,
                 system: cronSystemFor(h.agentId),
-                messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true,
+                messages: [{ role: 'user', content: h.text }], agentId: h.agentId, lineId: job.runsLine === true ? router.lineOfAgent(job.agentId, job.dockId ? router.dockOf(job.agentId, job.dockId) : undefined) : null, isTask: true,
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId,
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
                 station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
@@ -15633,6 +15633,20 @@ async function runOnceCore(o) {
   if (updatePreparation.isFrozen()) {
     throw Object.assign(new Error('StarNet is frozen at a verified pre-update recovery point.'), { code: 'UPDATE_MUTATIONS_FROZEN' });
   }
+  // Only host-routed workflow runs carry this origin; /api/run never accepts it.
+  // (multi-bay) the entry routine names its dock: an agent crewing two lines answers for the bay it fires at
+  const workflowLine = o.runsLine === true ? router.lineOfAgent(o.agentId, o.dockId ? router.dockOf(o.agentId, o.dockId) : undefined) : o.lineId;
+  if (workflowLine) {
+    const plan = router.getPlan();
+    const line = plan && (plan.lines || []).find(l => l.lineId === workflowLine);
+    // line.agents lists an agent under its FIRST line only, so a multi-bay agent also counts if any of its docks sits on this line
+    const crews = !!line && ((line.agents || []).includes(o.agentId) || router.docksOf(String(o.agentId)).some(d => router.lineOfDock(d) === workflowLine));
+    if (!crews) throw new Error('The workflow changed before this stage could run.');
+    if (line.projectRoot) {
+      const root = cronCanonicalWorkdir(line.projectRoot);
+      o = { ...o, workdir: root, projectRoot: root };
+    }
+  }
   const { key, system: rawSystem, messages = [], agentId = 'agent', signal, runId } = o;
   const runStartedAt = Date.now();
   let system = rawSystem;
@@ -17625,6 +17639,10 @@ async function runOnceCore(o) {
       + 'summon an agent, actually DO it with team.summon — don\'t just describe it or claim you cannot. '
       + 'For scheduled work, create StarNet routines with routine_create; if the work clearly belongs to a specialist '
       + '(research/news/latest => researcher/scout/analyst), target that agentId, or summon the specialist first.';
+    teamNote += '\n• CREW CONFIGURATION: use team.config to read Dossier documents, then team.configure to edit the requested agent by exact ID. '
+      + 'A notebook entry does not update another agent\'s Purpose or standing orders. Report a change only after the tool confirms it was saved. '
+      + 'Dossier Purpose and standing orders describe the ongoing role; Bay briefs add the workflow-stage job. '
+      + 'Bay assignment, briefs, and assembly-line layout are configured in the station UI; do not claim to change them with a Dossier or notebook edit.';
     /* SESSIONS (2026-07-30): the lead can also RUN the station's sessions — and the peek rule exists because
        of a live failure: asked "what did the researcher do?", a lead with no way to read the other session
        GUESSED, and told the Commander their agent had done nothing when the work was sitting right there.
