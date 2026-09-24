@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "2626fe0045395de4936a1f19d276e5ee0ecc53bd",
+    "sourceCommit": "89c37172fff5438151091ee53f80d57c674ba7bb",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -313,8 +313,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 392197,
-        "sha256": "db6009d2ec8d5bc97e885b4743dde0e0a9e5525ad59ce5d35e1305e87370091f"
+        "bytes": 408888,
+        "sha256": "d967658c0561d978c7e117b9877dc463ae73af54c58bece3f1c6e6842f52b105"
       },
       {
         "path": "frontend/app/channels.js",
@@ -783,8 +783,8 @@
       },
       {
         "path": "frontend/app/propsprites.js",
-        "bytes": 801395,
-        "sha256": "52c48c445c9e49ce46619a0411359eadda880a4980337500bf0a4f26f2df39ed"
+        "bytes": 801784,
+        "sha256": "dd73cc3157eb68dc583974b2b17ca067c5cd27f1c8ff2744bf02fbfb5a95bee1"
       },
       {
         "path": "frontend/app/prospect.js",
@@ -1138,8 +1138,8 @@
       },
       {
         "path": "frontend/app/tutorial.js",
-        "bytes": 97608,
-        "sha256": "d264e2a6178d65b080b51c1b2f6c4aa18b0efff2c8cbea9be5b52fa482987a5f"
+        "bytes": 99558,
+        "sha256": "27fd10be68479c1d986f332c75229f4e5c2025363465b9c29122cb202342dc1a"
       },
       {
         "path": "frontend/app/understanding.js",
@@ -1318,8 +1318,8 @@
       },
       {
         "path": "frontend/app/worldmodel.js",
-        "bytes": 177857,
-        "sha256": "df01468e428d58a96dcaf6cae42349da034199eb21d787f5691cfc2f310241b7"
+        "bytes": 183511,
+        "sha256": "755f4f878f84d7ec26a15436986577d34a9d8df733704fe83cdf7e222f5669a7"
       },
       {
         "path": "frontend/app/worldrenderer.js",
@@ -1378,8 +1378,8 @@
       },
       {
         "path": "frontend/css/app.css",
-        "bytes": 401106,
-        "sha256": "7e2906bb72674b985b6bc21e5bdcaa4f47a1e2bbc3222dfed81be10ac624335f"
+        "bytes": 402619,
+        "sha256": "c596923a374f8851178ddf73474bf9790da75deec8c1ba132fb7fef3db9a2dc4"
       },
       {
         "path": "frontend/css/asciifx.css",
@@ -1478,8 +1478,8 @@
       },
       {
         "path": "frontend/css/refit-polish.css",
-        "bytes": 28346,
-        "sha256": "2283d7a0747cd36600b0918731af2c5949e93fae433091dfbcca29205e8106b8"
+        "bytes": 28560,
+        "sha256": "dd3ddee4e0cc3799a966aa05a2fbc1430bd7e39370f27b660fd223828c81749f"
       },
       {
         "path": "frontend/css/refit.css",
