@@ -9390,7 +9390,7 @@ const World = (() => {
     const esc = s => U.esc(s == null ? '' : s);   // one complete impl (escapes & < > " ' — quote-safe if this ever moves into an attr)
     if (i > 0) {
       const nm = esc(text.slice(0, i)), rest = esc(text.slice(i + sep.length));
-      const style = suit ? ' style="color:' + suit + '"' : '';
+      const style = suit ? ' style="color:' + esc(suit) + '"' : '';
       html = '<b class="ct-name"' + style + '>' + nm + '</b><span class="ct-sep"> ▸ </span>' + rest;
     } else {
       html = esc(text);

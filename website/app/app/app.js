@@ -17,6 +17,10 @@ const App = (() => {
   let resumingSaved = null;   // a save awaiting a re-entered key
   const ORCH_COLOR = '#ffd34a';   // the Orchestrator's suit tint — gold marks the lead (same gold as SUITS' last entry). No color picker any more (skins are the visual identity); summoned crew cycle SUITS.
   let pickedColor = ORCH_COLOR;
+  // A saved/imported suit tint is DATA that lands in style attributes (crew dossier, roster, ticker). Only a hex
+  // colour survives the load; anything else (a crafted backup carrying markup) falls back to the crew palette.
+  // 2026-09-23 security audit — the sinks escape too, this keeps the roster itself honest.
+  function suitColor(v, i) { return /^#[0-9a-f]{3,8}$/i.test(String(v || '')) ? String(v) : SUITS[(i || 0) % SUITS.length]; }
   let pickedSkin = (typeof DATA !== 'undefined' && DATA.DEFAULT_SKIN) || 'bear';   // the sprite set the new agent will wear
   let pickedPersona = (typeof Personas !== 'undefined') ? Personas.DEFAULT_ID : 'professional';
   let pickedTraits = {};        // the VOICE & MANNER fine-tune dials (warmth/humor/formality/length + emoji/blunt) — only set keys contribute prompt text
@@ -875,7 +879,7 @@ const App = (() => {
       if (!s || !s.id || s.id === 'agent' || agents.has(s.id)) continue;   // hero already registered; skip dups (so the 'specialist' default below is always correct here — the orchestrator never routes through this path)
       // An empty model is the durable "Follow station default" choice, not a missing pin
       // to replace with a snapshot of the hero. Preserve it across reload/provider changes.
-      const a = { id: s.id, name: s.name, color: s.color, skin: s.skin || DATA.DEFAULT_SKIN, model: s.model || null,
+      const a = { id: s.id, name: s.name, color: suitColor(s.color, agents.size), skin: s.skin || DATA.DEFAULT_SKIN, model: s.model || null,
                   provider: s.model ? (s.provider || (agent && agent.provider) || null) : null,
                   reasoningEffort: s.model ? (s.reasoningEffort || (agent && agent.reasoningEffort) || null) : null,
                   personaId: (typeof Personas !== 'undefined' ? Personas.resolve(s.personaId) : s.personaId), role: s.role || 'specialist', voiceTraits: s.voiceTraits || null, customVoice: s.customVoice || '',
