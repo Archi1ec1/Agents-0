@@ -743,6 +743,7 @@ test/release-train-chrome-warmup.test.js
 test/release-train-provenance.test.js
 test/frontend-dist-staging.test.js
 test/desktop-build-macos-notarization.test.js
+test/desktop-build-macos-python-host.test.js
 test/desktop-artifact-open.test.js
 test/release-train-macos-trust.test.js
 test/release-train-windows-trust.test.js
