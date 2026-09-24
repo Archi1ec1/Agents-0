@@ -16295,12 +16295,22 @@ async function runOnceCore(o) {
       if (Object.prototype.hasOwnProperty.call(patch, 'schedule')) {
         next.schedule = parseCronScheduleOr400(patch.schedule, Date.now(), patch.timezone);
       }
+      let grantsCleared = [];
       await withCronWrite(jobs => {
-        const candidate = Object.assign({}, cronStore.getJob(jobs, id), next);
+        const current = cronStore.getJob(jobs, id);
+        /* GRANTS BIND TO THE INSTRUCTION THE COMMANDER APPROVED (2026-09-23 security audit). An unattended
+           workbench/connectors grant was given to THIS prompt. An agent (possibly steered by a page it just read)
+           rewriting the prompt must not inherit that standing shell/connector power — otherwise a run the taint
+           gate locked out could re-arm its payload into a granted routine and fire it with run_now. The Commander
+           re-grants from the ROUTINES panel (POST /api/cron/update), which is not this path. */
+        grantsCleared = cronStore.grantsRevokedByAgentEdit(current, next);
+        if (grantsCleared.length) next.unattendedGrants = [];
+        const candidate = Object.assign({}, current, next);
         if (String(candidate.deliver || 'local').trim() === 'local' && candidate.attachToSession && !(candidate.origin && (candidate.origin.sessionId || candidate.origin.streamId))) throw new Error('follow-up needs a captured session origin');
         return cronStore.updateJob(jobs, id, next, { now: Date.now(), defaultTz: CRON_HOST_TZ });
       });
-      return cronStore.getJob(cronJobs, id);
+      const updated = cronStore.getJob(cronJobs, id);
+      return grantsCleared.length && updated ? Object.assign({}, updated, { _grantsCleared: grantsCleared }) : updated;
     },
     removeRoutine: async (id) => {
       // W6, matching POST /api/cron/remove: capture the job BEFORE removal so its name lands in the creating

@@ -552,6 +552,7 @@ test/tool-withheld-message.test.js
 test/cron-guard.test.js
 test/untrusted-taint.test.js
 test/routine-tools.test.js
+test/routine-grant-rebind.test.js
 test/comms-tools.test.js
 test/acp-core.test.js
 test/workstreams.test.js
