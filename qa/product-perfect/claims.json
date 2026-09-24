@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "ea7810ff723e6ce970b9edba6c34f9286fe48d3b",
+    "sourceCommit": "50e1abdd8f761a2709ae5c222f7d190ba7facce9",
     "pathSetSha256": "8a7fd8092b34daa241de05a57bd78a55a40643d44d9e763bad98462e93aa7fc4",
     "files": [
       {
@@ -1248,13 +1248,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 27765,
-        "sha256": "a3b28141937646ff68b3453c4ed01423770caaadcefdecd05d13141a8747e77d"
+        "bytes": 29206,
+        "sha256": "329a7a457cd8d10ab33809d20c13b75e26286aa42f0bb117bc9dcbf3a1daa5f5"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 85513,
-        "sha256": "7c89ecadae83f9df8bde1f06ca0fa52fac78f3778e2eaab30050cd1ec58ac705"
+        "bytes": 100385,
+        "sha256": "93647af64cbc9b0cd43f0460e0ba9cd81c6df954a45eb0be39733d765f6c3b92"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1303,8 +1303,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 778724,
-        "sha256": "bccef3d42788a14022184c4d79926ce80f7bb76c4038bcee6c71850bbe6a31e0"
+        "bytes": 779054,
+        "sha256": "23451a67b7a204c44875f41156c4d41ae065cf61941fc0441c9a2e953f663309"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1538,8 +1538,8 @@
       },
       {
         "path": "frontend/css/workflow-panel.css",
-        "bytes": 16117,
-        "sha256": "42471a0af424a42d2db8e4d273b5fdf81799b6c644f2b48d5cabdbd436328e1d"
+        "bytes": 17107,
+        "sha256": "5be2878d589d3a93217957bc09daf144f0d4c94190ce12054499a6dd8d926a50"
       },
       {
         "path": "frontend/css/workhub.css",
