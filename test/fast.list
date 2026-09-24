@@ -919,3 +919,4 @@ test/loop.retry-events.test.js
 test/loop.waiting-heartbeat.test.js
 test/subagents.waiting-is-progress.test.js
 test/openai-waiting-keepalive.test.js
+test/comms-wait-line.test.js

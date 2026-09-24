@@ -261,7 +261,8 @@ const Chat = (() => {
         tool.classList.add('has'); tool.classList.add('paused-note');
       } else {
         tool.classList.remove('paused-note');
-        const t = presenceCurTool ? shortName(presenceCurTool) : '';
+        // the running tool wins; with none, the sidecar's own word on a slow/retrying model call (LIVE WAIT LINE)
+        const t = presenceCurTool ? shortName(presenceCurTool) : waitNoteText(presenceWaitNote());
         if (tool.textContent !== t) tool.textContent = t; tool.classList.toggle('has', !!t);
       }
     }
@@ -280,6 +281,73 @@ const Chat = (() => {
   }
   function presenceToolCall(ws, name) { presenceCurTool = name || null; if (isActiveWs(ws)) renderPresence(); }
   function presenceToolResult(ws) { presenceCurTool = null; if (isActiveWs(ws)) renderPresence(); }
+  /* LIVE WAIT LINE (2026-09-23, live-events lane). The retry ladder (~105 s) and a slow model (up to minutes before a
+     first byte) used to leave this card reading THINKING and nothing else. The sidecar now says so itself —
+     provider.retry before each backoff, agent.waiting on a ~15 s heartbeat while a model call shows nothing — and the
+     card's .cp-tool slot (the same transient line that names the running tool) renders exactly that:
+     "waiting on <model> — retry 3/6 in 30s (overloaded)" · "waiting on <model> for 45s…". Truthful telemetry: every
+     number is read off the latest event for the DISPLAYED run (no local countdown, no guessed state), and the line
+     clears the moment the run shows output (a token, a tool call), fails over, or ends. */
+  const waitNotes = new Map();   // runId -> the latest wait note (see foldWaitNote)
+  // PURE: the next wait note for a run given one bus event (null = no wait to show). Locked by comms-wait-line.test.js.
+  function foldWaitNote(prev, name, p) {
+    p = p || {};
+    if (name === 'provider.retry') {
+      return { model: String(p.model || (prev && prev.model) || ''), phase: 'retry_backoff', sinceMs: 0,
+        retry: { attempt: p.attempt, maxAttempts: p.maxAttempts, reason: String(p.reason || ''), delayMs: p.delayMs } };
+    }
+    if (name === 'agent.waiting') {
+      // a beat during the backoff keeps the retry it belongs to; any other phase means the retry already went out
+      return { model: String(p.model || (prev && prev.model) || ''), phase: String(p.phase || ''), sinceMs: p.sinceMs,
+        retry: (p.phase === 'retry_backoff' && prev && prev.retry) ? prev.retry : null };
+    }
+    if (name === 'agent.token') return p.delta ? null : prev;   // an empty delta shows the Commander nothing
+    if (name === 'agent.tool_call' || name === 'agent.tool_result' || name === 'provider.fallback'
+      || name === 'agent.run.end' || name === 'agent.run.error') return null;   // output, a failover or the end: the wait is over
+    return prev;
+  }
+  // PURE: the one-line text for a wait note ('' = nothing to show).
+  function waitNoteText(n) {
+    if (!n) return '';
+    const model = String(n.model || '').trim();
+    const who = 'waiting on ' + (model ? (model.length > 48 ? model.slice(0, 47) + '…' : model) : 'the model');
+    const since = Math.max(0, Number(n.sinceMs) || 0);
+    const r = n.retry;
+    if (r) {
+      // "in Ns" rounds UP: a 400 ms rung reads "in 1s", never "in 0s"
+      const left = Math.max(0, (Number(r.delayMs) || 0) - since);
+      const of = Number(r.maxAttempts) > 0 ? '/' + r.maxAttempts : '';
+      const why = String(r.reason || '').replace(/_/g, ' ').trim();
+      return who + ' — retry ' + r.attempt + of + (left > 0 ? ' in ' + fmtElapsed(Math.ceil(left / 1000) * 1000) : ' now') + (why ? ' (' + why + ')' : '');
+    }
+    if (n.phase === 'retry_backoff') return who + ' — retry backoff' + (since >= 1000 ? ', ' + fmtElapsed(since) + ' so far' : '');
+    const dur = since >= 1000 ? ' for ' + fmtElapsed(since) : '';
+    if (n.phase === 'connect') return 'connecting to ' + (model || 'the model') + dur + '…';
+    return who + dur + '…' + (n.phase === 'streaming' ? ' (stream open)' : '');
+  }
+  function presenceWaitNote() {
+    const rid = (activeWs && typeof Channels !== 'undefined' && Channels.runIdOf) ? Channels.runIdOf(activeWs.id) : null;
+    return rid ? (waitNotes.get(rid) || null) : null;
+  }
+  let waitWired = false;
+  function wireWaitNotes() {
+    if (waitWired || typeof U === 'undefined' || !U.bus) return;
+    waitWired = true;
+    ['provider.retry', 'agent.waiting', 'agent.token', 'agent.tool_call', 'agent.tool_result', 'provider.fallback', 'agent.run.end', 'agent.run.error'].forEach(name => {
+      U.bus.on(name, p => {
+        const rid = p && p.runId;
+        if (!rid) return;
+        const prev = waitNotes.get(rid) || null;
+        if (!prev && name !== 'provider.retry' && name !== 'agent.waiting') return;   // hot path: a token for a run with no wait
+        const next = foldWaitNote(prev, name, p);
+        if (next === prev) return;
+        waitNotes.delete(rid);
+        if (next) { waitNotes.set(rid, next); if (waitNotes.size > 24) waitNotes.delete(waitNotes.keys().next().value); }
+        const shown = (activeWs && typeof Channels !== 'undefined' && Channels.runIdOf) ? Channels.runIdOf(activeWs.id) : null;
+        if (shown && shown === rid) renderPresence();   // only the displayed stream's own run draws here
+      });
+    });
+  }
   // remove any live presence card without a summary (used when switching away / re-rendering a stream)
   function clearPresence() { const c = log && log.querySelector('#comms-presence'); if (c) { if (c.classList.contains('resolved')) c.removeAttribute('id'); else c.remove(); } presenceCurTool = null; }   // a resolved summary is history — keep it, only live cards are torn down
   function bindPresenceFold(card, fold) {
@@ -777,6 +845,7 @@ const Chat = (() => {
     wireProposals();   // Cortex turn-in beat: listen for reflection's memory.proposed (registers once)
     wireStudy();       // GROWTH Tier 1: after a salient run, offer ≤1 dossier belief-update at turn-in priority (registers once)
     wireBriefRead();   // TASTE EXTRACTION: the announce-and-act READ card (taskbrief.settled → correctable assumptions; registers once)
+    wireWaitNotes();   // LIVE WAIT LINE: provider.retry / agent.waiting → the presence card's transient line (registers once)
     wireTrust();       // GROWTH Tier 3: after a clean run, offer ONE earned-autonomy raise at the LOWEST beat priority — below the arc (registers once)
     wireThreads();     // NS-6: after a mined task run, offer ONE thread turn-in (Keep/Edit/Discard) at the lowest beat priority — study wins the moment first (registers once)
     wireCrewCapture(); // P3.2: record each dispatched worker's forwarded run-end spend so a 👍 on a crew run splits XP honestly (registers once)
