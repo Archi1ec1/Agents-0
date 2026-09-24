@@ -16229,7 +16229,7 @@ async function runOnceCore(o) {
   // uses. Same 'orchestrator' capability gate as team.* — conferred on the lead run only, so a delegated
   // worker can never open or steal the Commander's sessions. Only visual actions require a live page.
   makeStationTools({ station: require('./overseer.js').isCoordinatorRun({ ...o, agentId, surface })
-    ? overseerStation(o.streamId, runId) : stationBridge }).register(registry);
+    ? overseerStation(o.streamId, runId) : stationBridge, scanText: t => cronGuard.scanRoutinePrompt(t) }).register(registry);
   // routine.create/list: the lead can schedule real StarNet ROUTINES through the same cron store the panel uses.
   makeRoutineTools({
     roster: () => agentRoster,
