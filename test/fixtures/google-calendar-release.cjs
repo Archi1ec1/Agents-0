@@ -4,4 +4,5 @@
 require('./google-signin-preload.cjs');
 const google = require('../../sidecar/mcp/google-client.js');
 google.RELEASE_DEFERRED = true;
+google.EARLY_ACCESS = false;   // exercise the post-verification per-service map, not the early-access build
 google.RELEASED['google-calendar'] = true;

@@ -70,6 +70,8 @@ const catalog = require('../sidecar/mcp/catalog.js');
   // Per-service release (google-client.js SERVICES/RELEASED): each service opens on its own Google tier.
   {
     const G = require('../sidecar/mcp/google-client.js');
+    const shippedEarlyAccess = G.EARLY_ACCESS;
+    G.EARLY_ACCESS = false;   // exercise the per-service map (the post-verification shape) explicitly
     assert.deepEqual(Object.keys(G.SERVICES).sort(), Object.keys(ENDPOINTS).filter(id => id !== 'google-files').sort(), 'every local adapter endpoint is a gated service');
     for (const id of Object.keys(G.SERVICES)) assert.equal(G.SERVICES[id].url, ENDPOINTS[id], id + ' gates the exact adapter endpoint');
     assert.equal(G.SERVICES.gmail.tier, 'restricted'); assert.equal(G.SERVICES['google-drive'].tier, 'restricted');
@@ -91,7 +93,7 @@ const catalog = require('../sidecar/mcp/catalog.js');
     assert.ok(!/assessment/.test(G.deferredMessage(cfgOf('gmail-send'))), 'send-only never waits on the assessment');
     assert.equal(G.deferredMessage({ url: 'https://gmailmcp.googleapis.com/mcp/v1' }), G.DEFERRED, 'legacy endpoints keep the generic notice');
     // EARLY ACCESS: a build flag, off in source, only ever read from the bundled registration.
-    assert.equal(G.EARLY_ACCESS, false, 'source ships with early access off');
+    assert.equal(shippedEarlyAccess, true, 'source ships early access until Google verification (Andrew, 2026-09-23)');
     assert.equal(G.loadEarlyAccess({ readFile: () => JSON.stringify({ installed: {}, earlyAccess: true }) }), true);
     assert.equal(G.loadEarlyAccess({ readFile: () => JSON.stringify({ installed: {} }) }), false);
     assert.equal(G.loadEarlyAccess({ readFile: () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } }), false, 'no staged registration is not early access');
