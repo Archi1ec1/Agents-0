@@ -40,7 +40,7 @@
      runs the agent-keyed walk exactly as before.
 
    PURE + INJECTED (sidecar determinism law): no require of index.js, no ambient clock, no ids of its own.
-     runDock({ agentId, dockId?, entry, text, streamId, sessionId, signal, edited, lineId, from?, fromDock? }) -> { text, usd, tools, runId, error }
+     runDock({ agentId, dockId?, entry, text, streamId, sessionId, signal, edited, lineId, from?, fromDock?, preview }) -> { text, usd, tools, runId, error }
      plan  { get, step, peek, stepDock?, peekDock?, dockRef?, entryDock, lineOf, stageBrief, loopGateAfter, lineLimits, shipsToOutbox }
      store { load() -> array|null, save(array) }   poolCap() -> $|null   daySpend { spentToday, note }
      getTag(text)   now()   newId()   label(agentId) -> display name|null */
@@ -262,6 +262,7 @@ function makeStepTest(o) {
         // LINE WATCH (additive): WHO handed this dock its crate, so the host can ride the handoff crate from that bay
         if (!job.entry && job.from) dr.from = job.from;
         if (!job.entry && job.fromDock) dr.fromDock = job.fromDock;
+        dr.preview = String(job.input == null ? '' : job.input);   // LINE WATCH: what the dock was HANDED (never the composed turn)
         r = await runDock(dr);
       } catch (e) { r = { error: (e && e.message) || String(e || 'run failed') }; }
       if (inflight.get(s.id) === rec) inflight.delete(s.id);

@@ -10520,7 +10520,7 @@ async function stepTestRunDock(h) {
      only: `steptest` names the session so the crate's card can jump to the Workflow panel). The entry step rides in
      from the line's INBOX; a later step rides from the bay that handed it the crate (from/fromDock). */
   const workitemId = crypto.randomUUID();
-  const stPreview = String(h.text || '').replace(/\s+/g, ' ').slice(0, 40);
+  const stPreview = String(h.preview != null ? h.preview : (h.text || '')).replace(/\s+/g, ' ').slice(0, 40);   // what the dock was HANDED
   try {
     const placed = { workitemId, queueId: h.agentId, agentId: h.agentId, kind: h.entry ? 'sample' : 'chain', steptest: String(h.sessionId || ''), preview: stPreview, ts: t0 };
     if (h.lineId) placed.lineId = h.lineId;
