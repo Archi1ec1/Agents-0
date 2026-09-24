@@ -1,4 +1,4 @@
-# Approved desktop icon — prepared, integration gate blocked
+# Approved desktop icon — owner-authorized integration
 
 Owner approved the borderless circular CRT icon with the original hollow amber
 four-point star. Artwork commit: `f4e12ca5f`. The lane was synced with integration
@@ -40,6 +40,8 @@ All attempts used the unchanged `npm run test:fast` command and assertions.
 
 Local logs and the asset verification receipt are retained under
 `.tmp/icon-verification/` in the owned `official-icon-0923` worktree. No tests were
-weakened or skipped. The icon branch has not been merged: the repository requires
-a fully green gate, and an explicit owner exception was requested after the three
-unrelated failures. No exception had been received when this note was written.
+weakened or skipped. After these failures were explained, the owner explicitly
+instructed "merge", authorizing this icon-only integration despite the red full
+gate. The exception does not turn those results green or authorize a release.
+The subsequent sync includes trunk `d2defe68e`; its only additional tracked change
+relative to the previously synced trunk is an operational QA status note.
