@@ -40,29 +40,19 @@
     let rows = [];
     let readError = null, writeError = null;
     const pending = new Set();
-    const pendingUsd = new Map();   // runId -> the booked spend last written to its durable receipt
     try { const raw = io.readAll(); if (!Array.isArray(raw)) throw new Error('invalid ledger response'); rows = raw.filter(r => r && typeof r === 'object'); }
     catch (e) { rows = []; readError = String((e && e.code) || 'ledger_read_failed'); }
 
     function health() { return { complete: !readError, durable: !writeError, readError, writeError }; }
-    /* INTERRUPTED SPEND IS SETTLEABLE (2026-09-23, with the shipped $25/day rail). The receipt used to record only
-       that a run BEGAN, so a crash left spend nobody could settle: the ledger refused to load ("unsettled spend")
-       and, once a spend cap governs — the day rail now ships ON — every later paid run was refused with
-       spend_history_unavailable until someone repaired files by hand. The receipt now also carries the spend the
-       run had durably BOOKED so far (the loop books every model attempt before the next budget check), rewritten
-       whenever it grows. Boot settles an interrupted run at that amount, flagged as a LOWER BOUND: only the one
-       attempt in flight at the crash is uncounted. Never a guessed $0 for a run that booked real spend. */
-    function beginRun(runId, agentId, bookedUsd) {
+    function beginRun(runId, agentId) {
       const id = str(runId);
-      if (!id || typeof io.beginRun !== 'function') return true;
-      const booked = Math.max(0, num(bookedUsd));
-      if (pending.has(id) && !(booked >= num(pendingUsd.get(id)) + 0.0005)) return true;   // rewrite only on material growth
-      try { io.beginRun({ runId: id, agentId: str(agentId), ts: clock.now(), bookedUsd: booked }); pending.add(id); pendingUsd.set(id, booked); return true; }
+      if (!id || pending.has(id) || typeof io.beginRun !== 'function') return true;
+      try { io.beginRun({ runId: id, agentId: str(agentId), ts: clock.now() }); pending.add(id); return true; }
       catch (e) { writeError = String((e && e.code) || 'ledger_write_failed'); return false; }
     }
     function finishRun(entry) {
       if (typeof io.finishRun !== 'function') return;
-      try { io.finishRun(entry); pending.delete(entry.runId); pendingUsd.delete(entry.runId); } catch (_) { /* durable ledger row proves settlement on next boot */ }
+      try { io.finishRun(entry); pending.delete(entry.runId); } catch (_) { /* durable ledger row proves settlement on next boot */ }
     }
 
     function makeEntry(e) {
