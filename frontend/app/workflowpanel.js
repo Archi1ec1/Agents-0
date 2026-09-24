@@ -112,7 +112,8 @@ const WorkflowPanel = (() => {
     S.lineKey = c ? c.key : null; S.lone = c ? null : propId;
     S.sel = propId; S.insertAt = null;
     if (!el) mount();
-    if (newLine) { S.drafts = {}; S.trgOpen = false; S.trgMsg = null; S.hop = null; if (!S.session || S.session.lineId !== S.lineKey) S.view = 'edit'; refreshServerFacts(); }
+    if (newLine) { S.drafts = {}; S.trgOpen = false; S.trgMsg = null; S.hop = null; if (!S.session || S.session.lineId !== S.lineKey) S.view = 'edit'; refreshServerFacts(); refreshToday(); }
+    if (!todayTimer) todayTimer = setInterval(() => { if (el) paintToday(); }, 60000);
     probeSeam();
     paint(true);
     H.highlight(propId);
@@ -137,6 +138,7 @@ const WorkflowPanel = (() => {
     if (!el) return;
     saveOpenFields();
     stopPoll();
+    if (todayTimer) { clearInterval(todayTimer); todayTimer = 0; }
     el.remove(); el = null;
     S.sel = null; S.lineKey = null; S.lone = null;
     H.highlight(null); H.pausedMarker(null);
@@ -187,6 +189,23 @@ const WorkflowPanel = (() => {
     } else H.pausedMarker(null);
   }
 
+  /* LINE WATCH (2026-09-23): today's numbers for THIS line — runs / shipped / failed / $ today vs the daily cap /
+     median time per run — read from the floor's own reconciled cache (World.lineStatsFor, fed by GET
+     /api/routing/lines/stats on the SHIPPED counter's 60 s cadence). Nothing is shown until the server answered. */
+  function paintToday() {
+    const row = $('#wf-today'); if (!row) return;
+    const st = (S.lineKey && typeof World !== 'undefined' && World.lineStatsFor) ? World.lineStatsFor(S.lineKey) : null;
+    const cells = (st && typeof LineWatch !== 'undefined') ? LineWatch.statsRow(st) : null;
+    row.hidden = !cells;
+    if (!cells) { row.innerHTML = ''; return; }
+    row.innerHTML = '<span class="wf-today-l">TODAY</span>' + cells.map(c => '<span><span class="k">' + esc(c[0]) + '</span> <b' + (c[0] === 'FAILED' && c[1] !== '0' ? ' class="bad"' : '') + '>' + esc(c[1]) + '</b></span>').join('');
+  }
+  let todayTimer = 0;
+  function refreshToday() {
+    if (typeof World === 'undefined' || !World.pollLineStats) return;
+    World.pollLineStats();
+    setTimeout(() => { if (el) paintToday(); }, 1500);   // the answer lands in the floor's cache; repaint from it
+  }
   function paintHead(f) {
     const head = $('#wf-head'); if (!head) return;
     const W = WL(), c = comp(), intake = f && f.trigger.propId ? prop(f.trigger.propId) : null;
@@ -202,6 +221,7 @@ const WorkflowPanel = (() => {
           ? '<input id="wf-name" class="wf-name-in" type="text" maxlength="48" aria-label="Workflow name" placeholder="' + esc(H.stampName(intake.id) || 'Name this workflow') + '" value="' + esc(intake.label || '') + '" />'
           : '<span class="wf-name-none">' + (c ? 'Unnamed line' : 'A single BAY') + '</span>') + '</div>'
         + '<div class="wf-ready"><span class="wf-pill" id="wf-pill"></span><span class="wf-est" id="wf-est"></span></div>'
+        + '<p class="wf-today" id="wf-today" aria-label="This line today"></p>'
         + '<p class="wf-sentence" id="wf-sentence" aria-live="polite"></p><ul class="wf-hints" id="wf-hints"></ul>';
       $('#wf-close').onclick = () => { H.sfx('click'); close(); };
       const nameIn = $('#wf-name');
@@ -220,6 +240,7 @@ const WorkflowPanel = (() => {
     else { pill.textContent = 'CONNECT IT TO A LINE'; pill.className = 'wf-pill'; pill.dataset.go = ''; }
     pill.onclick = () => { if (pill.dataset.go) select(pill.dataset.go); };
     $('#wf-est').textContent = est ? est.text : '';
+    paintToday();
     const sent = $('#wf-sentence');
     if (f && c) {
       const segs = W.howItRuns(f, { nameOf, handsOf: pid => { const p = prop(pid); return p && p.hands; }, triggers: tr });
@@ -850,6 +871,7 @@ const WorkflowPanel = (() => {
   function stopPoll() { clearTimeout(S.pollTimer); S.pollTimer = 0; S.pollFor = null; }
   function poll() {
     stopPoll();
+    if (S.session && typeof World !== 'undefined' && World.noteStepTest) World.noteStepTest(S.session);   // LINE WATCH: the bay lamps follow this session
     const s = S.session; if (!s || !WL().isLive(s) || s.state !== 'running') return;
     S.pollFor = s.id;
     S.pollTimer = setTimeout(() => {
