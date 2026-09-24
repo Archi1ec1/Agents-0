@@ -33,7 +33,12 @@ A.ok(/H\.planGate\(comp\(\)\)\.then\(gate => \{[\s\S]{0,300}sessionCall\('rerun'
 A.ok(/H\.planGate\(c\)\.then/.test(panel), 'every test run posts THIS floor first (the same gate the sample uses)');
 
 // the trigger
-A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId: trgAgent\(\), dockId: S\.trgDock, provider: H\.provider\(\), tz, runsLine: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine), FIRES AT the chosen bay (dockId), and carries no unattended grants');
+A.ok(/api\('\/api\/cron', 'POST', \{ name, prompt, schedule, agentId, dockId, provider: H\.provider\(\), tz, runsLine: true \}\)/.test(panel), 'a schedule made here runs the line (runsLine), FIRES AT the chosen bay (dockId), and carries no unattended grants');
+// SAVE SCHEDULE once threw a ReferenceError: the create handler called paintTrigger's local trgAgent(). The agent is
+// resolved inside wireScheduleForm from its OWN docks (the general scope law lives in test/sibling-scope.test.js)
+const wsf = (code.match(/function wireScheduleForm\(p, docks, dockHint\) \{[\s\S]*?\n  \}/) || [''])[0];
+A.ok(wsf && /const agentOfDock = pid => \{ const d = docks\.find\(x => x\.propId === pid\); return d \? d\.agentId : null; \};/.test(wsf), 'the schedule form resolves the chosen bay\'s agent from its own docks');
+A.ok(wsf && /const dockId = S\.trgDock, agentId = agentOfDock\(dockId\);/.test(wsf) && !/trgAgent/.test(wsf), 'the create handler never calls paintTrigger\'s trgAgent');
 A.ok(/SchedPicker\.mount\(/.test(panel) && /api\('\/api\/cron\/preview'/.test(panel), 'the same WHEN picker + server preview as AUTOMATION');
 A.ok(/H\.openTerm\('messaging'\)/.test(panel), 'one click to the Channels panel to connect a channel');
 
