@@ -1303,6 +1303,9 @@ function wrapEmitDiag(emitFn) {
    contract-free: every NDJSON consumer (harness.js chat reader, the routines panel reader) skips empty
    lines. Returns the detach fn; the route's finally MUST call it. Self-evicts on write failure. */
 const STREAM_KA_MS = Math.max(1, num(ENV('STREAM_KA_MS'), 20000));
+// agent.waiting cadence (loop.js LIVE WAIT HEARTBEAT): one beat per interval while a model call shows nothing yet.
+// Floor 1 s so a mistyped knob can never turn the heartbeat into an event flood.
+const WAIT_HEARTBEAT_MS = Math.max(1000, num(ENV('WAIT_HEARTBEAT_MS'), 15000));
 function attachStreamKeepAlive(res) {
   const t = setInterval(() => { try { res.write('\n'); } catch (_) { clearInterval(t); } }, STREAM_KA_MS);
   if (t && typeof t.unref === 'function') t.unref();
@@ -18064,6 +18067,10 @@ async function runOnceCore(o) {
       // dropped/half-streamed generation with ZERO delay (a tight hammer against an upstream that just hiccupped).
       // A plain (non-unref) setTimeout so the backoff actually elapses before the retry fires.
       sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+      // LIVE WAIT HEARTBEAT: the loop emits agent.waiting on every tick while a model call shows nothing yet (slow
+      // first byte, a silent reasoning stream, a retry backoff). The composition root owns the real timer; the
+      // loop only calls the returned disarm. unref'd: a heartbeat must never be what keeps the process alive.
+      waitTicker: (beat) => { const t = setInterval(beat, WAIT_HEARTBEAT_MS); if (t && typeof t.unref === 'function') t.unref(); return () => clearInterval(t); },
       onRecovery: recordRunRecoveryAttempt,
       // per-RUN hard ceiling = the Balanced perRun cap; the soft day/global pools ride on `budget`. A perRun of
       // 0/Infinity means UNGOVERNED per-run (Infinity), NOT "block every run" — the loop reads maxCostUsd that way.

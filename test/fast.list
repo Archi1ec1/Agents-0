@@ -915,3 +915,6 @@ test/threshold.anchored.test.js
 test/tail.token-budget.test.js
 test/fold.user-verbatim.test.js
 test/compaction.images.test.js
+test/loop.retry-events.test.js
+test/loop.waiting-heartbeat.test.js
+test/subagents.waiting-is-progress.test.js
