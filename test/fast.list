@@ -673,6 +673,7 @@ test/channels.webhook-durability.test.js
 test/channels.secrets.test.js
 test/channels.setup-guide.test.js
 test/channels.hub.test.js
+test/channels.forwarded-taint.test.js
 test/channels.workline-transcript.test.js
 test/cross-surface-continuity.test.js
 test/channels.outbox.test.js

@@ -1290,6 +1290,12 @@
       } finally { recoveringInbox = false; }
     }
 
+    // Words the sender did not author (a platform-flagged forward, or a reply quoting one). Arrives under the
+    // owner's id, so owner admission cannot see it — the run is tainted instead (2026-09-23 security audit).
+    function carriesThirdPartyText(msg) {
+      return !!(msg && (msg.forwarded || (msg.replyTo && msg.replyTo.forwarded)));
+    }
+
     function textBatchable(msg) {
       if (!msg || msg.edited || (Array.isArray(msg.media) && msg.media.length)) return false;
       const text = String(msg.text || '').trim();
@@ -1309,6 +1315,7 @@
         const next = String(msg.text || '').trim();
         rec.msg.text = prior && next ? prior + '\n' + next : (prior || next);
         rec.msg.messageId = msg.messageId == null ? rec.msg.messageId : msg.messageId;
+        if (carriesThirdPartyText(msg)) rec.msg.forwarded = true;   // one forwarded bubble taints the merged turn
       }
       const mySeq = ++rec.seq;
       await sleep(TEXT_BATCH_WAIT_MS);
@@ -1332,6 +1339,7 @@
       } else {
         if (Array.isArray(msg.media) && msg.media.length) rec.msg.media = rec.msg.media.concat(msg.media);
         if (!rec.msg.text && msg.text) rec.msg.text = msg.text;   // the caption rides on whichever part carried it
+        if (carriesThirdPartyText(msg)) rec.msg.forwarded = true;
       }
       const mySeq = ++rec.seq;
       await sleep(ALBUM_WAIT_MS);
@@ -1409,7 +1417,8 @@
       // Control commands are intercepted BEFORE any run starts — they must never spawn an LLM run. Replies go out
       // through the SAME deliver() path so chunking/limits apply. Channel-agnostic: this lives in the hub, so
       // Telegram/Discord/any future adapter get identical behavior.
-      const parsed = parseCommand(msg.text);
+      // A FORWARDED "/away on" is a third party's words, not the Commander's command — never parse it as one.
+      const parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
       if (parsed) { await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted); return; }
 
       // COMMANDER-DEFINED commands are not in this hub's table (the sidecar owns them), so a "/standup" would
@@ -1695,7 +1704,7 @@
             key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask,
             emit: sink, signal: ac.signal, runId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
-            initialTaint: mediaIngest.attachments.length ? 'channel attachment' : null,
+            initialTaint: mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null),
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
             // ...but ONLY for who answers a consent prompt. A phone has no floor to place props on, so this run
