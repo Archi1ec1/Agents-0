@@ -916,3 +916,5 @@ test/tail.token-budget.test.js
 test/fold.user-verbatim.test.js
 test/compaction.images.test.js
 test/ledger.interrupted-receipt.test.js
+test/skills.on-demand.test.js
+test/manual.on-demand.test.js

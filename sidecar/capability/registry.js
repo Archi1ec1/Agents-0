@@ -53,6 +53,11 @@
       // operate at all, not a power the Commander should have to unlock with a DISH, CABINET or WORKBENCH.
       // A distinct capId is required because `compute` is the non-callable model gate in resolve.js.
       { capId: 'stationinfo', tool: 'station.inspect', scope: 'read', requiresConsent: false, network: false },
+      // The operator manual's REFERENCE sections (navigation / props / troubleshooting), served on demand so the
+      // interactive prompt carries only their table of contents (sidecar/manual.js). Same self-knowledge class as
+      // station.inspect and the same always-present object, so the prompt's "call manual.read" can never name a
+      // tool the run lacks. A constant text lookup: no IO, no network, no consent.
+      { capId: 'stationinfo', tool: 'manual.read', scope: 'read', requiresConsent: false, network: false },
       // Host-scoped scheduled scratchpad: the computer is present on every runnable station, while the tool
       // itself refuses any run without a host-minted cronJobId. This does not grant general notebook access.
       { capId: 'routinescratch', tool: 'routine.notepad', scope: 'write', requiresConsent: false, network: false },
