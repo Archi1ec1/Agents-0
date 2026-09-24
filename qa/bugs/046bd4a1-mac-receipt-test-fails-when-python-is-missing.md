@@ -51,6 +51,8 @@ The post-merge gate on 726fdb2c7 stopped at step 599/923: `stationbake.connectio
 
 The separate test-cleanup repair e23a88609 waits for graceful Chrome exit before a Windows process-tree fallback, requires parent exit, and bounds retries of transient profile-deletion errors. Rendering assertions are unchanged. The real Canvas test passed 408 assertions after the repair; a forced-shutdown probe executed the actual stop helper against a live browser and proved process exit plus profile deletion (4,107 ms). Full combined gates remain required before reintegration.
 
+The next full retry stopped at step 288/923 in the unchanged reconciliation smoke test, whose real CLI subprocess returned a null status under its two-minute limit; the isolated original test reproduced that result. A direct diagnostic invocation subsequently completed with status 0 in 95,602 ms and 128,098 stdout bytes. Test-only repair fd30781e6 gives this repository-wide Git metadata audit a bounded five-minute window and includes spawn errors in its diagnostic. The complete isolated reconciliation test then passed all 82 assertions. No reconciliation logic or exit/JSON assertion was removed.
+
 ## Sibling coverage
 
 {
