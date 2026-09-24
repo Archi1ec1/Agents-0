@@ -73,6 +73,28 @@ async function tokenFromIndex(base) {
     A.ok(dsSys.j.exists === false && dsSys.j.isDir === false && dsSys.j.reason === 'outside-allowed-roots', 'dirstat REFUSES an absolute system path outside HOME/WORKSPACES (no filesystem probe)');
     const dsRel = await dirstat('not/absolute');
     A.ok(dsRel.j.exists === false && dsRel.j.reason === 'not-absolute', 'dirstat rejects a non-absolute path');
+
+    /* 2026-09-23 audit: the Host pin guards EVERY path, not just /api/*. `/` inlines the API token, so a
+       DNS-rebound page (Host: attacker name) must not be able to read it. fetch() cannot forge Host, so this
+       speaks raw http with the rebinding Host header a browser would send after the rebind. */
+    const rawGet = (p, host) => new Promise((resolve, reject) => {
+      const u = new URL(B);
+      const req = require('http').request({ host: u.hostname, port: u.port, path: p, method: 'GET', headers: { Host: host } }, (res) => {
+        let body = ''; res.on('data', d => { body += d; }); res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+      });
+      req.on('error', reject); req.end();
+    });
+    const port = new URL(B).port;
+    const rebound = await rawGet('/', 'rebind.evil.example:' + port);
+    A.eq(rebound.status, 403, 'a rebound Host cannot load the index page');
+    A.ok(rebound.body.indexOf(browserToken) < 0 && !/__STARNET_API_TOKEN__/.test(rebound.body), 'the rebound response carries no API token');
+    const reboundRun = await rawGet('/workshop-run/agent/x/index.html?token=' + browserToken, 'rebind.evil.example:' + port);
+    A.eq(reboundRun.status, 403, 'workshop-run is behind the same Host floor');
+    const localIndex = await rawGet('/', '127.0.0.1:' + port);
+    A.eq(localIndex.status, 200, 'the loopback Host still loads the app');
+    A.eq(localIndex.headers['x-frame-options'], 'SAMEORIGIN', 'the app refuses cross-site framing (X-Frame-Options)');
+    A.ok(/frame-ancestors 'self'/.test(localIndex.headers['content-security-policy'] || ''), 'the app refuses cross-site framing (CSP frame-ancestors)');
+    A.eq((await rawGet('/', 'localhost:' + port)).status, 200, 'localhost Host is loopback too');
   } finally {
     await fixture.dispose();
   }

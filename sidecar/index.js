@@ -521,6 +521,8 @@ if (!workspaceOwnerClaim.ok) {
     'Close the other StarNet process and restart. StarNet will not risk concurrent writes (' + ownerCode + '; ' + crashLedger.describe() + ')';
   console.error('[process-fault] CRASH LOOP — ' + crashLedger.describe() + '; holding a degraded listener on :' + PORT + ' instead of exiting 73 again');
   const holding = http.createServer((req, res) => {
+    // same rebinding floor as the main server: the hold reason names the workspace path + holder PID
+    if (!isAllowedHost(req.headers.host)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('forbidden host'); }
     const url = String(req.url || '');
     if (url === '/api/health' || url.indexOf('/api/health?') === 0) {
       res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -9209,6 +9211,11 @@ updatePreparation = makeUpdatePreparation({
 });
 
 const server = http.createServer((req, res) => {
+  // DNS-REBINDING FLOOR ON EVERY PATH (2026-09-23 security audit). The Host pin used to guard only /api/* (and
+  // openai-compat's own routes), while `/` inlines the per-launch API token — a rebound page could read the secret
+  // the token layer exists to protect, plus /workshop-run/ bytes and the pre-gate fault line. Every legitimate
+  // caller (browser, Tauri webview, tests, the desktop shell) addresses 127.0.0.1/localhost, so this costs nothing.
+  if (!isAllowedHost(req.headers.host)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('forbidden host'); }
   // Once an uncaught exception has made this process's in-memory state unprovable, the server becomes a recovery
   // shell. Static GET/HEAD keeps the already-installed UI reloadable; health + authenticated diagnostics explain
   // the fault. Every other API, external-harness, artifact and mutation surface fails closed with 503. This gate
@@ -22068,7 +22075,11 @@ async function serveStatic(req, res) {
       boot += '</script>';
       data = Buffer.from(String(data).replace(/<\/head>/i, boot + '\n</head>'), 'utf8');
     }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-store' });
+    // ANTI-FRAMING (2026-09-23 security audit): a foreign site must not frame the live app (the framed page passes
+    // Host/Origin with its own requests, so a clickjacking overlay could drive consent cards and toggles).
+    // SAMEORIGIN, not DENY: frontend/dev/comms-layout-review.html frames "/" from this same origin.
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-store',
+      'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': "frame-ancestors 'self'", 'X-Content-Type-Options': 'nosniff' });
     res.end(data);
   } catch (e) { res.writeHead(404); res.end('not found'); }
 }
