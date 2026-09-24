@@ -86,14 +86,6 @@ with tempfile.TemporaryDirectory() as tmp:
         else:
             assert version and json.loads(receipt.read_text())['upgrade']['to'] == version
 `;
-const python = process.platform === 'win32' ? 'python' : 'python3';
-const result = require('child_process').spawnSync(python, ['-c', probe], { encoding: 'utf8' });
-if (result.error && result.error.code === 'ENOENT') {
-  console.log(`SKIP: ${python} not on PATH — installed plist receipt probe requires Python; other assertions still run.`);
-} else if (result.error) {
-  A.ok(false, `could not start ${python} for installed plist receipt probe: ${result.error.message}`);
-} else {
-  A.eq(result.status, 0, 'receipt uses actual installed XML/binary plist and rejects missing version: ' +
-    (result.stderr || (result.signal ? 'terminated by ' + result.signal : 'no stderr')));
-}
+const result = require('child_process').spawnSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', probe], { encoding: 'utf8' });
+A.eq(result.status, 0, 'receipt uses actual installed XML/binary plist and rejects missing version: ' + result.stderr);
 A.report('desktop-build-macos-notarization.test');

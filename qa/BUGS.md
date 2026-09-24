@@ -4,11 +4,11 @@
 One tracked file per bug under `qa/bugs/`; this is only the index. File a new bug with
 `node scripts/qa/bugs.mjs --new --title "..." --surface <surface>`.
 
-**10** open (open+claimed) of 216 total — 0 P0 · 0 P1 · 10 P2
+**10** open (open+claimed) of 215 total — 0 P0 · 0 P1 · 10 P2
 
 Engineering status is separate from delivery and customer recovery. Legacy rows without origin are not a customer census.
 
-User/owner reports: **100** · source fixed: **89** · installer verified: **6** · customer confirmed: **1** · still reported failing: **2** · recovery unconfirmed: **97**.
+User/owner reports: **99** · source fixed: **88** · installer verified: **6** · customer confirmed: **1** · still reported failing: **2** · recovery unconfirmed: **96**.
 
 | Report | Family | Source | Installer | Customer |
 | --- | --- | --- | --- | --- |
@@ -86,7 +86,6 @@ User/owner reports: **100** · source fixed: **89** · installer verified: **6**
 | [Provider card status alignment and dated identity artwork](bugs/4a151231-provider-card-status-alignment-and-dated-identit.md) | provider-settings-presentation | fixed | unverified | unconfirmed |
 | [Run metadata invalidates reusable prompt cache and unused fallback authentication delays primary requests](bugs/c9201c15-run-metadata-invalidates-reusable-prompt-cache-a.md) | response-latency | fixed | unverified | unconfirmed |
 | [Secondary console layouts lose provider text and dropdown affordances at enlarged scale](bugs/6c91f5d9-secondary-console-layouts-lose-provider-text-and.md) | secondary-console-polish | fixed | unverified | unconfirmed |
-| [Mac receipt test fails when Python is missing](bugs/046bd4a1-mac-receipt-test-fails-when-python-is-missing.md) | test-portability | fixed | not-applicable | unconfirmed |
 | [Agent work rating fails with a generic not saved message](bugs/1fc69e6a-agent-work-rating-fails-with-a-generic-not-saved.md) | work-rating | fixed | unverified | unconfirmed |
 | [COMMS starters suggest arbitrary tasks and lose session context](bugs/e84d1dfd-comms-starters-suggest-arbitrary-tasks-and-lose.md) | session-starters | fixed | unverified | unconfirmed |
 | [Context extraction card uses a flat surface outside the current theme](bugs/b87dbc17-context-extraction-card-uses-a-flat-surface-outs.md) | context-presentation | fixed | unverified | unconfirmed |
@@ -278,7 +277,6 @@ User/owner reports: **100** · source fixed: **89** · installer verified: **6**
 | P2 | fixed | release | [Hydration regression depends on host scheduling](bugs/4bc5d562-hydration-regression-depends-on-host-scheduling.md) | cleanup-0112-0910 | 5262e4a2943e72e2ce147f6fa804fd1b859df211 |
 | P2 | fixed | release | [Installed Mac acceptance receipts hard-code destination version](bugs/72cc1475-installed-mac-acceptance-receipts-hard-code-dest.md) | reliability-audit-0919 | 2098a36f9 |
 | P2 | fixed | release | [Linux AppImage staging includes incompatible musl Sharp binaries](bugs/694472bf-linux-appimage-staging-includes-incompatible-mus.md) | agent/release-0112-audit-0910 | bbbd7c13a |
-| P2 | fixed | release | [Mac receipt test fails when Python is missing](bugs/046bd4a1-mac-receipt-test-fails-when-python-is-missing.md) | issue-40-investigation | 4847acd6751b5719f87dc3ef4e1d3683b2c62782 |
 | P2 | fixed | release | [Scale soak misclassifies separate scheduler ticks between store polls](bugs/59040543-scale-soak-misclassifies-separate-scheduler-tick.md) | agent/release-0112-audit-0910 | 7efce3552 |
 | P2 | fixed | release | [Seeded lifecycle campaigns reuse a shared workspace and inherit stale ownership](bugs/46f9dad7-seeded-lifecycle-campaigns-reuse-a-shared-worksp.md) | reliability-audit-0919 | b123e3ea3 |
 | P2 | fixed | release | [t5.1 prerequisite gate accepts T0–T4 verdicts with no installer-hash or freshness binding, though t3.2 already binds T0's recorded installer sha256 to the binar](bugs/4bd953e0-t5-1-prerequisite-gate-accepts-t0-t4-verdicts-wi.md) | sweep/release | b76e340c |
