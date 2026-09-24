@@ -1,0 +1,315 @@
+/* sidecar/routing/trigger-runner.js — LINE TRIGGERS, the runner (2026-09-23).
+
+   Owns the live side of line triggers: the durable record mirror, admission (rate limit + a small bounded
+   queue, ONE fire in flight per trigger), the folder poll, and the dispatch of each admitted work item into its
+   line's INBOX. Dispatch is the SAME path the sample proof rides (index.js handleRoutingSample): a channel hub
+   whose ONE resolution is scoped to the trigger's line (router.resolveDock with ctx.lineId), a real runOnce at
+   the entry dock (budget governor, ledger, real cost), the shared chain runner for every stage drawn past it,
+   surface:'autonomous' and NO unattendedGrants (the chain-grants law — a trigger body can never carry
+   authority). Every outcome is read back from the durable run rows scoped by the fire's own streamId — never
+   synthesized — and recorded on the trigger (lastFiredAt / lastOutcome / lastError / fires).
+
+   Determinism-clean: every ambient thing is injected (clock, ids, fs, timers stay in index.js).
+
+   makeTriggerRunner(deps)
+     deps.load() -> {triggers:[…]}           the durable store read (normalized by triggers.normalizeAll)
+     deps.save({triggers}) -> void           durable write (throws on failure)
+     deps.seen: { load() -> {id:{key:at}}, save(obj) }   the folder trigger's fired-file record
+     deps.makeHub(hooks) -> hub               a channel hub wired to the hooks (see index.js makeTriggerHub)
+     deps.plan() -> the armed routing plan | null
+     deps.shipsToOutbox(agentId, dockId) -> bool
+     deps.dayCap(lineId) -> { cap:number|null, spent:number }
+     deps.halted() -> bool                    the durable automation E-STOP (cron halt)
+     deps.runsFor(streamId) -> [{runId, agentId, reason, usd}]
+     deps.emit(name, payload), deps.bumpQueue(agentId, d) -> depth, deps.queueCap
+     deps.watcher (trigger-folder makeFolderWatcher), deps.now(), deps.newId(), deps.warn(msg) */
+'use strict';
+const T = require('./triggers.js');
+
+const MAX_PENDING = 5;   // work items waiting behind the one in flight, per trigger — a burst beyond this is refused
+
+function makeTriggerRunner(deps) {
+  const d = deps || {};
+  const now = d.now, newId = d.newId;
+  if (typeof now !== 'function' || typeof newId !== 'function') throw new Error('trigger-runner: now/newId are required');
+  if (typeof d.load !== 'function' || typeof d.save !== 'function') throw new Error('trigger-runner: load/save are required');
+  const warn = typeof d.warn === 'function' ? d.warn : function () {};
+  const emit = typeof d.emit === 'function' ? d.emit : function () {};
+  const bumpQueue = typeof d.bumpQueue === 'function' ? d.bumpQueue : function () { return 0; };
+  const halted = typeof d.halted === 'function' ? d.halted : function () { return false; };
+  const dayCap = typeof d.dayCap === 'function' ? d.dayCap : function () { return { cap: null, spent: 0 }; };
+  const runsFor = typeof d.runsFor === 'function' ? d.runsFor : function () { return []; };
+  const shipsToOutbox = typeof d.shipsToOutbox === 'function' ? d.shipsToOutbox : function () { return false; };
+  const planOf = typeof d.plan === 'function' ? d.plan : function () { return null; };
+  const seenStore = d.seen || { load: function () { return {}; }, save: function () {} };
+
+  let records = T.normalizeAll(d.load()).triggers;
+  let seen = (function () { try { const s = seenStore.load(); return (s && typeof s === 'object') ? s : {}; } catch (e) { warn('[triggers] fired-file record unreadable: ' + ((e && e.message) || e)); return {}; } })();
+  const live = new Map();   // id -> { queue:[], busy:false, hub:null, current:null, pending:Map, scanning:false }
+
+  function stateOf(id) {
+    let s = live.get(id);
+    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false }; live.set(id, s); }
+    return s;
+  }
+  const get = id => records.find(t => t.id === id) || null;
+
+  /* persist the WHOLE list; on failure the in-memory mirror rolls back so live state never outruns disk. */
+  function commit(next) {
+    const prev = records;
+    records = next;
+    try { d.save({ triggers: next }); return true; }
+    catch (e) { records = prev; warn('[triggers] persist failed: ' + ((e && e.message) || e)); return false; }
+  }
+  function patch(id, fn) {
+    const i = records.findIndex(t => t.id === id);
+    if (i < 0) return null;
+    const cur = records[i];
+    const nx = T.normalizeTrigger(Object.assign({}, cur, fn(cur)));
+    if (!nx) return null;
+    const next = records.slice(); next[i] = nx;
+    return commit(next) ? nx : null;
+  }
+  function saveSeen() {
+    try { seenStore.save(seen); return true; } catch (e) { warn('[triggers] fired-file record persist failed: ' + ((e && e.message) || e)); return false; }
+  }
+  /* an honest, de-duplicated failure note on the trigger (the UI shows lastError). Same message twice = one write. */
+  function recordError(id, msg) {
+    const t = get(id); if (!t) return;
+    const m = String(msg || 'failed').slice(0, 400);
+    if (t.lastError === m) return;
+    patch(id, () => ({ lastError: m, lastErrorAt: now() }));
+  }
+  function clearError(id) { const t = get(id); if (t && t.lastError) patch(id, () => ({ lastError: null, lastErrorAt: null })); }
+
+  /* ---- preflight: can THIS line take work right now? (no side effects) ---- */
+  function preflight(t) {
+    if (halted()) return 'automation is stopped (E-STOP) — resume it and this trigger fires again';
+    const plan = planOf();
+    if (!plan) return 'no work line is armed — the floor has no complete line to run';
+    if (!(Array.isArray(plan.lines) ? plan.lines : []).some(l => l && String(l.lineId) === t.lineId)) return 'its line is no longer on the floor (the line changed or was removed) — delete this trigger or re-create it on the line';
+    const reached = Object.keys(plan.reach || {}).filter(a => plan.reach[a] && (plan.lineOfAgent || {})[a] === t.lineId);
+    if (!reached.length) return 'its line routes work to no crewed dock — assign an agent to the first step';
+    let cap = null;
+    try { cap = dayCap(t.lineId); } catch (e) { cap = null; warn('[triggers] day-cap read failed: ' + ((e && e.message) || e)); }
+    if (cap && typeof cap.cap === 'number' && cap.cap > 0 && (cap.spent || 0) >= cap.cap) return 'the line reached its $' + cap.cap.toFixed(2) + ' daily limit — it fires again tomorrow';
+    return null;
+  }
+
+  /* canAccept(id) — would enqueue() admit one more item now? Pure read, used by the folder poll BEFORE it reads
+     or marks a file, so a file that cannot run yet simply waits in the folder for a later scan. */
+  function canAccept(id, nowMs) {
+    const t = get(id);
+    if (!t) return { ok: false, code: 'unknown', error: 'no such trigger' };
+    if (!t.enabled) return { ok: false, code: 'disabled', error: 'this trigger is disabled' };
+    const pf = preflight(t);
+    if (pf) return { ok: false, code: 'refused', error: pf };
+    const s = stateOf(id);
+    if (s.queue.length >= MAX_PENDING) return { ok: false, code: 'busy', error: 'this trigger already has ' + s.queue.length + ' items waiting behind the one running' };
+    const a = T.admit(t, nowMs == null ? now() : nowMs);
+    if (!a.ok) return { ok: false, code: 'rate', error: a.error, retryAfterMs: a.retryAfterMs };
+    return { ok: true };
+  }
+
+  /* enqueue(id, item) — admit ONE work item { text, preview, source }. Admission is durable before the item
+     queues (the rate window lives on the record), so a restart can never hand a burst a fresh allowance. */
+  function enqueue(id, item) {
+    const nowMs = now();
+    const c = canAccept(id, nowMs);
+    if (!c.ok) { if (c.code === 'refused' || c.code === 'rate' || c.code === 'busy') recordError(id, c.error); return c; }
+    const t = get(id);
+    const a = T.admit(t, nowMs);
+    if (!patch(id, () => ({ recent: a.recent }))) return { ok: false, code: 'persist', error: 'the fire could not be recorded durably — refused' };
+    const s = stateOf(id);
+    s.queue.push({ text: String(item.text || ''), preview: String(item.preview || '').slice(0, 40), source: String(item.source || '').slice(0, 200), at: nowMs });
+    const position = s.queue.length + (s.busy ? 1 : 0);
+    pump(id);
+    return { ok: true, queued: position };
+  }
+
+  function pump(id) {
+    const s = stateOf(id);
+    if (s.busy || !s.queue.length) return;
+    const t = get(id);
+    if (!t) { s.queue.length = 0; return; }
+    const item = s.queue.shift();
+    s.busy = true;
+    Promise.resolve().then(() => dispatch(t, item, s)).catch(e => {
+      recordError(id, 'dispatch failed: ' + ((e && e.message) || e));
+    }).then(() => { s.busy = false; s.current = null; pump(id); });
+  }
+
+  /* ---- the hub: one per trigger, built lazily, bound to hooks that read THIS trigger's live record ---- */
+  function hubFor(id, s) {
+    if (s.hub) return s.hub;
+    s.hub = d.makeHub({
+      lineId: () => { const t = get(id); return t ? t.lineId : null; },
+      // the ONE counter-advancing resolution the hub makes; remembered so the entry run config can refuse
+      // any agent the line did not route to (a fallback agent must never run a trigger's work)
+      onRouted: (r) => { if (s.current) s.current.routed = r || null; return r; },
+      entryAllowed: (agentId) => !!(s.current && s.current.routed && s.current.routed.agentId === agentId),
+      onResolved: (info) => { if (s.current && !s.current.resolved) s.current.resolved = info; },
+      onLineOutcome: (info) => { if (s.current) s.current.lineOutcome = info; },
+      streamId: () => (s.current && s.current.streamId) || undefined,
+      send: (text) => { if (s.current) { s.current.replies.push(String(text == null ? '' : text)); if (s.current.replies.length > 20) s.current.replies.shift(); } }
+    });
+    return s.hub;
+  }
+
+  async function dispatch(t, item, s) {
+    const startedAt = now();
+    const streamId = 'trigger-' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+    s.current = { streamId, routed: null, resolved: null, lineOutcome: null, replies: [] };
+    patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt }));
+    const hub = hubFor(t.id, s);
+    const settled = Promise.resolve(hub.onInbound({ chatId: 'trg-' + t.id, userId: 'trigger', text: item.text, chatType: 'dm' }))
+      .catch(e => ({ error: (e && e.message) || String(e) }));
+    // resolution lands in onInbound's first synchronous slice (the one-resolver law); the crate follows it
+    const info = s.current.resolved;
+    let workitemId = '', agentId = '';
+    // a crate only for the dock the LINE routed to (a hub fallback agent is refused its run config and gets none)
+    if (info && info.agentId && s.current.routed && s.current.routed.agentId === info.agentId) {
+      agentId = String(info.agentId);
+      workitemId = String(newId());
+      const depth = bumpQueue(agentId, +1);
+      emit('workitem.placed', { workitemId, queueId: agentId, agentId, kind: 'trigger', trigger: t.kind, triggerId: t.id,
+        lineId: info.lineId || undefined, dockId: info.dockId || undefined, preview: item.preview, queueDepth: depth, ts: startedAt });
+      emit('queue.status', { queueId: agentId, depth, maxCapacity: d.queueCap || 64, nextAdvanceAt: 0 });
+    }
+    const threw = await settled;
+    let runs = [];
+    try { runs = (runsFor(streamId) || []).filter(r => r && String(r.streamId || streamId) === streamId); } catch (e) { runs = []; warn('[triggers] run read-back failed: ' + ((e && e.message) || e)); }
+    const lo = s.current.lineOutcome;
+    const onLine = !!(info && info.lineId === t.lineId);
+    const allDone = runs.length > 0 && runs.every(r => r.reason === 'done');
+    const ships = !!(lo && !lo.stopped && shipsToOutbox(lo.agentId, lo.dockId));
+    const completed = onLine && allDone && ships;
+    const usd = runs.reduce((a, r) => a + ((typeof r.usd === 'number' && isFinite(r.usd)) ? r.usd : 0), 0);
+    if (workitemId) {
+      const dep = bumpQueue(agentId, -1);
+      if (completed) emit('workitem.delivered', { workitemId, finalQueueId: 'outbox', agentId, box: '', ms: now() - startedAt, ts: now() });
+      emit('queue.status', { queueId: agentId, depth: dep, maxCapacity: d.queueCap || 64, nextAdvanceAt: 0 });
+    }
+    let err = null;
+    if (!completed) {
+      const firstReply = (s.current.replies.find(x => /^⚠/.test(String(x).trim())) || '').replace(/^⚠\s*/, '').trim();
+      if (threw && threw.error) err = 'the line failed: ' + threw.error;
+      else if (!info || !info.agentId || !s.current.routed || s.current.routed.agentId !== info.agentId) err = firstReply || 'the line routed this work to no dock';
+      else if (!onLine) err = 'the work did not enter through this trigger\'s line';
+      else if (!runs.length) err = firstReply || 'no run was recorded for this work';
+      else if (!allDone) { const bad = runs.find(r => r.reason !== 'done'); err = 'a stage (' + (bad.agentId || '?') + ') ended "' + (bad.reason || 'unknown') + '"' + (firstReply ? ': ' + firstReply : ''); }
+      else if (lo && lo.stopped) err = 'the line stopped early: ' + lo.stopped;
+      else err = 'the line did not reach its OUTBOX';
+    }
+    const outcome = { ok: completed, at: now(), streamId, runs: runs.length, usd, agentId: (lo && lo.agentId) || agentId || null, source: item.source || null };
+    patch(t.id, () => (err ? { lastOutcome: outcome, lastError: err.slice(0, 400), lastErrorAt: now() } : { lastOutcome: outcome, lastError: null, lastErrorAt: null }));
+    return outcome;
+  }
+
+  /* ---- CRUD (the host validates the folder path before calling create/update with it) ---- */
+  function list(nowMs) { const n = nowMs == null ? now() : nowMs; return records.map(t => Object.assign(T.publicView(t, n), { queued: stateOf(t.id).queue.length, running: !!stateOf(t.id).busy })); }
+  function view(id) { const t = get(id); return t ? Object.assign(T.publicView(t, now()), { queued: stateOf(id).queue.length, running: !!stateOf(id).busy }) : null; }
+
+  /* create(fields, { secretHash, baselineKeys }) -> { ok, trigger } | { ok:false, error } */
+  function create(fields, extra) {
+    if (records.length >= T.MAX_TRIGGERS) return { ok: false, error: 'at most ' + T.MAX_TRIGGERS + ' triggers per station' };
+    const at = now();
+    const id = 'trg_' + String(newId()).replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 12);
+    const raw = Object.assign({ id, enabled: true, createdAt: at, updatedAt: at, fires: 0, recent: [] }, fields);
+    if (raw.kind === 'webhook') { raw.secretHash = extra && extra.secretHash; raw.secretSetAt = at; }
+    const t = T.normalizeTrigger(raw);
+    if (!t) return { ok: false, error: 'invalid trigger' };
+    if (t.kind === 'folder') {
+      seen[t.id] = {};
+      for (const k of ((extra && extra.baselineKeys) || [])) seen[t.id][k] = 0;
+      if (!saveSeen()) { delete seen[t.id]; return { ok: false, error: 'the folder\'s existing files could not be recorded — refused (they would all fire)' }; }
+    }
+    if (!commit(records.concat([t]))) return { ok: false, error: 'the trigger could not be saved' };
+    return { ok: true, trigger: view(t.id) };
+  }
+
+  /* update(id, fields, { secretHash?, baselineKeys? }) — a re-pointed or re-enabled folder is re-baselined */
+  function update(id, fields, extra) {
+    const t = get(id);
+    if (!t) return { ok: false, code: 'unknown', error: 'no such trigger' };
+    if (fields.kind && fields.kind !== t.kind) return { ok: false, error: 'a trigger\'s kind cannot change — delete it and create a new one' };
+    if (t.kind === 'folder' && extra && Array.isArray(extra.baselineKeys)) {
+      const prev = seen[id];
+      seen[id] = {};
+      for (const k of extra.baselineKeys) seen[id][k] = 0;
+      if (!saveSeen()) { seen[id] = prev; return { ok: false, error: 'the folder\'s existing files could not be recorded — refused' }; }
+      stateOf(id).pending = new Map();
+    }
+    const changes = Object.assign({}, fields, { updatedAt: now() });
+    if (fields.config) changes.config = Object.assign({}, t.config, fields.config);
+    if (extra && extra.secretHash) { changes.secretHash = extra.secretHash; changes.secretSetAt = now(); }
+    // re-enabling (or editing) clears a stale failure: the next fire writes the new truth
+    if (fields.enabled === true || fields.config || fields.lineId) { changes.lastError = null; changes.lastErrorAt = null; }
+    const nx = patch(id, () => changes);
+    if (!nx) return { ok: false, error: 'the trigger could not be saved' };
+    if (fields.enabled === false) stateOf(id).queue.length = 0;   // a disabled trigger drops what was waiting
+    return { ok: true, trigger: view(id) };
+  }
+
+  function remove(id) {
+    if (!get(id)) return { ok: false, code: 'unknown', error: 'no such trigger' };
+    if (!commit(records.filter(t => t.id !== id))) return { ok: false, error: 'the trigger could not be deleted' };
+    const s = live.get(id);
+    if (s) { s.queue.length = 0; if (s.hub && typeof s.hub.close === 'function') { try { s.hub.close(); } catch (e) { warn('[triggers] hub close: ' + ((e && e.message) || e)); } } }
+    live.delete(id);
+    if (seen[id]) { delete seen[id]; saveSeen(); }
+    return { ok: true };
+  }
+
+  /* ---- the FOLDER poll: one pass over every enabled folder trigger (the host arms the interval) ---- */
+  async function tickFolders() {
+    if (!d.watcher) return 0;
+    let admitted = 0;
+    for (const t of records.slice()) {
+      if (t.kind !== 'folder' || !t.enabled || !t.config.path) continue;
+      const s = stateOf(t.id);
+      if (s.scanning) continue;
+      s.scanning = true;
+      try {
+        const mine = seen[t.id] || (seen[t.id] = {});
+        const res = await d.watcher.scan(t.config.path, mine, s.pending, now());
+        if (!res.ok) { recordError(t.id, res.error); s.pending = new Map(); continue; }
+        s.pending = res.pending;
+        // forget keys whose file is gone (bounded record); only when the listing was complete
+        if (res.complete) {
+          const present = {}; for (const k of res.present) present[k] = true;
+          let pruned = false;
+          for (const k of Object.keys(mine)) if (!present[k]) { delete mine[k]; pruned = true; }
+          if (pruned) saveSeen();
+        }
+        const ready = res.ready.slice().sort((a, b) => a.mtimeMs - b.mtimeMs);
+        for (const f of ready) {
+          const c = canAccept(t.id);
+          if (!c.ok) { if (c.code === 'refused' || c.code === 'rate') recordError(t.id, c.error); break; }   // the file waits in the folder
+          mine[f.key] = now();
+          if (!saveSeen()) { delete mine[f.key]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); break; }
+          const body = await d.watcher.readItem(f.abs, f.name);
+          if (!body.ok) { recordError(t.id, body.error); continue; }
+          const text = T.composeFolderItem({ name: t.name, task: t.config.task, filePath: f.abs, size: f.size,
+            mtimeIso: new Date(f.mtimeMs).toISOString(), binary: body.binary, content: body.content, truncated: body.truncated });
+          const r = enqueue(t.id, { text, preview: 'FILE ' + f.name, source: f.abs });
+          if (!r.ok) { delete mine[f.key]; saveSeen(); break; }
+          admitted++;
+        }
+      } catch (e) {
+        recordError(t.id, 'folder scan failed: ' + ((e && e.message) || e));
+      } finally { s.scanning = false; }
+    }
+    return admitted;
+  }
+
+  /* E-STOP: drop every waiting item; the host kills the in-flight runs through the hubs' inflight maps. */
+  function haltAll() { let n = 0; for (const s of live.values()) { n += s.queue.length; s.queue.length = 0; } return n; }
+  function inflights() { const out = []; for (const s of live.values()) if (s.hub && s.hub._internals && s.hub._internals.inflight) out.push(s.hub._internals.inflight); return out; }
+  function seenFor(id) { return Object.assign({}, seen[id] || {}); }
+
+  return { list, view, get, create, update, remove, enqueue, canAccept, tickFolders, recordError, clearError, preflight,
+    haltAll, inflights, seenFor, _internals: { dispatch, live, MAX_PENDING } };
+}
+
+module.exports = { makeTriggerRunner, MAX_PENDING };
