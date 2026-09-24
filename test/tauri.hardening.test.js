@@ -47,4 +47,14 @@ A.ok(/fn harness_clear_key\(state: State<AppState>\)[\s\S]*?harness_store_key\(S
 A.ok(!/starnet_open_workshop_file/.test(mainRs), 'webview IPC exposes no workshop file launcher');
 A.ok(!/starnet_open_user_directory/.test(mainRs), 'webview IPC exposes no directory launcher');
 
+// 2026-09-23 audit: the token-bearing main window must never show a foreign page. Init scripts re-run on every
+// top-level navigation and the native drag-drop handler is disabled, so a dragged-in link used to load inside
+// the frameless window and receive __STARNET_API_TOKEN__. (Behaviour is unit-tested in main.rs
+// navigation_guard_tests via `cargo test --bin skynet-desktop navigation_guard`.)
+A.ok(/\.on_navigation\(\|url\| is_app_navigation\(url\)\)/.test(mainRs), 'the main window refuses navigation outside the bundled app origin');
+A.ok(/fn is_app_navigation\(url: &tauri::Url\) -> bool \{[\s\S]*?"tauri" => true,[\s\S]*?url\.host_str\(\) == Some\("tauri\.localhost"\)[\s\S]*?_ => false,/.test(mainRs),
+  'the navigation allow-list is exactly the tauri scheme or the tauri.localhost host');
+A.ok(/let init = format!\(\s*"if\(location\.protocol==='tauri:'\|\|location\.hostname==='tauri\.localhost'\)\{\{window\.__STARNET_API__=/.test(mainRs),
+  'the API token is injected only into the bundled app origin (second layer behind on_navigation)');
+
 A.report('tauri.hardening.test');

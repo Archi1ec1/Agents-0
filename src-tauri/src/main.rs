@@ -3320,6 +3320,43 @@ mod artifact_open_tests {
     }
 }
 
+/// The main window may only navigate within the bundled app origin: `tauri://localhost` (macOS/Linux)
+/// or `http(s)://tauri.localhost` (Windows WebView2). Everything else — a dragged-in link, a stray
+/// `location = …` — is refused, so no foreign page ever runs in the token-bearing window.
+fn is_app_navigation(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => true,
+        "http" | "https" => url.host_str() == Some("tauri.localhost"),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod navigation_guard_tests {
+    use super::is_app_navigation;
+
+    fn ok(s: &str) -> bool {
+        is_app_navigation(&tauri::Url::parse(s).expect("valid url"))
+    }
+
+    #[test]
+    fn app_origin_is_allowed() {
+        assert!(ok("tauri://localhost/index.html"));
+        assert!(ok("http://tauri.localhost/index.html"));
+        assert!(ok("https://tauri.localhost/index.html?x=1#y"));
+    }
+
+    #[test]
+    fn foreign_pages_are_refused() {
+        assert!(!ok("https://evil.example/login"));
+        assert!(!ok("http://127.0.0.1:8787/"));
+        assert!(!ok("http://tauri.localhost.evil.example/"));
+        assert!(!ok("file:///C:/Users/x/page.html"));
+        assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("data:text/html,hi"));
+    }
+}
+
 /// Open an OAuth/device-auth URL in the user's default system browser.
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
@@ -4051,8 +4088,12 @@ fn main() {
             // The frontend is served LOCALLY (bundled via frontendDist), NOT from the sidecar's
             // http origin — Tauri denies IPC (the keychain commands) to remote origins. This shim
             // rewrites the frontend's root-relative /api/* fetches to the sidecar's port.
+            // SECURITY (2026-09-23 audit): Tauri re-runs initialization scripts on EVERY top-level
+            // navigation. The token is injected only when the document is the bundled app origin, so
+            // a page that ever loads in this window (a dropped link, a stray navigation) never receives
+            // it. The on_navigation guard below is the primary control; this is the second layer.
             let init = format!(
-                "window.__STARNET_API__='http://127.0.0.1:{port}';window.__STARNET_API_TOKEN__='{api_token}';var _sf=window.fetch;window.fetch=function(u,o){{if(typeof u==='string'&&u.indexOf('/api/')===0)u=window.__STARNET_API__+u;return _sf(u,o)}};"
+                "if(location.protocol==='tauri:'||location.hostname==='tauri.localhost'){{window.__STARNET_API__='http://127.0.0.1:{port}';window.__STARNET_API_TOKEN__='{api_token}';var _sf=window.fetch;window.fetch=function(u,o){{if(typeof u==='string'&&u.indexOf('/api/')===0)u=window.__STARNET_API__+u;return _sf(u,o)}};}}"
             );
             // Windows runs WITHOUT native decorations (see the window builder below): this flag
             // tells the frontend (app/titlebar.js) to render its own themed titlebar with
@@ -4084,6 +4125,11 @@ fn main() {
                 .inner_size(1280.0, 832.0)
                 .min_inner_size(960.0, 600.0)
                 .initialization_script(&init)
+                // SECURITY (2026-09-23 audit): the main window only ever shows the bundled app. With the
+                // native drag-drop handler disabled (above), WebView2 would otherwise navigate this frameless
+                // window to a link the user drags onto it — a full-window page with no URL bar. External
+                // links already leave through open_external_url (the system browser).
+                .on_navigation(|url| is_app_navigation(url))
                 .center()
                 .visible(false)
                 // Page-load hooks fire for Started AND Finished. Reveal only once,
