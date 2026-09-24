@@ -80,7 +80,22 @@ const nameOf = a => String(a).toUpperCase();
   A.ok(/the result goes to the OUTBOX\.$/.test(txt), 'and it ends at the OUTBOX');
   const none = W.howItRuns(flow, { nameOf, triggers: { schedules: [], channels: [] } }).map(x => x.s).join('');
   A.ok(/^Nothing starts it on its own yet/.test(none), 'no trigger is said plainly, never invented');
-  const un = read(stamp('research_line', false)).flow;
+  // LINE TRIGGERS (2026-09-23): only server-armed folder/webhook triggers of THIS line join the sentence
+  const L = 'line-x';
+  const ev = W.lineEventTriggers([
+    { id: 'trg_a1', lineId: L, kind: 'folder', enabled: true, blockedBy: null, config: { path: 'C:\\Drops\\invoices' } },
+    { id: 'trg_a2', lineId: L, kind: 'webhook', enabled: true, blockedBy: null, name: 'Orders', config: {} },
+    { id: 'trg_a3', lineId: L, kind: 'folder', enabled: false, blockedBy: null, config: { path: 'C:\\Paused' } },
+    { id: 'trg_a4', lineId: L, kind: 'folder', enabled: true, blockedBy: 'no work line is armed', config: { path: 'C:\\Blocked' } },
+    { id: 'trg_a5', lineId: 'other', kind: 'folder', enabled: true, blockedBy: null, config: { path: 'C:\\Elsewhere' } }
+  ], L);
+  A.eq(ev.mine.length, 4, 'lineEventTriggers keeps only this line\'s triggers');
+  A.eq(ev.sentences, ['when a file lands in C:\\Drops\\invoices', 'when its webhook "Orders" is called'], 'only enabled, unblocked triggers start the line: ' + JSON.stringify(ev.sentences));
+  const withEv = W.howItRuns(flow, { nameOf, triggers: { schedules: [], channels: ['Telegram'], events: ev.sentences } }).map(x => x.s).join('');
+  A.ok(/^When a Telegram message arrives, when a file lands in C:\\Drops\\invoices or when its webhook "Orders" is called, A1/.test(withEv), 'the sentence names the folder and the webhook: ' + withEv);
+  const onlyEv = W.readiness(flow, { props: [] }, { triggers: { schedules: [], channels: [], events: ev.sentences } });
+  A.ok(!onlyEv.hints.some(h => /nothing starts it/.test(h.what)), 'an armed folder/webhook trigger satisfies the "nothing starts it" hint');
+  const un =read(stamp('research_line', false)).flow;
   const segs = W.howItRuns(un, { nameOf });
   A.ok(segs.some(x => x.t === 'miss' && /pick a researcher/.test(x.s)), 'an uncrewed dock is a clickable gap, not a name');
 }
