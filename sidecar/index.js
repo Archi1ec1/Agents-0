@@ -11775,7 +11775,7 @@ function handleConnectorCatalog(req, res) {
       e.releaseDeferred = googleConnectorDeferred(e);
       if (!e.releaseDeferred && googleClientConfig.EARLY_ACCESS === true && !googleClientConfig.isSelectedFiles(e)) {
         e.earlyAccess = true;
-        e.blurb = 'Early access — not yet verified by Google; Google shows a warning when you sign in. ' + e.blurb;   // catalog entries are fresh clones per request
+        e.blurb = 'Early access — Google has not finished verifying StarNet yet. When Google says the app isn’t verified, choose Advanced, then Go to StarNet. ' + e.blurb;   // catalog entries are fresh clones per request
       }
       if (e.releaseDeferred) e.blurb = 'Planned for a later update. ' + e.blurb.replace(/^Planned for a later update\. /, '').replace(' Sign in with Google to connect your account.', '');
       e.signInAvailable = !connectorStorageError && !e.releaseDeferred && !e.needsClient && (!googleClientConfig.isSelectedFiles(e) || connectorVault.protected);
