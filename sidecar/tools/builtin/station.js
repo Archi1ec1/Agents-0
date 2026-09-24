@@ -152,9 +152,43 @@
       }
     };
 
+    const agentConfigTool = {
+      name: 'team.config', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      description: 'List crew IDs and names, or pass an exact agentId to read that agent\'s current Dossier documents: identity, purpose, manual (standing orders), and context. Read the target before changing it with team.configure. Notebook memory does not edit these documents.',
+      schema: { type: 'object', properties: { agentId: { type: 'string' } } },
+      run: async (args) => {
+        const out = await ask('station.agent_config', { agentId: args && args.agentId });
+        return out.ok ? { content: JSON.stringify(out.result), summary: 'crew configuration' } : refuse(out.error);
+      }
+    };
+    // Rewrites text ANOTHER agent obeys on every later run (including unattended ones), so: its own consent class
+    // (an "always" on team.summon/routine.create never pre-approves it), locked once this run read untrusted
+    // content, and the new text passes the same strict injection scan a routine prompt does.
+    const scanText = typeof deps.scanText === 'function' ? deps.scanText : null;
+    const agentConfigureTool = {
+      name: 'team.configure', capability: 'orchestrator', consentKey: 'team.configure', taintLocked: true, scope: 'write', requiresConsent: true,
+      description: 'Edit one existing crew member Dossier document, using the exact agentId and previousText from team.config. Preserve unrelated instructions in the replacement text. An empty text explicitly clears the document. Uses the Dossier save path; applies to the next run, not a currently running turn. Requires an open station page. Does not change skills, permissions, Bay briefs, or layout. Never substitute notebook.write for this edit.',
+      schema: { type: 'object', additionalProperties: false, required: ['agentId', 'field', 'previousText', 'text'], properties: {
+        agentId: { type: 'string' }, field: { type: 'string', enum: ['identity', 'purpose', 'manual', 'context'] },
+        previousText: { type: 'string' }, text: { type: 'string', maxLength: 20000 }
+      } },
+      run: async (args) => {
+        if (scanText && args && typeof args.text === 'string') {
+          let scan; try { scan = scanText(args.text); } catch (e) { scan = { ok: false, error: 'the instruction scan failed' }; }
+          if (!scan || scan.ok !== true) {
+            return refuse('the new ' + String(args.field || 'document') + ' text contains a pattern that tries to override instructions or leak credentials'
+              + (scan && scan.patternId ? ' (' + scan.patternId + ')' : '') + '. Tell the Commander what was blocked; they can edit the Dossier by hand', 'blocked by instruction scan');
+          }
+        }
+        const out = await ask('station.update_agent', args || {});
+        return out.ok ? { content: JSON.stringify(out.result), summary: 'saved agent document' } : refuse(out.error);
+      }
+    };
+
     return {
+      agentConfigTool, agentConfigureTool,
       listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool,
-      register(reg) { [listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool].forEach(t => reg.register(t)); return reg; }
+      register(reg) { [listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool, agentConfigTool, agentConfigureTool].forEach(t => reg.register(t)); return reg; }
     };
   }
 

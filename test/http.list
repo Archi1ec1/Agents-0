@@ -110,6 +110,7 @@ test/run-recovery.api.test.js
 test/routing.sample.e2e.test.js
 test/routing.sample-provider.e2e.test.js
 test/routing.steptest.e2e.test.js
+test/routing.triggers.e2e.test.js
 test/station-template-example.e2e.test.js
 test/route-honesty.e2e.test.js
 test/effective-toolsets.e2e.test.js
@@ -142,3 +143,7 @@ test/toolsearch.connectors-deferred.test.js
 test/effective-toolsets.availability.test.js
 test/payload.budget.test.js
 test/prompt-on-demand.e2e.test.js
+test/byok-linked-credit.e2e.test.js
+test/workflow-project.e2e.test.js
+test/workflow-project-multibay.e2e.test.js
+test/routing.linestats.e2e.test.js
