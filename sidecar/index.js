@@ -657,9 +657,10 @@ function knobEnvLocked(envSuffix) { const e = envSuffix ? ENV(envSuffix) : null;
 const CAPS = { maxIters: resolveKnob('MAX_ITERS', 'maxIters', 0), maxCostUsd: 1.00, maxRepeat: 3, toolTimeoutMs: 30000, maxToolBytes: resolveKnob('MAX_TOOL_BYTES', 'maxToolBytes', 120000), maxUnpricedTokens: resolveKnob('MAX_UNPRICED_TOKENS', 'maxUnpricedTokens', 2000000) };
 const MAX_TOOL_BYTES_PINNED = knobEnvLocked('MAX_TOOL_BYTES');
 const MCP_CALL_TIMEOUT_MS = 120000;   // default connector call/handshake budget (mcp/manager.js); per-connector timeoutMs overrides
-// Optional spend governance: per-run, per-agent, per-day, and global ceilings all default OFF.
-// num() passes a parsed value through (including 0 -> UNGOVERNED via budget.js capOf, e.g. SKYNET_BUDGET_PER_DAY=0
-// disables the day pool); only an empty/missing/negative/non-numeric value falls back to the default.
+// Spend governance: per-run, per-agent and global ceilings default OFF; per-DAY ships ON as a soft rail
+// (budgetcaps.SHIPPED_DEFAULTS — the 2026-09-17 runaway-loop incident). num() passes a parsed value through
+// (including 0 -> UNGOVERNED via budget.js capOf, e.g. SKYNET_BUDGET_PER_DAY=0 disables the day pool); only an
+// empty/missing/negative/non-numeric value falls back to the shipped default.
 const num = (v, d) => { if (v == null || String(v).trim() === '') return d; const n = Number(v); return (typeof n === 'number' && !isNaN(n) && n >= 0) ? n : d; };
 // CONNECTOR SCHEMA FOOTPRINT (w2, 2026-09-22): once a run's MCP connector tools pass EITHER threshold, the largest
 // servers stop riding every request — deferred (still granted, found through tool.search) with a one-line server
@@ -669,13 +670,14 @@ const num = (v, d) => { if (v == null || String(v).trim() === '') return d; cons
 // SKYNET_CONNECTOR_DEFER_BYTES / _TOOLS override; 0 switches that axis off (both 0 = never defer a connector).
 const CONNECTOR_DEFER = { bytes: num(ENV('CONNECTOR_DEFER_BYTES'), 8192), tools: num(ENV('CONNECTOR_DEFER_TOOLS'), 12) };
 let lastToolFootprintLog = '';   // de-dupes the [tools] footprint log line to changes, not every run
-// Users may opt into any cap in SETTINGS → BUDGET (0/blank = no cap); environment variables
+// Users may retune any cap in SETTINGS → BUDGET (0/blank = no cap); environment variables
 // still override for locked-down deploys. Unmetered subscription runs remain ungoverned.
+const BUDGET_SHIPPED = budgetCaps.shippedDefaults();
 const BUDGET_CAPS = {
-  perRun: num(ENV('BUDGET_PER_RUN'), 0),
-  perAgent: num(ENV('BUDGET_PER_AGENT'), 0),   // multi-agent fairness rail: one agent's cumulative spend (0 = ungoverned; default OFF — a lifetime cap punishes engagement, not runaways)
-  perDay: num(ENV('BUDGET_PER_DAY'), 0),
-  global: num(ENV('BUDGET_GLOBAL'), 0)
+  perRun: num(ENV('BUDGET_PER_RUN'), BUDGET_SHIPPED.perRun),
+  perAgent: num(ENV('BUDGET_PER_AGENT'), BUDGET_SHIPPED.perAgent),   // multi-agent fairness rail: one agent's cumulative spend (0 = ungoverned; default OFF — a lifetime cap punishes engagement, not runaways)
+  perDay: num(ENV('BUDGET_PER_DAY'), BUDGET_SHIPPED.perDay),         // $25/day soft rail: run ends 'budget'/'day', one-click RESUME in the Budget panel
+  global: num(ENV('BUDGET_GLOBAL'), BUDGET_SHIPPED.global)
 };
 // Optional multi-agent fan-out ceiling. 0 = unlimited (the product default). See concurrency.js.
 const MAX_CONCURRENT_AGENTS = resolveKnob('MAX_CONCURRENT_AGENTS', 'maxConcurrentAgents', 0);   // P1-9: env > saved > default
