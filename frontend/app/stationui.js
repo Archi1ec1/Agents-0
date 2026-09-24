@@ -1600,6 +1600,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // 'brief' fallback; it's the single source of truth for the memory-live guard + the BRIEF-only tick.
   function agSection() { return consoleSection['agents'] || 'brief'; }
   const agEdit = {};        // config fileKey -> true while its editor is open
+  const agEditBase = {};    // config fileKey -> { id, text } the doc held when its editor opened (SAVE's stale-text check)
   let memLiveWired = false, memRefreshTimer = 0;   // M-mem.6: the once-wired, debounced Memory Core live-refresh
   let skillsLiveWired = false, skillsRefreshTimer = 0;   // A3: the once-wired, debounced AGENT SKILLS live-refresh
 
@@ -2525,16 +2526,27 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       group.addEventListener('toggle', () => { if (group.isConnected) cfOpen.set(group.dataset.cfGroup, group.open); });
     });
     body.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
-      agEdit[b.dataset.edit] = true; sfx('click'); rerender('agents');
+      agEdit[b.dataset.edit] = true; agEditBase[b.dataset.edit] = { id: a && a.id, text: docVal(a, b.dataset.edit) };
+      sfx('click'); rerender('agents');
     }));
     body.querySelectorAll('[data-cancel]').forEach(b => b.addEventListener('click', () => {
-      delete agEdit[b.dataset.cancel]; sfx('click'); rerender('agents');
+      delete agEdit[b.dataset.cancel]; delete agEditBase[b.dataset.cancel]; sfx('click'); rerender('agents');
     }));
     body.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => {
       const key = b.dataset.save, ta = body.querySelector('#cf-ta-' + key);
       const val = ta ? ta.value : '';
+      // STALE-TEXT CHECK: the lead can rewrite this doc from chat (team.configure) while the editor is open. A
+      // blind SAVE would silently undo an edit the lead already reported as saved. First SAVE warns and keeps the
+      // draft; a second SAVE is a deliberate overwrite of the new text.
+      const base = agEditBase[key], liveText = docVal(a, key);
+      if (base && a && base.id === a.id && liveText !== base.text && val !== liveText) {
+        agEditBase[key] = { id: a.id, text: liveText };
+        sfx('bad');
+        notify('This document changed since you opened it (the lead may have edited it from chat). Your draft is kept; SAVE again to replace the new text, or CANCEL to see it.', 'warn');
+        return;
+      }
       if (access.config && access.config.apply) access.config.apply({ [key]: val }, a && a.id);
-      delete agEdit[key]; sfx('click');
+      delete agEdit[key]; delete agEditBase[key]; sfx('click');
       const meta = CONFIG_FILES.find(f => f.key === key);
       notify('saved ' + (meta ? meta.file : key) + ' — your agent runs on it now', 'good');
       rerender('agents');

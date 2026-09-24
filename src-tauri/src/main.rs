@@ -12,8 +12,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod credentials;
+mod desktop_assets;
 mod fresh_start;
 mod lifecycle_preferences;
+mod sidecar_startup;
+mod webview_recovery;
 mod window_visibility;
 
 use std::collections::BTreeMap;
@@ -23,7 +26,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -73,6 +76,13 @@ struct AppState {
     // Crash-loop memory for the guardian (see spawn_guardian): consecutive unexpected sidecar exits,
     // the backoff in force, and the HALTED verdict the frontend reads via starnet_sidecar_status.
     guardian: Mutex<GuardianStatus>,
+    // WebView2 crash recovery (webview_recovery.rs): true while a dead main window is being
+    // destroyed and rebuilt, so the momentary zero-window state is not taken as an app exit.
+    webview_rebuilding: AtomicBool,
+    webview_recovery: webview_recovery::RecoveryBudget,
+    // Set once setup has built the main window. Before that a second launch must not treat the
+    // missing window as a dead instance (see webview_recovery::second_launch_action).
+    main_window_built: AtomicBool,
 }
 
 /// What the guardian knows about the sidecar's exit history. Serialized verbatim to the frontend
@@ -1926,12 +1936,8 @@ fn spawn_sidecar(state: &AppState) -> bool {
 
     let mut last_error = None;
     for attempt in 0..=20 {
-        match sidecar_command(state, &entry, &node).spawn() {
-            Ok(child) => {
-                let pid = child.id();
-                if let Ok(mut guard) = state.sidecar.lock() {
-                    *guard = Some(child);
-                }
+        match sidecar_startup::spawn(&mut sidecar_command(state, &entry, &node), &state.sidecar) {
+            Ok(pid) => {
                 let (listening, exited) = wait_for_port_or_exit(
                     state.port,
                     Duration::from_secs(25),
@@ -1950,6 +1956,12 @@ fn spawn_sidecar(state: &AppState) -> bool {
                         ),
                     },
                 );
+                if !listening && exited.is_none() {
+                    match sidecar_startup::stop_timed_out(&state.sidecar, pid) {
+                        Ok(()) => log_startup(&state.startup_log, format!("spawn_sidecar pid={pid} timed out; child stopped and reaped")),
+                        Err(error) => log_startup(&state.startup_log, format!("spawn_sidecar pid={pid} timeout cleanup failed: {error}; retaining child ownership")),
+                    }
+                }
                 return listening;
             }
             Err(e) if cfg!(windows) && e.raw_os_error() == Some(32) && attempt < 20 => {
@@ -1992,8 +2004,8 @@ fn show_startup_failure_dialog(startup_log: &Option<PathBuf>) -> bool {
     };
     let body = format!(
         "StarNet could not start its local engine.\n\n\
-         This usually means the bundled Node runtime was blocked by antivirus or a Windows \
-         Application Control policy, or the port could not be opened.\n\n\
+         The engine exited or did not become ready. Possible causes include unavailable workspace \
+         files, a blocked Node runtime, or a port that could not be opened.\n\n\
          {log_line}\n\n\
          Click Retry to try starting the engine again, or Cancel to close StarNet."
     );
@@ -2022,18 +2034,59 @@ fn show_startup_failure_dialog(startup_log: &Option<PathBuf>) -> bool {
     false
 }
 
-/// Spawn the sidecar and, if it fails to come up, loop showing the startup-failure dialog so the
-/// user can Retry (audit 0.2). Bounded so a persistently-blocked node can't spin a dialog forever:
-/// after the retries are exhausted we return `false` and let the guardian keep trying in the
-/// background. Returns `true` once the sidecar is listening.
+/// Independent of WebView2: even a stalled window constructor must be diagnosable.
+fn report_window_startup_failure(log: &Option<PathBuf>, detail: &str) {
+    log_startup(log, format!("webview-startup: {detail}"));
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+        };
+        let path = log
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "unavailable".into());
+        let text: Vec<u16> = format!("StarNet's window could not finish starting.\n\n{detail}\n\nQuit StarNet from its tray icon and reopen it. If this persists, include startup.log in your bug report:\n{path}")
+            .encode_utf16().chain(std::iter::once(0)).collect();
+        let title: Vec<u16> = "StarNet — window startup"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            );
+        }
+    }
+}
+
+/// Retry only in response to the native dialog. Cancel is a full startup abort;
+/// the guardian must not turn a cancelled launch into hidden background work.
+/// Returns whether startup should proceed.
 fn spawn_sidecar_with_retry(state: &AppState) -> bool {
-    // A handful of user-driven retries at startup; the long-lived guardian covers the rest.
-    for _ in 0..5 {
+    loop {
         if spawn_sidecar(state) {
             return true;
         }
+        // No native Retry/Cancel dialog exists off Windows, so nobody pressed Cancel: treating the stub's
+        // `false` as one aborted setup and panicked the app on any slow or failed first spawn. Keep the
+        // pre-dialog behaviour there — open the window and let the guardian keep retrying.
+        if !cfg!(windows) {
+            show_startup_failure_dialog(&state.startup_log);
+            log_startup(
+                &state.startup_log,
+                "startup: no native dialog on this platform — continuing; the guardian keeps retrying",
+            );
+            return true;
+        }
         if !show_startup_failure_dialog(&state.startup_log) {
-            // User chose Cancel — stop prompting; the guardian may still recover it silently.
+            log_startup(
+                &state.startup_log,
+                "startup: cancelled; stopping local engine",
+            );
             return false;
         }
         log_startup(
@@ -2041,11 +2094,6 @@ fn spawn_sidecar_with_retry(state: &AppState) -> bool {
             "startup: user chose Retry — respawning sidecar",
         );
     }
-    log_startup(
-        &state.startup_log,
-        "startup: retries exhausted; leaving recovery to the guardian",
-    );
-    false
 }
 
 // ---- watchdog: respawn a crashed sidecar so the open window keeps working ----
@@ -2607,6 +2655,383 @@ fn stay_resident_or_quit(app: &AppHandle, st: &AppState, why: &str) {
     );
     drain_and_kill_sidecar(st);
     app.exit(0);
+}
+
+/// The init script every main-window document runs first.
+fn webview_init_script(port: u16, api_token: &str) -> String {
+    // The frontend is served LOCALLY (bundled via frontendDist), NOT from the sidecar's
+    // http origin — Tauri denies IPC (the keychain commands) to remote origins. This shim
+    // rewrites the frontend's root-relative /api/* fetches to the sidecar's port.
+    let init = format!(
+        "window.__STARNET_API__='http://127.0.0.1:{port}';window.__STARNET_API_TOKEN__='{api_token}';var _sf=window.fetch;window.fetch=function(u,o){{if(typeof u==='string'&&u.indexOf('/api/')===0)u=window.__STARNET_API__+u;return _sf(u,o)}};"
+    );
+    // Windows runs WITHOUT native decorations (see the window builder below): this flag
+    // tells the frontend (app/titlebar.js) to render its own themed titlebar with
+    // MIN/MAX/CLOSE riding the Commander's phosphor theme. macOS/browser never set it.
+    #[cfg(windows)]
+    let init = format!("{init}window.__STARNET_CUSTOM_CHROME__=1;");
+    init
+}
+
+/// What the user had on screen, carried from a crashed main window into its rebuilt replacement.
+#[derive(Clone, Copy)]
+struct MainWindowRestore {
+    visible: bool,
+    maximized: bool,
+    position: Option<tauri::PhysicalPosition<i32>>,
+    size: Option<tauri::PhysicalSize<u32>>,
+}
+
+/// Build the `main` webview window: at startup (`restore: None`) and again when WebView2 crash
+/// recovery replaces a window whose browser process died (see webview_recovery.rs).
+fn build_main_window(
+    app: &AppHandle,
+    restore: Option<MainWindowRestore>,
+) -> tauri::Result<tauri::WebviewWindow> {
+    let init = {
+        let st = app.state::<AppState>();
+        webview_init_script(st.port, &st.api_token)
+    };
+    // A rebuilt window reveals itself after its first load only when the window it replaces was
+    // showing — a crash while parked in the tray must not pop the app open.
+    let reveal_rebuilt = Arc::new(AtomicBool::new(restore.is_some_and(|r| r.visible)));
+    let maximize_rebuilt = restore.is_some_and(|r| r.maximized);
+    let reveal_on_load = reveal_rebuilt.clone();
+
+    let main_window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        // Let HTML5 file drops reach COMMS and the existing attachment uploader.
+        // Tauri's native handler otherwise intercepts them on Windows.
+        .disable_drag_drop_handler()
+        .title("StarNet")
+        .inner_size(1280.0, 832.0)
+        .min_inner_size(960.0, 600.0)
+        .initialization_script(&init)
+        .center()
+        .visible(false)
+        // Page-load hooks fire for Started AND Finished. Reveal only once,
+        // after Finished; a close cancels any still-pending startup reveal.
+        .on_page_load(move |window, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    let startup = state.startup_reveal.finish_load();
+                    let rebuilt = reveal_on_load.swap(false, Ordering::SeqCst);
+                    if startup || rebuilt {
+                        if rebuilt && maximize_rebuilt {
+                            let _ = window.maximize();
+                        }
+                        let _ = window.show();
+                        if startup {
+                            log_startup(&state.startup_log, "webview-startup: initial document loaded");
+                        }
+                    }
+                }
+            }
+        });
+    // Windows: drop the stock titlebar/border — the frontend draws its own themed
+    // chrome (titlebar.js, gated on __STARNET_CUSTOM_CHROME__ above). shadow(true)
+    // keeps the DWM drop shadow, and Tauri's undecorated-resize handling keeps the
+    // edge-drag resize grips working. macOS keeps native decorations until a mac
+    // pass is designed (unverified there — do not blind-apply).
+    #[cfg(windows)]
+    let main_window = {
+        let main_window = main_window.decorations(false).shadow(true);
+        match std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
+            Ok(args) if !args.trim().is_empty() => {
+                // Tauri supplies its own WebView2 environment options, so the ambient
+                // variable is not inherited automatically. Forward an explicit caller
+                // override here; installed QA uses this to open a loopback CDP port.
+                // Normal production launches do not set it and therefore expose no
+                // debugger. Never log the argument value because callers may add paths.
+                log_startup(
+                    &startup_log_path(app),
+                    "webview-browser-args: explicit environment override forwarded",
+                );
+                main_window.additional_browser_args(&args)
+            }
+            _ => main_window,
+        }
+    };
+    let main_window = main_window.build()?;
+
+    if let Some(r) = restore {
+        if let Some(position) = r.position {
+            let _ = main_window.set_position(position);
+        }
+        if let Some(size) = r.size {
+            let _ = main_window.set_size(size);
+        }
+    }
+
+    // ---- Lane 4D: close-to-tray, explicitly selected or gated on REAL armed work ----
+    // On a close request: ALWAYS intercept + hide immediately (instant feedback, and the poll must not
+    // block the UI thread — review m1), then decide on a worker thread from the classified probe (M2):
+    //   Armed{armed:true}  -> keep the ONE sidecar running, window lives in the tray (explicit there).
+    //   Armed{armed:false} -> nothing armed: drain + kill + exit — full quit, NO background process.
+    //   NotRunning         -> connect refused: no sidecar is listening, so no armed work can exist —
+    //                         full quit is safe (this is the ONLY failure that may quit).
+    //   Ambiguous (x2)     -> the sidecar ACCEPTED the connection but the poll failed (slow/garbled):
+    //                         it is ALIVE and may hold armed work — killing it on that evidence could
+    //                         destroy the work, so after one retry we FAIL OPEN: stay hidden in the
+    //                         tray and let the updater keep polling until the status recovers.
+    // This is the whole product promise: no hidden daemon, and no claim the harness can't prove.
+    {
+        let app_handle = app.clone();
+        main_window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                reveal_rebuilt.store(false, Ordering::SeqCst);
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    state.startup_reveal.cancel();
+                    state.close_exit_pending.store(true, Ordering::SeqCst);
+                }
+                api.prevent_close();
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+                let app2 = app_handle.clone();
+                std::thread::spawn(move || {
+                    let Some(state) = app2.try_state::<AppState>() else {
+                        log_startup(&None, "close-request: managed app state unavailable; exiting");
+                        app2.exit(0);
+                        return;
+                    };
+                    let st = state.inner();
+                    let close_to_tray = lifecycle_preferences_snapshot(st).close_to_tray;
+                    log_startup(
+                        &st.startup_log,
+                        format!("close-request: close_to_tray={close_to_tray}"),
+                    );
+                    if close_to_tray {
+                        // Explicit authority to keep the supervised process alive even when no scheduled
+                        // work is armed. Tray Quit remains the only full-stop action in this mode.
+                        stay_resident_or_quit(&app2, st, "close-to-tray preference");
+                        return;
+                    }
+                    let mut probe = probe_lifecycle_armed(
+                        st.port,
+                        &st.api_token,
+                        Duration::from_millis(1500),
+                    );
+                    if matches!(probe, LifecycleProbe::Ambiguous) {
+                        // One retry before deciding — a single slow poll must not park the app in the
+                        // tray forever when the sidecar is actually healthy and idle.
+                        probe = probe_lifecycle_armed(
+                            st.port,
+                            &st.api_token,
+                            Duration::from_millis(1500),
+                        );
+                    }
+                    match probe {
+                        LifecycleProbe::Armed(l) if l.armed => {
+                            stay_resident_or_quit(&app2, st, "armed background work");
+                        }
+                        LifecycleProbe::Ambiguous => {
+                            // Alive but unwell — fail OPEN (killing could destroy armed work).
+                            stay_resident_or_quit(&app2, st, "armed state ambiguous");
+                        }
+                        _ => {
+                            // Armed{armed:false} or NotRunning: window-close is a full quit.
+                            drain_and_kill_sidecar(st);
+                            app2.exit(0);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    install_webview_crash_recovery(&main_window);
+
+    Ok(main_window)
+}
+
+/// Hook WebView2's `ProcessFailed` so a crashed browser engine no longer leaves the window white
+/// forever while the sidecar keeps running (2026-09-23: the whole WebView2 tree died under memory
+/// pressure at 00:57 and the window stayed blank until a manual restart).
+#[cfg(windows)]
+fn install_webview_crash_recovery(win: &tauri::WebviewWindow) {
+    let app = win.app_handle().clone();
+    let log = startup_log_path(&app);
+    let log_err = log.clone();
+    let hooked = win.with_webview(move |platform| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PROCESS_FAILED_KIND;
+        use webview2_com::ProcessFailedEventHandler;
+
+        let core = match unsafe { platform.controller().CoreWebView2() } {
+            Ok(core) => core,
+            Err(e) => {
+                log_startup(
+                    &log,
+                    format!("webview-recovery: no CoreWebView2 to hook ({e}); crash recovery OFF for this window"),
+                );
+                return;
+            }
+        };
+        let handler_app = app.clone();
+        let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+            // Unknown until the args say otherwise: an unreadable kind must never look like
+            // BROWSER_PROCESS_EXITED (0) and tear the window down.
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
+            if let Some(args) = args {
+                if unsafe { args.ProcessFailedKind(&mut kind) }.is_err() {
+                    kind = COREWEBVIEW2_PROCESS_FAILED_KIND(-1);
+                }
+            }
+            on_webview_process_failed(&handler_app, kind.0, sender);
+            Ok(())
+        }));
+        let mut token = 0i64;
+        match unsafe { core.add_ProcessFailed(&handler, &mut token) } {
+            Ok(()) => log_startup(&log, "webview-recovery: ProcessFailed hook installed"),
+            Err(e) => log_startup(
+                &log,
+                format!("webview-recovery: ProcessFailed hook FAILED ({e}); crash recovery OFF for this window"),
+            ),
+        }
+    });
+    if let Err(e) = hooked {
+        log_startup(
+            &log_err,
+            format!("webview-recovery: could not reach the webview to hook ({e}); crash recovery OFF"),
+        );
+    }
+}
+
+#[cfg(windows)]
+fn on_webview_process_failed(
+    app: &AppHandle,
+    kind: i32,
+    sender: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2>,
+) {
+    use webview_recovery::{action_for_kind, kind_name, RecoveryAction};
+
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    // Resolve the log path the same way install_webview_crash_recovery does.
+    let log = startup_log_path(app);
+    let name = kind_name(kind);
+    let action = action_for_kind(kind);
+    if state.shutting_down.load(Ordering::SeqCst) {
+        log_startup(
+            &log,
+            format!("webview-recovery: {name} during shutdown; ignored"),
+        );
+        return;
+    }
+    if action == RecoveryAction::LogOnly {
+        log_startup(
+            &log,
+            format!("webview-recovery: {name} (kind {kind}); WebView2 handles this itself, no action"),
+        );
+        return;
+    }
+    if !state.webview_recovery.try_spend(Instant::now()) {
+        log_startup(
+            &log,
+            format!("webview-recovery: {name}; recovery budget spent (3 in 10 min), leaving the window as-is; restart StarNet to recover"),
+        );
+        return;
+    }
+    if action == RecoveryAction::Reload {
+        match sender.map(|core| unsafe { core.Reload() }) {
+            Some(Ok(())) => {
+                log_startup(
+                    &log,
+                    format!("webview-recovery: {name}; reloading the page"),
+                );
+                return;
+            }
+            other => {
+                let why = match other {
+                    Some(Err(e)) => e.to_string(),
+                    _ => "no webview on the event".to_string(),
+                };
+                log_startup(
+                    &log,
+                    format!("webview-recovery: {name}; reload failed ({why}), rebuilding instead"),
+                );
+            }
+        }
+    }
+    schedule_main_window_rebuild(app.clone(), name);
+}
+
+/// Destroy the dead `main` window and build a fresh one in its place, carrying over its geometry
+/// and visibility. Runs off the UI thread and hops onto it for each window operation, because it
+/// is triggered from inside the dying webview's own event callback.
+#[cfg(windows)]
+fn schedule_main_window_rebuild(app: AppHandle, why: &'static str) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let log = startup_log_path(&app);
+    if state.webview_rebuilding.swap(true, Ordering::SeqCst) {
+        log_startup(
+            &log,
+            format!("webview-recovery: {why}; a rebuild is already in progress"),
+        );
+        return;
+    }
+    log_startup(
+        &log,
+        format!("webview-recovery: {why}; rebuilding the main window"),
+    );
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let destroy_app = app.clone();
+        let queued = app.run_on_main_thread(move || {
+            let restore = destroy_app.get_webview_window("main").map(|win| {
+                let restore = MainWindowRestore {
+                    visible: win.is_visible().unwrap_or(true),
+                    maximized: win.is_maximized().unwrap_or(false),
+                    position: win.outer_position().ok(),
+                    size: win.inner_size().ok(),
+                };
+                let _ = win.destroy();
+                restore
+            });
+            let _ = tx.send(restore);
+        });
+        let restore = match queued {
+            Ok(()) => rx.recv_timeout(Duration::from_secs(5)).ok().flatten(),
+            Err(_) => None,
+        };
+        // Tauri frees the "main" label once the destroyed window's teardown has run.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.get_webview_window("main").is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let restore = restore.unwrap_or(MainWindowRestore {
+            visible: true,
+            maximized: false,
+            position: None,
+            size: None,
+        });
+        let build_app = app.clone();
+        let build_log = log.clone();
+        let queued = app.run_on_main_thread(move || {
+            match build_main_window(&build_app, Some(restore)) {
+                Ok(_) => log_startup(&build_log, "webview-recovery: main window rebuilt"),
+                Err(e) => log_startup(
+                    &build_log,
+                    format!("webview-recovery: main window rebuild FAILED ({e})"),
+                ),
+            }
+            if let Some(state) = build_app.try_state::<AppState>() {
+                state.webview_rebuilding.store(false, Ordering::SeqCst);
+            }
+        });
+        if let Err(e) = queued {
+            log_startup(
+                &log,
+                format!("webview-recovery: could not queue the rebuild ({e})"),
+            );
+            if let Some(state) = app.try_state::<AppState>() {
+                state.webview_rebuilding.store(false, Ordering::SeqCst);
+            }
+        }
+    });
 }
 
 /// Reveal + focus the main window (from a hidden/close-to-tray state or a minimized one).
@@ -3864,14 +4289,35 @@ fn starnet_set_close_to_tray(
 }
 
 fn main() {
+    let mut context = tauri::generate_context!();
+    context.assets = Box::new(desktop_assets::DesktopAssets::new(context.assets));
     tauri::Builder::default()
         // A second launch should focus the running window, not spin up a 2nd sidecar. Registered FIRST per
         // Tauri guidance (n1): single-instance must run before other plugins so a second process bails early.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
+            let win = app.get_webview_window("main");
+            // No managed state yet = setup is still booting the sidecar: this instance is starting.
+            let (built, rebuilding) = app
+                .try_state::<AppState>()
+                .map(|state| {
+                    (
+                        state.main_window_built.load(Ordering::SeqCst),
+                        state.webview_rebuilding.load(Ordering::SeqCst),
+                    )
+                })
+                .unwrap_or((false, false));
+            let action = webview_recovery::second_launch_action(win.is_some(), built, rebuilding);
+            if let Some(win) = win {
                 let _ = win.show(); // the window may be hidden in the tray — a relaunch should reveal it
                 let _ = win.unminimize();
                 let _ = win.set_focus();
+            } else if action == webview_recovery::SecondLaunch::Wait {
+                // Starting up (a slow boot under memory pressure) or rebuilding after a WebView2
+                // crash: NOT a zombie. Quitting here killed a still-booting StarNet on 2026-09-23.
+                log_startup(
+                    &startup_log_path(app),
+                    "second-launch: main window not built yet (starting or rebuilding); leaving this instance running",
+                );
             } else {
                 // No `main` window means this resident instance can never be revealed again (every
                 // reveal path addresses that window). Get out of the way — drain on a worker thread
@@ -3986,6 +4432,9 @@ fn main() {
                 recovery_in_progress: AtomicBool::new(false),
                 shutting_down: AtomicBool::new(false),
                 guardian: Mutex::new(GuardianStatus::default()),
+                webview_rebuilding: AtomicBool::new(false),
+                webview_recovery: webview_recovery::RecoveryBudget::default(),
+                main_window_built: AtomicBool::new(false),
             };
             // Before spawning OUR sidecar: terminate any orphan sidecars left behind by a
             // hard-killed previous shell (Drop/ExitRequested never ran there). Multiple live
@@ -3993,10 +4442,11 @@ fn main() {
             // other's rotating Codex OAuth refresh tokens. Scoped strictly to processes whose
             // image path IS our bundled node runtime; fail-open, never blocks startup.
             reap_orphan_sidecars(&node_binary(&state.root), &state.startup_log);
-            // Try to bring the sidecar up; on failure show a native Retry dialog naming startup.log
-            // (audit 0.2). Even if this ultimately returns false, the guardian below keeps trying so
-            // the app can still recover in the background rather than sitting permanently dead.
-            let _ = spawn_sidecar_with_retry(&state);
+            // Bring the sidecar up before starting background supervision. Cancel drops
+            // the owned state and child, before a guardian or hidden window can be created.
+            if !spawn_sidecar_with_retry(&state) {
+                return Err("local engine startup cancelled".into());
+            }
             app.manage(state);
             app.manage(PendingUpdate(Mutex::new(None)));
 
@@ -4048,18 +4498,6 @@ fn main() {
                 spawn_tray_updater(app.handle().clone());
             }
 
-            // The frontend is served LOCALLY (bundled via frontendDist), NOT from the sidecar's
-            // http origin — Tauri denies IPC (the keychain commands) to remote origins. This shim
-            // rewrites the frontend's root-relative /api/* fetches to the sidecar's port.
-            let init = format!(
-                "window.__STARNET_API__='http://127.0.0.1:{port}';window.__STARNET_API_TOKEN__='{api_token}';var _sf=window.fetch;window.fetch=function(u,o){{if(typeof u==='string'&&u.indexOf('/api/')===0)u=window.__STARNET_API__+u;return _sf(u,o)}};"
-            );
-            // Windows runs WITHOUT native decorations (see the window builder below): this flag
-            // tells the frontend (app/titlebar.js) to render its own themed titlebar with
-            // MIN/MAX/CLOSE riding the Commander's phosphor theme. macOS/browser never set it.
-            #[cfg(windows)]
-            let init = format!("{init}window.__STARNET_CUSTOM_CHROME__=1;");
-
             // Purge stale WebView2 compiled/GPU caches when the packaged build changed, BEFORE the
             // webview window is created — otherwise V8 can run old bytecode against new data
             // (see docs/UPDATE_STATE_SAFETY_AUDIT_2026-07-06.md P0.1). Fails soft; never blocks boot.
@@ -4076,135 +4514,47 @@ fn main() {
                 );
             }
 
-            let main_window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                // Let HTML5 file drops reach COMMS and the existing attachment uploader.
-                // Tauri's native handler otherwise intercepts them on Windows.
-                .disable_drag_drop_handler()
-                .title("StarNet")
-                .inner_size(1280.0, 832.0)
-                .min_inner_size(960.0, 600.0)
-                .initialization_script(&init)
-                .center()
-                .visible(false)
-                // Page-load hooks fire for Started AND Finished. Reveal only once,
-                // after Finished; a close cancels any still-pending startup reveal.
-                .on_page_load(move |window, payload| {
-                    if payload.event() == tauri::webview::PageLoadEvent::Finished {
-                        if let Some(state) = window.app_handle().try_state::<AppState>() {
-                            if state.startup_reveal.finish_load() {
-                                let _ = window.show();
-                            }
-                        }
+            log_startup(&startup_log_path(app.handle()), "webview-startup: constructing main window");
+            // Run outside the UI thread: WebView2 creation itself may stall. A normal
+            // load, an explicit close, or start-minimized suppresses this one-shot notice.
+            let startup_watch = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(45));
+                if let Some(state) = startup_watch.try_state::<AppState>() {
+                    if !state.shutting_down.load(Ordering::SeqCst) && state.startup_reveal.is_pending() {
+                        report_window_startup_failure(&state.startup_log, "The window did not finish loading within 45 seconds.");
                     }
-                });
-            // Windows: drop the stock titlebar/border — the frontend draws its own themed
-            // chrome (titlebar.js, gated on __STARNET_CUSTOM_CHROME__ above). shadow(true)
-            // keeps the DWM drop shadow, and Tauri's undecorated-resize handling keeps the
-            // edge-drag resize grips working. macOS keeps native decorations until a mac
-            // pass is designed (unverified there — do not blind-apply).
-            #[cfg(windows)]
-            let main_window = {
-                let main_window = main_window.decorations(false).shadow(true);
-                match std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") {
-                    Ok(args) if !args.trim().is_empty() => {
-                        // Tauri supplies its own WebView2 environment options, so the ambient
-                        // variable is not inherited automatically. Forward an explicit caller
-                        // override here; installed QA uses this to open a loopback CDP port.
-                        // Normal production launches do not set it and therefore expose no
-                        // debugger. Never log the argument value because callers may add paths.
-                        log_startup(
-                            &startup_log_path(app.handle()),
-                            "webview-browser-args: explicit environment override forwarded",
-                        );
-                        main_window.additional_browser_args(&args)
-                    }
-                    _ => main_window,
                 }
-            };
-            let main_window = main_window.build()?;
-
-            // ---- Lane 4D: close-to-tray, explicitly selected or gated on REAL armed work ----
-            // On a close request: ALWAYS intercept + hide immediately (instant feedback, and the poll must not
-            // block the UI thread — review m1), then decide on a worker thread from the classified probe (M2):
-            //   Armed{armed:true}  -> keep the ONE sidecar running, window lives in the tray (explicit there).
-            //   Armed{armed:false} -> nothing armed: drain + kill + exit — full quit, NO background process.
-            //   NotRunning         -> connect refused: no sidecar is listening, so no armed work can exist —
-            //                         full quit is safe (this is the ONLY failure that may quit).
-            //   Ambiguous (x2)     -> the sidecar ACCEPTED the connection but the poll failed (slow/garbled):
-            //                         it is ALIVE and may hold armed work — killing it on that evidence could
-            //                         destroy the work, so after one retry we FAIL OPEN: stay hidden in the
-            //                         tray and let the updater keep polling until the status recovers.
-            // This is the whole product promise: no hidden daemon, and no claim the harness can't prove.
-            {
-                let app_handle = app.handle().clone();
-                main_window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        if let Some(state) = app_handle.try_state::<AppState>() {
-                            state.startup_reveal.cancel();
-                            state.close_exit_pending.store(true, Ordering::SeqCst);
-                        }
-                        api.prevent_close();
-                        if let Some(win) = app_handle.get_webview_window("main") {
-                            let _ = win.hide();
-                        }
-                        let app2 = app_handle.clone();
-                        std::thread::spawn(move || {
-                            let Some(state) = app2.try_state::<AppState>() else {
-                                log_startup(&None, "close-request: managed app state unavailable; exiting");
-                                app2.exit(0);
-                                return;
-                            };
-                            let st = state.inner();
-                            let close_to_tray = lifecycle_preferences_snapshot(st).close_to_tray;
-                            log_startup(
-                                &st.startup_log,
-                                format!("close-request: close_to_tray={close_to_tray}"),
-                            );
-                            if close_to_tray {
-                                // Explicit authority to keep the supervised process alive even when no scheduled
-                                // work is armed. Tray Quit remains the only full-stop action in this mode.
-                                stay_resident_or_quit(&app2, st, "close-to-tray preference");
-                                return;
-                            }
-                            let mut probe = probe_lifecycle_armed(
-                                st.port,
-                                &st.api_token,
-                                Duration::from_millis(1500),
-                            );
-                            if matches!(probe, LifecycleProbe::Ambiguous) {
-                                // One retry before deciding — a single slow poll must not park the app in the
-                                // tray forever when the sidecar is actually healthy and idle.
-                                probe = probe_lifecycle_armed(
-                                    st.port,
-                                    &st.api_token,
-                                    Duration::from_millis(1500),
-                                );
-                            }
-                            match probe {
-                                LifecycleProbe::Armed(l) if l.armed => {
-                                    stay_resident_or_quit(&app2, st, "armed background work");
-                                }
-                                LifecycleProbe::Ambiguous => {
-                                    // Alive but unwell — fail OPEN (killing could destroy armed work).
-                                    stay_resident_or_quit(&app2, st, "armed state ambiguous");
-                                }
-                                _ => {
-                                    // Armed{armed:false} or NotRunning: window-close is a full quit.
-                                    drain_and_kill_sidecar(st);
-                                    app2.exit(0);
-                                }
-                            }
-                        });
-                    }
-                });
+            });
+            if let Err(error) = build_main_window(app.handle(), None) {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.startup_reveal.cancel();
+                    state.shutting_down.store(true, Ordering::SeqCst);
+                    state.kill_sidecar();
+                }
+                report_window_startup_failure(&startup_log_path(app.handle()), &error.to_string());
+                return Err(error.into());
             }
+            app.state::<AppState>()
+                .main_window_built
+                .store(true, Ordering::SeqCst);
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to build the StarNet desktop shell")
         .run(|app, event| {
             if let RunEvent::ExitRequested { api, code, .. } = event {
+                // WebView2 crash recovery destroys the dead main window before building its
+                // replacement; that momentary zero-window state is not a request to quit.
+                if code.is_none()
+                    && app
+                        .try_state::<AppState>()
+                        .is_some_and(|state| state.webview_rebuilding.load(Ordering::SeqCst))
+                {
+                    api.prevent_exit();
+                    return;
+                }
                 // Window close and event-loop exit are separate decisions in Tauri. Hold only the exit paired
                 // with our main window's CloseRequested event while its worker decides from the explicit
                 // preference / armed-work proof. A second-instance process has no pending close, while the

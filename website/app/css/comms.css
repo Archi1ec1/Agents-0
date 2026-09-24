@@ -339,6 +339,13 @@
 #comms-presence.paused .cp-verb { color: var(--gold); text-shadow: 0 0 5px color-mix(in srgb, var(--gold) 45%, transparent); }
 #comms-presence .cp-tool.paused-note { color: var(--gold); flex: 1 1 auto; white-space: normal; opacity: .95; }
 #comms-presence .cp-tool.paused-note::before { content: ''; }
+/* LIVE WAIT LINE (chat.js waitNoteText) — the retry rung / countdown / reason / duration must stay readable at the
+   300 px FIT minimum, so it wraps instead of ellipsis-clipping (a long model id breaks anywhere). */
+#comms-presence .cp-tool.wait-note { white-space: normal; overflow-wrap: anywhere; }
+#comms-presence .cp-tool.wait-note .cp-model {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* RESOLVED — the card collapses to a single quiet summary line, no blink, no live glow */
 #comms-presence.resolved {

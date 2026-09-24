@@ -56,6 +56,9 @@
   // Once the run is tainted, may this tool still be called?
   function allowedWhenTainted(tool) {
     if (!tool) return true;                                  // unknown name -> let the ordinary unknown-tool path answer
+    // a tool that PERSISTS text a later run obeys (team.configure rewrites a crew member's standing orders) would
+    // launder this run's taint into every future run of that agent — past the per-run fence entirely
+    if (tool.taintLocked === true) return false;
     const impact = impactOfTool(tool);
     if (impact === 'workspace-process') return false;        // shell.exec / verify.run
     if (impact === 'external-credentialed') return false;    // web_request — spends a stored key outward

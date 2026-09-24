@@ -495,6 +495,8 @@
           cronScript: job.script || null,
           scriptTimeoutMs: job.scriptTimeoutMs,
           noAgent: job.noAgent === true,
+          runsLine: job.runsLine === true,
+          dockId: job.dockId || undefined,   // (multi-bay) the bay it fires at decides which line — and so which project — the entry stage runs in
           workdir: job.workdir || null,
           enabledToolsets: Array.isArray(job.enabledToolsets) ? job.enabledToolsets.slice() : null,
           initialTaint: !!(job.contextFrom && job.contextFrom.length),
