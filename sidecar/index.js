@@ -10889,7 +10889,9 @@ function handleLineStats(req, res) {
     const out = foldLineStats({
       rows: runStore.list(null, { limit: 1000 }) || [], lines, since,
       spentToday: id => lineSpend.spentToday(id),
-      capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay
+      capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay,
+      // SHIPPED = a job that left through the OUTBOX: only a run at a dock whose lane reaches it (never a mid-line stage)
+      shipsToOutbox: (agentId, dockId) => router.chainShipsToOutbox(agentId, dockId)
     });
     return json(200, Object.assign({ ok: true }, out));
   } catch (e) {
