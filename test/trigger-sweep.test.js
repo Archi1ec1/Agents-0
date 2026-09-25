@@ -77,6 +77,35 @@ function harness(opts) {
     A.eq(H.R.inflights().length, 0, 'an idle deleted trigger leaves nothing behind');
   }
 
+  /* ---- 4. a QUEUED item meets the pre-fire checks again at dispatch ---- */
+  {
+    let cap = { cap: null, spent: 0 };
+    const H = harness({ dayCap: () => cap });
+    const c = H.R.create({ kind: 'webhook', lineId: 'L1', maxPerHour: 10 }, { secretHash: T.hashSecret('k') });
+    const id = c.trigger.id;
+    A.ok(H.R.enqueue(id, { text: 'one' }).ok && H.R.enqueue(id, { text: 'two' }).ok, 'two items admitted (one runs, one waits)');
+    await tick();
+    A.eq(H.parked.length, 1, 'only the first is running');
+    cap = { cap: 1, spent: 1.5 };   // the first fire spent the line past its daily cap
+    H.parked[0]();
+    await tick(20);
+    A.eq(H.parked.length, 1, 'the waiting item did NOT run past the daily cap');
+    const v = H.R.view(id);
+    A.ok(/1 waiting item was dropped before running: .*daily limit/.test(v.lastError || ''), 'the drop and its reason are on record: ' + v.lastError);
+    A.eq(v.queued, 0, 'nothing is left waiting');
+    // plan disarmed while an item waits
+    cap = { cap: null, spent: 0 };
+    H.advance(1000);
+    A.ok(H.R.enqueue(id, { text: 'three' }).ok && H.R.enqueue(id, { text: 'four' }).ok, 'two more admitted');
+    await tick();
+    const lines = H.plan.lines; H.plan.lines = [];
+    H.parked[1]();
+    await tick(20);
+    A.eq(H.parked.length, 2, 'a waiting item does not run once its line left the floor');
+    A.ok(/dropped before running: its line is no longer on the floor/.test(H.R.view(id).lastError || ''), 'with that reason');
+    H.plan.lines = lines;
+  }
+
   /* ---- 3. a folder inside a line's working folder is refused (create AND every fire) ---- */
   {
     const fs = require('fs'), fsp = require('fs/promises'), os = require('os'), path = require('path');

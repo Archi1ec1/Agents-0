@@ -162,7 +162,17 @@ function makeTriggerRunner(deps) {
     const s = stateOf(id);
     if (s.busy || !s.queue.length) return;
     const t = get(id);
-    if (!t) { s.queue.length = 0; return; }
+    if (!t) { dropQueue(s); return; }
+    // THE PRE-FIRE CHECKS AGAIN AT DISPATCH (sweep 2026-09-25): an item waited behind the fire in flight, and while it
+    // waited the line may have hit its daily $ cap, been disarmed or left the floor, or E-STOP was pressed. Admission's
+    // answer is stale by now — every waiting item is dropped with the reason on record, never run past a closed gate.
+    const why = !t.enabled ? 'the trigger was paused' : preflight(t);
+    if (why) {
+      const n = s.queue.length;
+      dropQueue(s);
+      recordError(id, n + ' waiting item' + (n === 1 ? ' was' : 's were') + ' dropped before running: ' + why);
+      return;
+    }
     const item = s.queue.shift();
     s.busy = true;
     Promise.resolve().then(() => dispatch(t, item, s)).catch(e => {
