@@ -927,3 +927,4 @@ test/line-stats.test.js
 test/linewatch.test.js
 test/agent-skin-thumbs.test.js
 test/estop-sample-hub.test.js
+test/trigger-sweep.test.js

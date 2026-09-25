@@ -159,8 +159,13 @@ function makeTriggerRunner(deps) {
     s.busy = true;
     Promise.resolve().then(() => dispatch(t, item, s)).catch(e => {
       recordError(id, 'dispatch failed: ' + ((e && e.message) || e));
-    }).then(() => { s.busy = false; s.current = null; pump(id); });
+    }).then(() => {
+      s.busy = false; s.current = null;
+      if (s.removed) { retire(id, s); return; }   // deleted mid-fire: retired only now that the fire has settled
+      pump(id);
+    });
   }
+  function dropQueue(s) { s.queue.length = 0; }
 
   /* ---- the hub: one per trigger, built lazily, bound to hooks that read THIS trigger's live record ---- */
   function hubFor(id, s) {
@@ -288,10 +293,20 @@ function makeTriggerRunner(deps) {
     if (!get(id)) return { ok: false, code: 'unknown', error: 'no such trigger' };
     if (!commit(records.filter(t => t.id !== id))) return { ok: false, error: 'the trigger could not be deleted' };
     const s = live.get(id);
-    if (s) { s.queue.length = 0; if (s.hub && typeof s.hub.close === 'function') { try { s.hub.close(); } catch (e) { warn('[triggers] hub close: ' + ((e && e.message) || e)); } } }
-    live.delete(id);
+    if (s) {
+      dropQueue(s);
+      // A FIRE IN FLIGHT STAYS REACHABLE (sweep 2026-09-25): its hub's inflight record is what E-STOP kills
+      // (inflights() reads `live`). Dropping the state mid-fire hid a still-spending run from every stop — so a
+      // deleted trigger's state is retired only once its fire settles (pump's settle step), never before.
+      if (s.busy) s.removed = true;
+      else retire(id, s);
+    }
     if (seen[id]) { delete seen[id]; saveSeen(); }
     return { ok: true };
+  }
+  function retire(id, s) {
+    if (s.hub && typeof s.hub.close === 'function') { try { s.hub.close(); } catch (e) { warn('[triggers] hub close: ' + ((e && e.message) || e)); } }
+    if (live.get(id) === s) live.delete(id);
   }
 
   /* ---- the FOLDER poll: one pass over every enabled folder trigger (the host arms the interval) ---- */
