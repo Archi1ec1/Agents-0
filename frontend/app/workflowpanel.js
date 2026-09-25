@@ -675,9 +675,9 @@ const WorkflowPanel = (() => {
         + (r.connected ? '' : ' · <span class="trg-warn">not connected</span>') + '</div></div>').join('');
     const feed = H.feedState();
     const feedTxt = !feed.known ? 'Checking what feeds this floor…' : feed.fed ? '✓ FED — a channel, an armed routine, a watched folder or a webhook is wired to drop work on this floor.' : 'NO FEED — nothing is wired to drop work on this floor yet.';
-    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + thumb(d.agentId, 16, 20, 'wf-ithumb') + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
+    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + thumb(d.agentId, 16, 20, 'wf-ithumb') + esc(dockLabel(f, d.propId)) + '</button>';   // the BAY, not just the agent: one agent may crew several (sweep 2026-09-25)
     const dockHint = pid => { const order = docks.map(d => d.propId), i = order.indexOf(pid); if (i <= 0) return 'starts at the first step — the whole line runs, ' + docks.length + ' step' + (docks.length === 1 ? '' : 's');
-      return 'skips ' + order.slice(0, i).map(x => nameOf(docks[order.indexOf(x)].agentId)).join(' and ') + ' — the line runs from ' + nameOf(docks[i].agentId) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
+      return 'skips ' + order.slice(0, i).map(x => dockLabel(f, x)).join(' and ') + ' — the line runs from ' + dockLabel(f, pid) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
     const LD = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_DEFAULTS) || { maxHops: 6, maxUsdPerMessage: 2, maxUsdPerDay: null };
     const LC = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_CEILINGS) || { maxHops: 24, maxUsdPerMessage: 50, maxUsdPerDay: 500 };
     const lim0 = (p.limits && typeof p.limits === 'object') ? p.limits : {};
@@ -1268,7 +1268,7 @@ const WorkflowPanel = (() => {
         + '<textarea id="wf-rebrief-in" data-keep="rebrief:' + esc(pid) + '" class="wf-io" rows="4">' + esc(p.brief || '') + '</textarea>'
         + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="wf-rebrief-go">↻ SAVE BRIEF &amp; RE-RUN ' + esc(nameOf(h.agentId)) + '</button></div></details>' : '')
       + (pid && (nextPid || toOut) ? '<details class="wf-more" id="wf-addbay"><summary>Add a BAY before ' + esc(nextPid ? dockLabel(f, nextPid) : 'the OUTBOX') + '</summary>'
-        + '<p class="wf-help">It is placed on the floor between ' + esc(nameOf(h.agentId)) + ' and ' + esc(nx.label) + ', and the paused work rides into it when you continue.</p>'
+        + '<p class="wf-help">It is placed on the floor between ' + esc(dockLabel(f, pid)) + ' and ' + esc(nextPid ? dockLabel(f, nextPid) : nx.label) + ', and the paused work rides into it when you continue.</p>'
         + '<div class="wf-chips">' + ['REVIEWER', 'RESEARCHER', 'WRITER', 'GENERALIST'].map(r => '<button type="button" class="wf-chip" data-addbay="' + r + '">' + r + '</button>').join('') + '</div></details>' : '')
       + '</section>';
   }

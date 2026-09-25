@@ -97,6 +97,11 @@ A.ok(/if \(s && s\.state === 'paused'\) refreshPaused\(\);/.test(panel), 'return
 A.ok(/f\.outbox\.reachedOnceCrewed \? 'connected · waiting on agents' : 'not connected yet'/.test(panel), 'the OUTBOX node says "waiting on agents" when only crew is missing');
 A.ok(/else if \(f\.probeNext && f\.probeNext\[p\.id\]\) to = 'nowhere yet — ' \+ f\.probeNext\[p\.id\]\.map\(pid => dockLabel\(f, pid\)\)\.join\(' or '\) \+ ' needs an agent';/.test(panel), 'a crewed bay before an uncrewed one names the bay that needs an agent');
 
+// (sweep 2026-09-25) one agent on two bays: the owner is told WHICH bay ("between NOVA and NOVA" / two "NOVA" chips)
+A.ok(/It is placed on the floor between ' \+ esc\(dockLabel\(f, pid\)\) \+ ' and ' \+ esc\(nextPid \? dockLabel\(f, nextPid\) : nx\.label\)/.test(panel), 'the mid-test insert names the two BAYS it sits between');
+A.ok(/thumb\(d\.agentId, 16, 20, 'wf-ithumb'\) \+ esc\(dockLabel\(f, d\.propId\)\) \+ '<\/button>'/.test(panel), 'a schedule\'s starting-step chips name the bay, not only the agent');
+A.ok(/'skips ' \+ order\.slice\(0, i\)\.map\(x => dockLabel\(f, x\)\)/.test(panel), 'the starting-step hint names bays too');
+
 // (sweep 2026-09-25) a closed panel stops polling a try-this-step run (it used to poll ~14 min after close)
 {
   const i = panel.indexOf('function waitDone(sess)'), body = panel.slice(i, panel.indexOf('\n  }\n', i));
