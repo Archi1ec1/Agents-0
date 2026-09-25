@@ -204,6 +204,7 @@ async function rejects(promise, msg) { try { await promise; A.ok(false, msg + ' 
     let err = null;
     try { await editTool.run({ path: 'unseen.txt', find: 'alpha', replace: 'omega' }, ctx); } catch (e) { err = e; }
     A.ok(err && /have not read unseen\.txt/.test(err.message), 'editing a never-read file is refused');
+    A.ok(err && /in this run/.test(err.message) && !/in this session/.test(err.message), 'the refusal says "in this run" (read stamps live per run: makeFsTools is rebuilt each run)');
     A.eq(err && err.precondition, { code: 'read_before_edit', requiredTool: 'fs.read', requiredState: 'current_file_observed' }, 'the refusal names fs.read as the precondition');
     A.eq(await fsp.readFile(path.join(ROOT, 'ag3r', 'unseen.txt'), 'utf8'), 'alpha beta', 'nothing was written');
     await readTool.run({ path: 'unseen.txt' }, ctx);

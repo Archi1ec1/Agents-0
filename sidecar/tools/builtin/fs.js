@@ -452,7 +452,7 @@ const { note: failNote } = require('../../failopen');
     };
 
     /* READ-BEFORE-EDIT (2026-09-02, coding-tools lane). fs.edit used to accept a "find" the agent had never seen:
-       a guessed snippet against a file it never opened this session, or a file it read before someone else's
+       a guessed snippet against a file it never opened this run, or a file it read before someone else's
        change. The stamp ledger already records every file this agent observed (fs.read / its own writes), so
        an edit against a file with NO stamp is refused with the same machine-readable precondition the
        stale-write guard uses — the loop tells the model exactly which tool satisfies it. Cheap: one Map lookup.
@@ -460,14 +460,14 @@ const { note: failNote } = require('../../failopen');
        create-then-edit never trips. */
     function assertObserved(aid, abs, rel) {
       if (readStamps.has(stampKey(aid, abs))) return;
-      const error = new Error('edit refused: you have not read ' + rel + ' in this session — fs.read it first so your "find" matches the current content exactly.');
+      const error = new Error('edit refused: you have not read ' + rel + ' in this run — fs.read it first so your "find" matches the current content exactly.');
       error.precondition = { code: 'read_before_edit', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
       throw error;
     }
 
     const editTool = {
       name: 'fs.edit', capability: 'cabinet', scope: 'write', requiresConsent: true, timeoutMs: 10000,
-      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (this session). Prefer fs.patch for multi-line source edits.',
+      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (in this run). Prefer fs.patch for multi-line source edits.',
       schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' }, replace_all: { type: 'boolean' }, expected_count: { type: 'number' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
