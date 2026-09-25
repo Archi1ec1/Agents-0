@@ -84,4 +84,11 @@ A.ok(/const schedKey = 'trgsched:' \+ p\.id, wantSched = S\.drafts\[schedKey\];[
 A.ok(/api\('\/api\/cron\/preview', 'POST', \{ schedule: v, tz \}\)/.test(panel), 'the schedule preview sends the same tz the create sends');
 A.ok(/const wasOpen = body\.dataset\.card === cardKey/.test(panel), 'an open section stays open across a repaint of the same card');
 
+// (sweep 2026-09-25) a closed panel stops polling a try-this-step run (it used to poll ~14 min after close)
+{
+  const i = panel.indexOf('function waitDone(sess)'), body = panel.slice(i, panel.indexOf('\n  }\n', i));
+  A.ok(i > 0 && /if \(!el\) return reject\(new Error\('the panel was closed while this step ran/.test(body), 'waitDone stops when the panel closes, saying the run carries on');
+  A.ok(body.indexOf('if (!el) return reject') < body.indexOf('setTimeout('), 'the closed check runs before the next poll is scheduled');
+}
+
 A.report('workflow-panel-source');

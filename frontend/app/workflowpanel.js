@@ -635,6 +635,9 @@ const WorkflowPanel = (() => {
       const tick = s => {
         if (!s) return reject(new Error('session lost'));
         if (!WL().isLive(s) || (s.single && s.state !== 'running')) return resolve(s);
+        // the panel closed: stop polling (a closed panel must not keep asking the sidecar for ~14 minutes). The run itself
+        // is real and carries on — its result lands in COMMS and the run history (sweep 2026-09-25)
+        if (!el) return reject(new Error('the panel was closed while this step ran — it kept running; its result is in COMMS'));
         if (++n > 1200) return reject(new Error('the step is still running — check COMMS'));
         setTimeout(() => api('/api/routing/steptest/' + encodeURIComponent(s.id)).then(r => tick(r.j && r.j.session)).catch(reject), 700);
       };
