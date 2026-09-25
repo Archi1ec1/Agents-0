@@ -201,7 +201,9 @@
       const who = String((row && (row.agentId || row.label)) || 'worker').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 24);
       const key = tool + '\u0000' + String((row && (row.id || row.agentId || row.label)) || 'worker') + '\u0000' + textDigest(String(text));
       if (memo && memo.has(key)) return memo.get(key);
-      const p = await ctx.parkOutput(text, { tool: tool + '-' + who, reason: 'aggregate-fair-share' });
+      const meta = { tool: tool + '-' + who, reason: 'aggregate-fair-share' };
+      if (row && typeof row.taintedBy === 'string' && row.taintedBy) meta.taintedBy = row.taintedBy;   // parked as untrusted-*
+      const p = await ctx.parkOutput(text, meta);
       const path = p && p.path ? String(p.path) : null;
       if (memo && path) {   // a failed save is not remembered: the next call may succeed
         if (memo.size >= PARK_MEMO_MAX) memo.delete(memo.keys().next().value);
@@ -291,6 +293,27 @@
     const authority = ctx && ctx.connectorAuthority;
     return authority ? { connectorAuthority: authority, initialTaint: typeof authority.taintedBy === 'function' ? authority.taintedBy() : null } : {};
   }
+
+  /* RELAYED TAINT (sec-taint 09-25). A worker's text is only as trustworthy as what the worker read. runOnce reports
+     the worker run's host-proven latch as result.taintedBy; every row / record that carries worker text carries it
+     too, and every tool result that relays such rows reports the first one — registry.js passes it through and the
+     run host latches the LEAD (taint.relayedTaint). Rows are host-built, never model-authored. */
+  function taintOfRun() {
+    for (let i = 0; i < arguments.length; i++) {
+      const r = arguments[i];
+      const t = r && typeof r.taintedBy === 'string' ? r.taintedBy.trim() : '';
+      if (t) return t.slice(0, 200);
+    }
+    return '';
+  }
+  function taintOfRows(rows) {
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      const t = r && typeof r.taintedBy === 'string' ? r.taintedBy.trim() : '';
+      if (t) return t.slice(0, 200);
+    }
+    return '';
+  }
+  function withTaint(res, taint) { if (taint) res.taintedBy = taint; return res; }
 
   function makeOrchestrationTools(deps) {
     deps = deps || {};
@@ -607,7 +630,8 @@
                 + '[STOPPED — this worker used up its ' + Math.round(wallMs / 1000) + 's slice of the dispatch wall clock'
                 + (partial ? '; the text above is its PARTIAL work' : ' before returning any text')
                 + '. Do not present it as complete: either re-dispatch this subtask alone, or tell the Commander this part is unfinished.]',
-              usd: (res && res.usd) || 0
+              usd: (res && res.usd) || 0,
+              taintedBy: taintOfRun(res) || undefined
             };
           };
           let result;
@@ -712,6 +736,8 @@
             durationMs: (Number(result.durationMs) || 0) + (Number(repaired && repaired.durationMs) || 0),
             tokens: (Number(result.tokens) || 0) + (Number(repaired && repaired.tokens) || 0)
           };
+          const rowTaint = taintOfRun(result, repaired);
+          if (rowTaint) row.taintedBy = rowTaint;
           if (wire.note) row.note = wire.note;   // honest credential-fallback disclosure (never silent)
           /* Show it where the Commander asked for it. Only a COMPLETED worker delivers: every other outcome
              (error / refused / timeout) returned above, so a partial or failed run is reported to the lead but
@@ -736,7 +762,8 @@
             return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema }, async (h) => {
               const r = await runWorker(job, { runId: h.runId, signal: h.signal, emit: h.emit, steer: h.steer });
               return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd || 0,
-                structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts };
+                structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
+                taintedBy: r.taintedBy || '' };
             });
           });
           const startedRows = started.concat(overflowRows());
@@ -790,13 +817,13 @@
         const unrun = out.filter(r => r.reason === 'not-dispatched').length - overflow.length;
         // every worker's row survives the result cap: fair-share its text, spill the whole text per worker
         const fit = await fitAggregate(out, { budget: aggregateBudget(ctx), what: r => 'worker ' + r.agentId + '\'s result', park: workerParker(ctx, 'team.dispatch') });
-        return {
+        return withTaint({
           content: JSON.stringify(fit.rows),
           summary: 'dispatched ' + jobs.length + ' worker(s), ' + ok + ' done'
             + (late ? ', ' + late + ' out of time' : '')
             + (unrun > 0 ? ', ' + unrun + ' never started (wall clock)' : '')
             + overflowNote + fitNote(fit)
-        };
+        }, taintOfRows(out));
       }
     };
 
@@ -908,7 +935,8 @@
             const hostStopped = hostStopCode(h.signal);
             if (hostStopped) {
               const r = Object.assign({ label, agentId: ephemeralId, usd: (result && result.usd) || 0 }, hostStopRow(hostStopped, result ? lastAssistant(result.messages) : ''));
-              settle(r); return { status: 'error', reason: r.reason, result: r.result, usd: r.usd };
+              if (taintOfRun(result)) r.taintedBy = taintOfRun(result);
+              settle(r); return { status: 'error', reason: r.reason, result: r.result, usd: r.usd, taintedBy: r.taintedBy || '' };
             }
             if (!result) {
               const r = { label, agentId: ephemeralId, reason: 'refused', result: 'subagent could not start — the concurrency cap (STARNET_MAX_CONCURRENT_AGENTS) is full or a sign-in is needed. Try fewer at once.', usd: 0 };
@@ -948,9 +976,11 @@
             };
             // ghost-file fix (same as runWorker): the clone's proven outputs, stamped with the owning workspace.
             if (artifacts.length) r.artifacts = artifacts.map(a => Object.assign({}, a, { agentId: ephemeralId, workspace: ephemeralId }));
+            if (taintOfRun(result, repaired)) r.taintedBy = taintOfRun(result, repaired);
             settle(r);
             return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd,
-              structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts };
+              structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
+              taintedBy: r.taintedBy || '' };
           };
           const view = subagents.start({ ...projectOptions(ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema }, runner);
           return { label, view, done, started: true };
@@ -964,7 +994,7 @@
         const results = (await Promise.all(spawned.map(s => s.done))).concat(overflowRows());
         const ok = results.filter(r => r.reason === 'done').length;
         const fit = await fitAggregate(results, { budget: aggregateBudget(ctx), what: r => 'subagent ' + (r.label || r.agentId) + '\'s result', park: workerParker(ctx, 'team.spawn') });
-        return { content: JSON.stringify(fit.rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + overflowNote + fitNote(fit) };
+        return withTaint({ content: JSON.stringify(fit.rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + overflowNote + fitNote(fit) }, taintOfRows(results));
       }
     };
 
@@ -1036,11 +1066,11 @@
         if (args && args.id) {
           const r = subagents.get(String(args.id));
           if (!r || r.leadId !== leadId) return { content: 'No such background subagent for this lead.', summary: 'not found' };
-          return { content: JSON.stringify(r), summary: r.status };
+          return withTaint({ content: JSON.stringify(r), summary: r.status }, taintOfRows([r]));
         }
         const rows = subagents.list({ leadId, agentId: args && args.agentId, status: args && args.status });
         const fit = await fitAggregate(rows, { budget: aggregateBudget(ctx), what: r => (r.agentId || 'subagent') + ' (' + (r.id || '') + ')\'s result', park: workerParker(ctx, 'team.subagents') });
-        return { content: JSON.stringify(fit.rows), summary: rows.length + ' background subagent(s)' + fitNote(fit) };
+        return withTaint({ content: JSON.stringify(fit.rows), summary: rows.length + ' background subagent(s)' + fitNote(fit) }, taintOfRows(rows));
       }
     };
 
@@ -1130,7 +1160,8 @@
           structuredResult: rec.resultSchema && contract.ok ? contract.value : null,
           validation: contract.validation, repairRunId: contract.repairRunId || '',
           usd: (Number(result.usd) || 0) + (Number(repaired && repaired.usd) || 0),
-          artifacts: artifacts.map(a => Object.assign({}, a, { agentId: rec.agentId, workspace: rec.agentId }))
+          artifacts: artifacts.map(a => Object.assign({}, a, { agentId: rec.agentId, workspace: rec.agentId })),
+          taintedBy: taintOfRun(result, repaired)
         };
       };
     }
@@ -1142,7 +1173,7 @@
       run: async (args, ctx) => {
         if (!subagents) return { content: 'background subagents unavailable', summary: 'unavailable' };
         const r = subagents.interrupt(String(args.id || ''), (ctx && ctx.agentId) || 'agent');
-        return { content: JSON.stringify(r), summary: r.ok ? (r.alreadyDone ? 'already done' : 'interrupted') : 'not interrupted' };
+        return withTaint({ content: JSON.stringify(r), summary: r.ok ? (r.alreadyDone ? 'already done' : 'interrupted') : 'not interrupted' }, taintOfRows([r && r.record]));
       }
     };
 
@@ -1167,7 +1198,7 @@
           error.precondition = { code: 'subagent_not_resumable', requiredTool: 'team.subagents', requiredState: 'stale_or_interrupted_or_failed' };
           throw error;
         }
-        return { content: JSON.stringify(r), summary: 'resumed' };
+        return withTaint({ content: JSON.stringify(r), summary: 'resumed' }, taintOfRows([r && r.record]));
       }
     };
 

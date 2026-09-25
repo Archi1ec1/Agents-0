@@ -299,6 +299,9 @@
       const recoveryOf = str(e.recoveryOf).slice(0, 100);
       if (recoveryOf) entry.recoveryOf = recoveryOf;
       if (e.spendUnknown === true) entry.spendUnknown = true;
+      // untrusted-content taint the run ended with (additive; absent on a clean run) — sec-taint 09-25
+      const taintedBy = str(e.taintedBy).replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (taintedBy) entry.taintedBy = taintedBy;
       const error = str(e.error).replace(/\s+/g, ' ').trim().slice(0, ERROR_MAX);
       if (error) entry.error = error;
       rows.push(entry);
