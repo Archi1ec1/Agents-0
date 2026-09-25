@@ -28,7 +28,7 @@ const WorkflowPanel = (() => {
     hop: null, handoff: null, handoffFor: null, busy: false,
     cron: null, chans: null, trgOpen: false, trgDock: null, drafts: {}, testJob: {},
     projects: null, projectMsg: null,   // GET /api/projects answer (trusted folders for the INBOX working-folder pick)
-    lt: null, ltForm: null, ltMsg: null, ltReveal: null, ltTimer: 0,   // LINE TRIGGERS (folder / webhook), server truth + the once-only key
+    lt: null, ltSig: null, ltForm: null, ltMsg: null, ltReveal: null, ltTimer: 0,   // LINE TRIGGERS (folder / webhook), server truth + the once-only key
   };
   const WL = () => (typeof WorkflowLine !== 'undefined' ? WorkflowLine : null);
   const esc = s => (H && H.esc ? H.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
@@ -401,8 +401,18 @@ const WorkflowPanel = (() => {
   }
 
   /* ---------- the body: the selected part's editor (or the step-test view) ---------- */
+  /* an OPEN section stays open across a repaint of the SAME card (a floor edit, a server answer) — keyed by the
+     section's class + its ordinal among same-class sections, so a card whose shape changed simply starts fresh */
+  const detailsKeys = body => { const seen = {}; return Array.from(body.querySelectorAll('details')).map(d => { const c = d.className || '-'; seen[c] = (seen[c] || 0) + 1; return [c + '#' + seen[c], d]; }); };
   function paintBody(f) {
     const body = $('#wf-body'); if (!body) return;
+    const cardKey = S.view + '|' + (S.sel || '');
+    const wasOpen = body.dataset.card === cardKey ? new Map(detailsKeys(body).map(([k, d]) => [k, d.open])) : null;
+    body.dataset.card = cardKey;
+    paintBodyInner(body, f);
+    if (wasOpen) for (const [k, d] of detailsKeys(body)) if (wasOpen.has(k) && d.open !== wasOpen.get(k)) d.open = wasOpen.get(k);
+  }
+  function paintBodyInner(body, f) {
     if (S.view === 'test' && comp() && S.seam === true) { paintTest(body, f); restoreDrafts(); return; }
     const p = prop(S.sel);
     if (!p) { body.innerHTML = '<p class="wf-help">Select a part of the line.</p>'; return; }
@@ -774,20 +784,59 @@ const WorkflowPanel = (() => {
   const ago = iso => { const t = Date.parse(iso || ''); if (!isFinite(t)) return ''; const s = Math.max(0, Math.round((Date.now() - t) / 1000));
     return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : s < 172800 ? Math.round(s / 3600) + 'h ago' : Math.round(s / 86400) + 'd ago'; };
   const ltMine = () => (S.lt && Array.isArray(S.lt.triggers) ? S.lt.triggers : []).filter(t => t.lineId === S.lineKey);
+  /* THE 5 s RE-READ NEVER REBUILDS THE CARD (2026-09-24). It used to call paint(), which rebuilt the whole INBOX
+     card: the WHEN picker remounted (a picked schedule snapped back to daily 9:00), an ARMED DELETE / NEW KEY
+     button was replaced mid-confirm, and open sections collapsed. Now: an unchanged answer touches nothing but the
+     "x ago" text; a changed one patches only the rows that changed (WorkflowLine.rowPatch) plus the head/strip
+     sentences that quote the triggers. Only the FIRST answer (the lists still say "reading triggers…") paints. */
   function ltRefresh() {
-    return api('/api/routing/triggers').then(r => { if (r.status === 200 && r.j && Array.isArray(r.j.triggers)) S.lt = r.j; paint(); }).catch(() => {});
+    return api('/api/routing/triggers').then(r => {
+      if (!(r.status === 200 && r.j && Array.isArray(r.j.triggers))) return;
+      const sig = JSON.stringify(r.j);
+      if (S.lt && sig === S.ltSig) { ltTickAgo(); return; }
+      const first = !S.lt;
+      S.lt = r.j; S.ltSig = sig;
+      if (first) paint(); else ltPatch();
+    }).catch(() => {});
   }
+  const ltRowSig = t => WL().triggerSig(t, S.ltReveal && S.ltReveal.id === t.id ? 'reveal' : null);
+  function ltListHtml(kind) {
+    if (!S.lt) return '<div class="wf-help dim">reading triggers…</div>';
+    const list = ltMine().filter(t => t.kind === kind);
+    return list.length ? list.map(ltRowHtml).join('') : '<div class="wf-help dim">' + (kind === 'folder' ? 'No folder is watched for this line.' : 'No webhook starts this line.') + '</div>';
+  }
+  function ltPatch() {
+    if (!el || !H) return;
+    const f = flow();
+    paintHead(f); paintStrip(f);   // the header + strip quote the live trigger sentences
+    for (const pair of [['#lt-folders', 'folder'], ['#lt-hooks', 'webhook']]) {
+      const box = $(pair[0]), rowKind = pair[1]; if (!box) continue;
+      const list = ltMine().filter(t => t.kind === rowKind);
+      const prev = Array.from(box.children).filter(n => n.classList.contains('lt-row')).map(n => [n.dataset.lt, n.dataset.sig]);
+      const plan = WL().rowPatch(prev, list.map(t => [t.id, ltRowSig(t)]));
+      if (plan.all) { box.innerHTML = ltListHtml(rowKind); wireLtRows(box); continue; }
+      for (const id of plan.changed) {
+        const old = Array.from(box.children).find(n => n.dataset.lt === id), t = list.find(x => x.id === id);
+        if (!old || !t) continue;
+        const tmp = document.createElement('div'); tmp.innerHTML = ltRowHtml(t);
+        const row = tmp.firstElementChild; old.replaceWith(row); wireLtRows(row);
+      }
+    }
+    ltTickAgo();
+  }
+  // the one thing that moves with no data change: "last fired 3m ago"
+  function ltTickAgo() { if (el) for (const n of $$('.lt-ago')) { const s = ago(n.dataset.at); if (s && n.textContent !== s) n.textContent = s; } }
   function ltRowHtml(t) {
     const blocked = t.enabled && t.blockedBy;
     const glyph = !t.enabled ? '○' : blocked ? '◍' : '●';
     const title = t.kind === 'folder' ? ((t.config && t.config.path) || 'a folder') : (t.name ? '“' + t.name + '”' : '(unnamed)');
     const lo = t.lastOutcome;
     const last = t.running ? '<b class="wf-okc">running now</b>'
-      : t.lastFiredAt ? 'last fired ' + esc(ago(t.lastFiredAt)) + (lo ? (lo.ok ? ' · <b class="wf-okc">✓ reached the OUTBOX</b>' + (lo.runs ? ' (' + lo.runs + ' run' + (lo.runs === 1 ? '' : 's') + ')' : '') : ' · <span class="trg-warn">✕ did not finish</span>') : '')
+      : t.lastFiredAt ? 'last fired <span class="lt-ago" data-at="' + esc(t.lastFiredAt) + '">' + esc(ago(t.lastFiredAt)) + '</span>' + (lo ? (lo.ok ? ' · <b class="wf-okc">✓ reached the OUTBOX</b>' + (lo.runs ? ' (' + lo.runs + ' run' + (lo.runs === 1 ? '' : 's') + ')' : '') : ' · <span class="trg-warn">✕ did not finish</span>') : '')
       : 'never fired';
     const state = !t.enabled ? 'paused' : blocked ? '<span class="trg-warn">waiting — ' + esc(t.blockedBy) + '</span>'
       : t.kind === 'folder' ? 'watching — each new file runs the whole line' : 'listening — each call runs the whole line';
-    let html = '<div class="trg-row lt-row" data-lt="' + esc(t.id) + '"><span class="trg-state' + (t.enabled && !blocked ? ' on' : '') + '">' + glyph + '</span> <b>' + (t.kind === 'folder' ? 'FOLDER ' : 'WEBHOOK ') + '</b>' + esc(title)
+    let html = '<div class="trg-row lt-row" data-lt="' + esc(t.id) + '" data-sig="' + esc(ltRowSig(t)) + '"><span class="trg-state' + (t.enabled && !blocked ? ' on' : '') + '">' + glyph + '</span> <b>' + (t.kind === 'folder' ? 'FOLDER ' : 'WEBHOOK ') + '</b>' + esc(title)
       + '<div class="trg-row-meta">' + state + '</div>'
       + '<div class="trg-row-meta">fired ' + (t.fires || 0) + '× · ' + last + (t.queued ? ' · ' + t.queued + ' waiting' : '') + ' · at most ' + t.maxPerHour + '/hour</div>'
       + (t.config && t.config.task ? '<div class="trg-row-meta">task: ' + esc(t.config.task.length > 90 ? t.config.task.slice(0, 88) + '…' : t.config.task) + '</div>' : '')
@@ -825,13 +874,8 @@ const WorkflowPanel = (() => {
       + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="lt-save">' + (editing ? '▸ SAVE CHANGES' : kind === 'folder' ? '▸ WATCH THIS FOLDER' : '▸ CREATE WEBHOOK') + '</button><button type="button" class="bb sm" id="lt-cancel">CANCEL</button></div></div>';
   }
   function ltSectionHtml() {
-    const mine = ltMine();
     const F = S.ltForm;
-    const rows = kind => {
-      if (!S.lt) return '<div class="wf-help dim">reading triggers…</div>';
-      const list = mine.filter(t => t.kind === kind);
-      return list.length ? list.map(ltRowHtml).join('') : '<div class="wf-help dim">' + (kind === 'folder' ? 'No folder is watched for this line.' : 'No webhook starts this line.') + '</div>';
-    };
+    const rows = ltListHtml;
     const port = (S.lt && /:(\d+)\//.exec(S.lt.hookBase || '')) ? /:(\d+)\//.exec(S.lt.hookBase)[1] : '';
     return '<h4>When a file lands in a folder</h4><div class="trg-list" id="lt-folders">' + rows('folder') + '</div>'
       + (F && F.kind === 'folder' ? ltFormHtml('folder') : '<div class="wf-row"><button type="button" class="bb sm" id="lt-new-folder">⊕ WATCH A FOLDER</button></div>')
@@ -840,10 +884,46 @@ const WorkflowPanel = (() => {
       + '<p class="wf-help dim">A webhook address lives on this computer (127.0.0.1' + (port ? ':' + port : '') + '). Nothing outside this machine can reach it unless you set up a tunnel yourself (for example cloudflared or ngrok) pointed at that port.</p>'
       + '<div class="wf-help trg-msg' + (S.ltMsg && S.ltMsg.bad ? ' bad' : '') + '" id="lt-msg"' + (S.ltMsg ? '' : ' hidden') + '>' + esc(S.ltMsg ? S.ltMsg.t : '') + '</div>';
   }
+  const ltSay = (t, bad) => { S.ltMsg = { t, bad: !!bad }; const m = $('#lt-msg'); if (m) { m.hidden = false; m.classList.toggle('bad', !!bad); m.textContent = t; } };
+  const ltClearForm = () => { for (const k of ['path', 'task', 'name', 'rate']) delete S.drafts['lt:' + k]; S.ltForm = null; };
+  // a Commander action changed the triggers: re-read, then ONE deliberate repaint (the action's own result)
+  const ltAfter = (msg, bad) => { S.ltMsg = msg ? { t: msg, bad: !!bad } : null; return ltRefresh().then(() => H.pollFeed()).then(() => paint(true), () => paint(true)); };
+  /* the per-row controls (COPY / PAUSE / EDIT / NEW KEY / DELETE / I SAVED IT) inside `scope` — the whole card on a
+     paint, or just the rows ltPatch replaced (an untouched row keeps its handlers AND an armed confirm) */
+  function wireLtRows(scope) {
+    const say = ltSay, clearForm = ltClearForm, after = ltAfter;
+    const q = s => (scope.matches && scope.matches(s) ? [scope] : []).concat(Array.from(scope.querySelectorAll(s)));
+    q('#lt-reveal-done').forEach(done => { done.onclick = () => { H.sfx('click'); S.ltReveal = null; paint(true); }; });
+    q('[data-lt-copy]').forEach(b => b.onclick = () => {
+      const v = b.dataset.ltCopy || '', rest = b.textContent;
+      const ok = () => { H.sfx('click'); b.textContent = 'COPIED'; setTimeout(() => { if (b.isConnected) b.textContent = rest; }, 1400); };
+      try { navigator.clipboard.writeText(v).then(ok, () => say('copy failed — select the text and copy it by hand', true)); } catch (e) { say('copy failed — select the text and copy it by hand', true); }
+    });
+    q('.lt-row').forEach(row => {
+      const id = row.dataset.lt, t = ltMine().find(x => x.id === id); if (!t) return;
+      row.querySelectorAll('[data-lt-act]').forEach(b => {
+        const act = b.dataset.ltAct;
+        if (act === 'toggle') b.onclick = () => { b.disabled = true; api('/api/routing/triggers/' + encodeURIComponent(id), 'PATCH', { enabled: !t.enabled })
+          .then(({ status, j }) => { if (status !== 200 || !j || !j.ok) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not changed'), true); b.disabled = false; return; } H.sfx('click'); return after(t.enabled ? '✓ paused' : '✓ resumed' + (t.kind === 'folder' ? ' — files already in the folder are skipped' : '')); })
+          .catch(() => { b.disabled = false; say('✕ not changed', true); }); };
+        else if (act === 'edit') b.onclick = () => { H.sfx('click'); clearForm(); S.ltForm = { kind: t.kind, id }; paint(true); };
+        else if (act === 'rekey' && typeof ArmConfirm !== 'undefined') ArmConfirm.wire(b, { armedLabel: 'OLD KEY STOPS — SURE?', onArm: () => H.sfx('bad'),
+          onConfirm: () => api('/api/routing/triggers/' + encodeURIComponent(id) + '/secret', 'POST', {}).then(({ status, j }) => {
+            if (status !== 200 || !j || !j.secret) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'no new key'), true); return; }
+            S.ltReveal = { id, secret: j.secret }; H.sfx('chime'); return after('✓ new key made — the old one no longer works; copy this one now');
+          }) });
+        else if (act === 'delete' && typeof ArmConfirm !== 'undefined') ArmConfirm.wire(b, { armedLabel: 'REALLY DELETE?', onArm: () => H.sfx('bad'),
+          onConfirm: () => api('/api/routing/triggers/' + encodeURIComponent(id), 'DELETE').then(({ status, j }) => {
+            if (status !== 200 || !j || !j.ok) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not deleted'), true); return; }
+            if (S.ltReveal && S.ltReveal.id === id) S.ltReveal = null;
+            if (S.ltForm && S.ltForm.id === id) clearForm();
+            H.sfx('click'); return after('✓ trigger deleted');
+          }) });
+      });
+    });
+  }
   function wireLineTriggers() {
-    const say = (t, bad) => { S.ltMsg = { t, bad: !!bad }; const m = $('#lt-msg'); if (m) { m.hidden = false; m.classList.toggle('bad', !!bad); m.textContent = t; } };
-    const clearForm = () => { for (const k of ['path', 'task', 'name', 'rate']) delete S.drafts['lt:' + k]; S.ltForm = null; };
-    const after = (msg, bad) => { S.ltMsg = msg ? { t: msg, bad: !!bad } : null; return ltRefresh().then(() => H.pollFeed()).then(() => paint(true), () => paint(true)); };
+    const say = ltSay, clearForm = ltClearForm, after = ltAfter;
     const open = kind => { H.sfx('click'); clearForm(); S.ltForm = { kind, id: null }; S.ltMsg = null; paint(true); const i = $(kind === 'folder' ? '#lt-path' : '#lt-task'); if (i) i.focus(); };
     const nf = $('#lt-new-folder'); if (nf) nf.onclick = () => open('folder');
     const nh = $('#lt-new-hook'); if (nh) nh.onclick = () => open('webhook');
@@ -868,34 +948,7 @@ const WorkflowPanel = (() => {
         return after(F.id ? '✓ saved' : F.kind === 'folder' ? '✓ watching ' + j.trigger.config.path + ' — files already there are skipped' : '✓ webhook created — copy the key now, it is shown once');
       }).catch(() => { save.disabled = false; H.sfx('bad'); say('✕ not saved — check the connection and try again', true); });
     };
-    const done = $('#lt-reveal-done'); if (done) done.onclick = () => { H.sfx('click'); S.ltReveal = null; paint(true); };
-    $$('[data-lt-copy]').forEach(b => b.onclick = () => {
-      const v = b.dataset.ltCopy || '', rest = b.textContent;
-      const ok = () => { H.sfx('click'); b.textContent = 'COPIED'; setTimeout(() => { if (b.isConnected) b.textContent = rest; }, 1400); };
-      try { navigator.clipboard.writeText(v).then(ok, () => say('copy failed — select the text and copy it by hand', true)); } catch (e) { say('copy failed — select the text and copy it by hand', true); }
-    });
-    $$('.lt-row').forEach(row => {
-      const id = row.dataset.lt, t = ltMine().find(x => x.id === id); if (!t) return;
-      row.querySelectorAll('[data-lt-act]').forEach(b => {
-        const act = b.dataset.ltAct;
-        if (act === 'toggle') b.onclick = () => { b.disabled = true; api('/api/routing/triggers/' + encodeURIComponent(id), 'PATCH', { enabled: !t.enabled })
-          .then(({ status, j }) => { if (status !== 200 || !j || !j.ok) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not changed'), true); b.disabled = false; return; } H.sfx('click'); return after(t.enabled ? '✓ paused' : '✓ resumed' + (t.kind === 'folder' ? ' — files already in the folder are skipped' : '')); })
-          .catch(() => { b.disabled = false; say('✕ not changed', true); }); };
-        else if (act === 'edit') b.onclick = () => { H.sfx('click'); clearForm(); S.ltForm = { kind: t.kind, id }; paint(true); };
-        else if (act === 'rekey' && typeof ArmConfirm !== 'undefined') ArmConfirm.wire(b, { armedLabel: 'OLD KEY STOPS — SURE?', onArm: () => H.sfx('bad'),
-          onConfirm: () => api('/api/routing/triggers/' + encodeURIComponent(id) + '/secret', 'POST', {}).then(({ status, j }) => {
-            if (status !== 200 || !j || !j.secret) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'no new key'), true); return; }
-            S.ltReveal = { id, secret: j.secret }; H.sfx('chime'); return after('✓ new key made — the old one no longer works; copy this one now');
-          }) });
-        else if (act === 'delete' && typeof ArmConfirm !== 'undefined') ArmConfirm.wire(b, { armedLabel: 'REALLY DELETE?', onArm: () => H.sfx('bad'),
-          onConfirm: () => api('/api/routing/triggers/' + encodeURIComponent(id), 'DELETE').then(({ status, j }) => {
-            if (status !== 200 || !j || !j.ok) { H.sfx('bad'); say('✕ ' + ((j && j.error) || 'not deleted'), true); return; }
-            if (S.ltReveal && S.ltReveal.id === id) S.ltReveal = null;
-            if (S.ltForm && S.ltForm.id === id) clearForm();
-            H.sfx('click'); return after('✓ trigger deleted');
-          }) });
-      });
-    });
+    const card = $('#wf-body'); if (card) wireLtRows(card);
   }
 
   /* the schedule form: the SAME SchedPicker + /api/cron/preview + the SAME create body the AUTOMATION
@@ -910,13 +963,16 @@ const WorkflowPanel = (() => {
     // the answer outlives a re-render (a save repaints the card): kept on S, painted wherever #trg-msg is now
     const say = (t, bad) => { S.trgMsg = { t, bad: !!bad }; const m = $('#trg-msg'); if (m) { m.hidden = false; m.classList.toggle('bad', !!bad); m.textContent = t; } };
     const relFmt = iso => { const d = Date.parse(iso) - Date.now(); if (!isFinite(d)) return ''; const m = Math.round(d / 60000); return m < 1 ? 'under a minute' : m < 60 ? 'in ' + m + 'm' : m < 2880 ? 'in ' + Math.round(m / 60) + 'h' : 'in ' + Math.round(m / 1440) + 'd'; };
+    // ONE timezone for the preview AND the create (the preview used to omit it, so its 'next:' could name a different
+    // hour than the routine the server then saved)
+    const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch (e) { return undefined; } })();
     let pvTimer = null;
     const preview = () => {
       clearTimeout(pvTimer);
       const v = schedEl.value.trim();
       if (!v) { pvEl.textContent = ''; return; }
       pvTimer = setTimeout(() => {
-        api('/api/cron/preview', 'POST', { schedule: v }).then(({ j: r }) => {
+        api('/api/cron/preview', 'POST', { schedule: v, tz }).then(({ j: r }) => {
           if (!pvEl.isConnected || schedEl.value.trim() !== v) return;
           if (r && r.ok) {
             const nx = (Array.isArray(r.localNext) && r.localNext[0]) ? r.localNext[0] : (Array.isArray(r.next) && r.next[0] ? relFmt(r.next[0]) : '');
@@ -927,8 +983,16 @@ const WorkflowPanel = (() => {
       }, 300);
     };
     schedEl.addEventListener('input', preview);
+    /* THE PICKED SCHEDULE SURVIVES A REPAINT (2026-09-24): #trg-sched is a kept draft. The picker's mount seeds its
+       default (daily 9:00) into the input, so the Commander's pick is read BEFORE the mount and put back through
+       set() — which also rebuilds the picker's own mode/day/hour controls, not just the text. */
+    const schedKey = 'trgsched:' + p.id, wantSched = S.drafts[schedKey];
+    schedEl.dataset.keep = schedKey;
     // mount the WHEN picker AFTER the listener exists (it types its default schedule in on mount)
-    if (typeof SchedPicker !== 'undefined') SchedPicker.mount($('#trg-when'), { onChange: () => H.sfx('click') });
+    const picker = typeof SchedPicker !== 'undefined' ? SchedPicker.mount($('#trg-when'), { onChange: () => H.sfx('click') }) : null;
+    if (typeof wantSched === 'string' && wantSched.trim() && wantSched !== schedEl.value) {
+      if (picker && typeof picker.set === 'function') picker.set(wantSched); else schedEl.value = wantSched;
+    }
     $$('.trg-dock').forEach(b => b.onclick = () => {
       S.trgDock = b.dataset.dock; H.sfx('click');
       $$('.trg-dock').forEach(x => x.classList.toggle('active', x.dataset.dock === S.trgDock));
@@ -944,7 +1008,6 @@ const WorkflowPanel = (() => {
       const dockId = S.trgDock, agentId = agentOfDock(dockId);
       if (!dockId || !agentId) { H.sfx('bad'); say('assign an agent to a step first — a routine fires at an agent', true); return; }
       const btn = $('#trg-create'); btn.disabled = true; say('saving…');
-      const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch (e) { return undefined; } })();
       const ln = lineName();
       const name = (ln ? ln + ' — ' : '') + (prompt.length > 48 ? prompt.slice(0, 45) + '…' : prompt);
       const refuse = m => { btn.disabled = false; H.sfx('bad'); say('✕ ' + m, true); };
@@ -960,7 +1023,8 @@ const WorkflowPanel = (() => {
         S.cron = cur; btn.disabled = false; H.sfx('chime');
         const armedNow = !!(cur.enabled && !cur.halted);
         if (!S.testJob[S.lineKey]) { S.testJob[S.lineKey] = prompt; saveTests(); }
-        S.drafts['trgprompt:' + p.id] = '';
+        // saved: the form starts clean (un-flag the fields too, or the next paint's keepDrafts re-remembers them)
+        S.drafts['trgprompt:' + p.id] = ''; delete S.drafts[schedKey]; promptEl.dataset.typed = ''; schedEl.dataset.typed = '';
         S.trgOpen = false;
         H.pollFeed().then(() => paint(true), () => paint(true));
         say(saved.state === 'completed' ? '✓ routine completed — see its result in AUTOMATION' : !saved.enabled ? '✓ saved — this routine is paused; manage it in AUTOMATION'

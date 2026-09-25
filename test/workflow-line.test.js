@@ -198,4 +198,19 @@ const nameOf = a => String(a).toUpperCase();
   A.ok(!r.ok && JSON.stringify(s.serialize()) === doc0, 'a failed transaction restores the pre-batch doc');
 }
 
+// ---- LINE TRIGGERS repaint plan (2026-09-24): the 5 s re-read patches only what changed ----
+{
+  const t1 = { id: 'a', enabled: true, fires: 1 }, t2 = { id: 'b', enabled: true, fires: 0 };
+  const sig = W.triggerSig;
+  A.eq(sig(t1), sig({ id: 'a', enabled: true, fires: 1 }), 'the same data has the same fingerprint');
+  A.ok(sig(t1) !== sig({ id: 'a', enabled: true, fires: 2 }), 'a changed field changes it');
+  A.ok(sig(t1) !== sig(t1, 'reveal'), 'the once-only key box is part of the row');
+  const rows = ts => ts.map(t => [t.id, sig(t)]);
+  A.eq(W.rowPatch(rows([t1, t2]), rows([t1, t2])), { all: false, changed: [] }, 'nothing changed -> touch nothing (an ARMED delete stays armed)');
+  A.eq(W.rowPatch(rows([t1, t2]), rows([t1, { id: 'b', enabled: true, fires: 1 }])), { all: false, changed: ['b'] }, 'one row changed -> only that row repaints');
+  A.eq(W.rowPatch(rows([t1]), rows([t1, t2])).all, true, 'a row added -> the list repaints');
+  A.eq(W.rowPatch(rows([t1, t2]), rows([t2, t1])).all, true, 'reordered -> the list repaints');
+  A.eq(W.rowPatch([], []), { all: false, changed: [] }, 'empty stays empty');
+  A.eq(W.rowPatch(null, rows([t1])).all, true, 'no previous rows ("reading triggers…") -> the list paints');
+}
 A.report('workflow-line');

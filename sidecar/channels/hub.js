@@ -336,6 +336,11 @@
     // Opt-in for unaddressed sample runs: resolve identity only AFTER the router picks the dock.
     const resolveEntryRunConfig = typeof o.resolveEntryRunConfig === 'function' ? o.resolveEntryRunConfig : null;
     const onLineOutcome = typeof o.onLineOutcome === 'function' ? o.onLineOutcome : null;
+    // ENTRY TAINT (security review 2026-09-24): a hub whose every inbound message is EXTERNAL DATA rather than the
+    // owner speaking — the line-trigger hub (a webhook payload / a watched folder's file contents) — names the taint
+    // its FIRST hop starts under, so the entry run's sensitive tools are consent-gated exactly like any other run
+    // that has read untrusted content. Absent -> the old rule (only a media attachment taints the entry run).
+    const entryTaint = (typeof o.entryTaint === 'string' && o.entryTaint.trim()) ? o.entryTaint.trim().slice(0, 80) : null;
     // SAMPLE/PROOF SEAM (additive, 2026-08-05): an optional streamId (string, or fn(chatId) -> string) stamped
     // onto every runOnce this hub fires (entry dock AND chain hops). With it, the host records the runs +
     // transcripts under that workstream (runs.jsonl streamId -> a readable OUTBOX crate); WITHOUT it — every
@@ -1695,7 +1700,7 @@
             key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask,
             emit: sink, signal: ac.signal, runId, lineId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
-            initialTaint: mediaIngest.attachments.length ? 'channel attachment' : null,
+            initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : null),
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
             // ...but ONLY for who answers a consent prompt. A phone has no floor to place props on, so this run
@@ -1806,7 +1811,9 @@
           }
         });
         if (onLineOutcome) {
-          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (_) {}
+          // a throwing outcome hook is the HOST's bug (the trigger runner records every fire's truth through it): never
+          // let it abort the reply, but never swallow it silently either — the failopen ledger names it
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
         }
         if (!myRec.superseded && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it

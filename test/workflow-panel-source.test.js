@@ -73,4 +73,15 @@ const iL = html.indexOf('app/workflowline.js'), iP = html.indexOf('app/workflowp
 A.ok(iL > 0 && iP > iL && iB > iP, 'index.html loads workflowline.js, then workflowpanel.js, then build.js');
 A.ok(html.indexOf('css/workflow-panel.css') > 0, 'the panel stylesheet is linked');
 
+// the 5 s trigger re-read (2026-09-24): never paint() on it — an unchanged answer touches nothing, a changed one
+// patches rows (an armed DELETE/NEW KEY and the picked schedule survive); only the first answer paints
+const ltr = (code.match(/function ltRefresh\(\) \{[\s\S]*?\n  \}/) || [''])[0];
+A.ok(ltr && /if \(S\.lt && sig === S\.ltSig\) \{ ltTickAgo\(\); return; \}/.test(ltr), 'an unchanged trigger list repaints nothing');
+A.ok(ltr && /if \(first\) paint\(\); else ltPatch\(\);/.test(ltr) && (ltr.match(/paint\(/g) || []).length === 1, 'a changed list is PATCHED, only the first answer paints');
+const ltp = (code.match(/function ltPatch\(\) \{[\s\S]*?\n  \}/) || [''])[0];
+A.ok(ltp && /WL\(\)\.rowPatch\(/.test(ltp) && /old\.replaceWith\(row\); wireLtRows\(row\);/.test(ltp) && !/paintBody|[^a-zA-Z]paint\(/.test(ltp), 'ltPatch replaces only changed rows and never rebuilds the body');
+A.ok(/const schedKey = 'trgsched:' \+ p\.id, wantSched = S\.drafts\[schedKey\];[\s\S]{0,200}schedEl\.dataset\.keep = schedKey;[\s\S]{0,400}picker\.set\(wantSched\)/.test(panel), 'the picked schedule is a kept draft, restored THROUGH the picker after its default-seeding mount');
+A.ok(/api\('\/api\/cron\/preview', 'POST', \{ schedule: v, tz \}\)/.test(panel), 'the schedule preview sends the same tz the create sends');
+A.ok(/const wasOpen = body\.dataset\.card === cardKey/.test(panel), 'an open section stays open across a repaint of the same card');
+
 A.report('workflow-panel-source');

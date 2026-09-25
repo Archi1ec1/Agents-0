@@ -4,13 +4,17 @@
      • runs     — run rows stamped with this line (runstore `lineId`, set by the host that dispatched the run: hub
                   entry/hop, routine entry/hop, step test) that FINISHED since the caller's `since` (its local
                   midnight — the same window the station's SHIPPED TODAY counter polls /api/runs with).
-     • shipped  — of those, reason 'done' with PROVEN work (≥1 successful tool result or ≥1 artifact on the row):
-                  the exact predicate the station SHIPPED counter uses, so the two never disagree.
+     • shipped  — JOBS that left through the line's OUTBOX (2026-09-24): of those runs, reason 'done' with PROVEN
+                  work (≥1 successful tool result or ≥1 artifact — the station SHIPPED predicate) AND run at a dock
+                  whose outbound lane reaches the OUTBOX (the injected shipsToOutbox(agentId, dockId) — the router's
+                  chainShipsToOutbox). A mid-line stage finishing is a RUN, not a shipment: counting every done
+                  stage made a 3-stage line claim 3 shipped for one job. No reader = nothing is claimed shipped.
      • failed   — reason error / refusal / max_iters / budget (the same dead-run set the floor turns into slag).
      • medianMs — the median recorded durationMs of those runs (null with no timed run).
      • usdToday / capUsdPerDay — the LINE BUDGET ledger (line-spend.js, the $ the daily cap is enforced against)
                   and the line's clamped maxUsdPerDay (null = no daily cap set). The ledger's day is the UTC day
-                  index it enforces by; `spendDay: 'utc'` says so rather than pretending it is the local day.
+                  index it enforces by; `spendDay: 'utc'` says so rather than pretending it is the local day — on the
+                  answer AND on every line entry, so a consumer holding one line still knows which day its $ is.
    Plus `docks`: each bay's LAST recorded outcome (newest row stamped with that dockId, any day), which is what a
    bay lamp reads after a reload to stay FAILED until the next success.
 
@@ -32,16 +36,18 @@ function median(xs) {
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 }
 
-/* lineStats({ rows, lines, since, spentToday(lineId)->$, capOf(lineId)->$|null })
+/* lineStats({ rows, lines, since, spentToday(lineId)->$, capOf(lineId)->$|null, shipsToOutbox(agentId, dockId)->bool })
      rows  — run rows NEWEST-FIRST (runStore.list order); may span more than `since` (older rows only feed `docks`)
      lines — the compiled plan's line list ([{ lineId, propIds? }]); a line with no runs still answers zeros
-   -> { since, spendDay: 'utc', lines: [{ lineId, runs, shipped, failed, medianMs, usdToday, capUsdPerDay }], docks } */
+   -> { since, spendDay: 'utc', lines: [{ lineId, runs, shipped, failed, medianMs, usdToday, capUsdPerDay, spendDay }], docks } */
 function lineStats(o) {
   o = o || {};
   const rows = Array.isArray(o.rows) ? o.rows : [];
   const since = fin(o.since) || 0;
   const spentToday = typeof o.spentToday === 'function' ? o.spentToday : () => 0;
   const capOf = typeof o.capOf === 'function' ? o.capOf : () => null;
+  const shipsToOutbox = typeof o.shipsToOutbox === 'function' ? o.shipsToOutbox : () => false;
+  const ships = r => { try { return !!shipsToOutbox(r.agentId || null, r.dockId || null); } catch (e) { void e; return false; } };   // cannot prove -> not shipped
   const byLine = new Map();
   for (const l of (Array.isArray(o.lines) ? o.lines : [])) {
     const id = l && l.lineId != null ? String(l.lineId) : '';
@@ -59,7 +65,7 @@ function lineStats(o) {
     const L = byLine.get(String(r.lineId));
     if (!L) continue;   // a line that is no longer on the floor has no plate to feed
     L.runs++;
-    if (shippedRow(r)) L.shipped++;
+    if (shippedRow(r) && ships(r)) L.shipped++;
     if (failedRow(r)) L.failed++;
     const ms = fin(r.durationMs);
     if (ms != null && ms > 0) L._ms.push(ms);
@@ -69,7 +75,7 @@ function lineStats(o) {
     let usd = 0, cap = null;
     try { usd = fin(spentToday(L.lineId)) || 0; } catch (_) { usd = 0; }
     try { const c = fin(capOf(L.lineId)); cap = (c != null && c > 0) ? c : null; } catch (_) { cap = null; }
-    lines.push({ lineId: L.lineId, runs: L.runs, shipped: L.shipped, failed: L.failed, medianMs: median(L._ms), usdToday: Math.round(usd * 1e6) / 1e6, capUsdPerDay: cap });
+    lines.push({ lineId: L.lineId, runs: L.runs, shipped: L.shipped, failed: L.failed, medianMs: median(L._ms), usdToday: Math.round(usd * 1e6) / 1e6, capUsdPerDay: cap, spendDay: 'utc' });
   }
   return { since, spendDay: 'utc', lines, docks };
 }

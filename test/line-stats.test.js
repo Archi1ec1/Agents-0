@@ -1,7 +1,7 @@
 /* node test/line-stats.test.js — LINE WATCH per-line stats fold (sidecar/routing/line-stats.js) + the run-row
    stamp it depends on (runstore records lineId/dockId only when present and well-formed).
    Laws under test: numbers come ONLY from rows stamped with the line; "shipped" is the station SHIPPED predicate
-   (done + proven work); failed is the dead-run set; a line with no runs answers zeros (never absent, never a guess);
+   (done + proven work) AND a dock whose lane reaches the OUTBOX (a job shipped, not a stage done); failed is the dead-run set; a line with no runs answers zeros (never absent, never a guess);
    the $ ledger + cap are read through the injected readers; each bay's LAST outcome is its newest row. */
 'use strict';
 const A = require('./_assert.js');
@@ -37,20 +37,35 @@ const rows = [   // NEWEST-FIRST, like runStore.list
 const spend = { L1: 0.0125, L2: 0 };
 const caps = { L1: 5, L2: null };
 const out = lineStats({ rows, lines: [{ lineId: 'L1' }, { lineId: 'L2' }, { lineId: 'L3' }], since: SINCE,
-  spentToday: id => spend[id] || 0, capOf: id => caps[id] == null ? null : caps[id] });
+  spentToday: id => spend[id] || 0, capOf: id => caps[id] == null ? null : caps[id],
+  shipsToOutbox: (agentId, dockId) => dockId === 'bB' || dockId === 'bC' });   // bB + bC reach the OUTBOX; bA is a mid-line stage
 const L = id => out.lines.find(l => l.lineId === id);
 A.eq(out.since, SINCE, 'answers the window it folded');
 A.eq(out.spendDay, 'utc', 'says the $ ledger keeps the UTC day');
 A.eq(out.lines.map(l => l.lineId), ['L1', 'L2', 'L3'], 'one entry per plan line, in plan order');
 A.eq(L('L1').runs, 3, 'L1: only its stamped rows since the window (the pre-window row is excluded)');
-A.eq(L('L1').shipped, 1, 'L1: only done + proven work ships');
+A.eq(L('L1').shipped, 1, 'L1: only done + proven work at an OUTBOX-reaching dock ships');
 A.eq(L('L1').failed, 1, 'L1: the error run is failed');
 A.eq(L('L1').medianMs, 1000, 'L1: median of 900/3000/1000');
 A.eq(L('L1').usdToday, 0.0125, 'L1: $ today from the ledger reader');
 A.eq(L('L1').capUsdPerDay, 5, 'L1: the daily cap from the limits reader');
-A.eq(L('L2'), { lineId: 'L2', runs: 1, shipped: 0, failed: 1, medianMs: null, usdToday: 0, capUsdPerDay: null }, 'L2: a refusal with no timing -> median null, no cap');
-A.eq(L('L3'), { lineId: 'L3', runs: 0, shipped: 0, failed: 0, medianMs: null, usdToday: 0, capUsdPerDay: null }, 'L3: a line with no runs answers zeros');
+A.eq(L('L2'), { lineId: 'L2', runs: 1, shipped: 0, failed: 1, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'L2: a refusal with no timing -> median null, no cap');
+A.eq(L('L3'), { lineId: 'L3', runs: 0, shipped: 0, failed: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'L3: a line with no runs answers zeros');
 A.ok(!out.lines.some(l => l.lineId === 'GONE'), 'a line no longer on the floor gets no plate');
+// SHIPPED = JOBS that reached the OUTBOX (2026-09-24): a 3-stage line finishing one job is 3 done runs but ONE shipment
+{
+  const job = [
+    { runId: 'j3', agentId: 'ed', lineId: 'LJ', dockId: 'd3', reason: 'done', toolsOk: 1, ts: 3003 },
+    { runId: 'j2', agentId: 'mid', lineId: 'LJ', dockId: 'd2', reason: 'done', toolsOk: 1, ts: 3002 },
+    { runId: 'j1', agentId: 'w', lineId: 'LJ', dockId: 'd1', reason: 'done', toolsOk: 1, ts: 3001 }
+  ];
+  const asked = [];
+  const one = lineStats({ rows: job, lines: [{ lineId: 'LJ' }], since: 0, shipsToOutbox: (a, d) => { asked.push(a + '@' + d); return d === 'd3'; } }).lines[0];
+  A.eq([one.runs, one.shipped], [3, 1], 'three done stage runs, ONE job shipped (was: 3 shipped)');
+  A.ok(asked.indexOf('ed@d3') >= 0, 'the OUTBOX question is asked per row with its agent AND dock (multi-bay)');
+  A.eq(lineStats({ rows: job, lines: [{ lineId: 'LJ' }], since: 0 }).lines[0].shipped, 0, 'no OUTBOX reader -> nothing is claimed shipped');
+  A.eq(lineStats({ rows: job, lines: [{ lineId: 'LJ' }], since: 0, shipsToOutbox: () => { throw new Error('x'); } }).lines[0].shipped, 0, 'a throwing reader cannot prove a shipment');
+}
 // the bays' LAST outcome = newest stamped row (any day)
 A.eq(out.docks.bC, { runId: 'r9', agentId: 'ada', reason: 'error', failed: true, ts: 9000 }, 'bay C: the newest row (the failure) wins over the older success');
 A.eq(out.docks.bA.failed, false, 'bay A: last run done');
@@ -59,7 +74,7 @@ A.ok(!('undefined' in out.docks), 'rows without a dock never key a bay');
 
 // ---- readers that throw degrade to "cannot prove", never to a crash ----
 const safe = lineStats({ rows: [], lines: [{ lineId: 'L1' }], since: 0, spentToday: () => { throw new Error('x'); }, capOf: () => { throw new Error('y'); } });
-A.eq(safe.lines[0], { lineId: 'L1', runs: 0, shipped: 0, failed: 0, medianMs: null, usdToday: 0, capUsdPerDay: null }, 'throwing readers -> zero $ and no cap');
+A.eq(safe.lines[0], { lineId: 'L1', runs: 0, shipped: 0, failed: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'throwing readers -> zero $ and no cap');
 A.eq(lineStats(null).lines, [], 'no input -> no lines');
 
 // ---- the run-row stamp (runstore): present only when well-formed ----

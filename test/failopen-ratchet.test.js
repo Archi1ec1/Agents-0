@@ -130,7 +130,7 @@ const SYNC_BASELINE = {
   'channels/adapter.js': 5,
   'channels/discord.gateway.js': 10,
   'channels/discord.transport.js': 3,
-  'channels/hub.js': 41,   // AUDITED — 41 left: emit() bus wrappers, console.* wrappers, best-effort deletes/edits/acks, timer clears, aborts, host observer callbacks, loadHistory value defaults
+  'channels/hub.js': 40,   // AUDITED — 40 left (the onLineOutcome hook now logs via failNote, 2026-09-24): emit() bus wrappers, console.* wrappers, best-effort deletes/edits/acks, timer clears, aborts, host observer callbacks, loadHistory value defaults
   'channels/proxy-fetch.js': 1,
   'channels/signal.transport.js': 2,
   'channels/slack.transport.js': 8,
