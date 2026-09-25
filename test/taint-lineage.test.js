@@ -250,7 +250,9 @@ const leadCtx = (extra) => makeCapCtx({ agentId: 'lead', room: 'office', hasComp
     return { hops: [{ agentId: 'writer' }], text: w.text, agentId: 'writer', stopped: null };
   } };
   const hub = makeChannelHub({ runOnce, store, send: () => Promise.resolve({ ok: true }), secrets: () => ({ key: 'k', model: 'm' }),
-    classify: () => false, newId: counter('run'), chain });
+    classify: () => false, newId: counter('run'), chain,
+    // /new is owner-only (channel owner gates, 2026-09-25): chat A's sender is the owner here.
+    isOwner: (m) => String(m.userId) === 'u111' });
   const dm = (text, chatId) => ({ channel: 'telegram', chatId, chatType: 'dm', userId: 'u' + chatId, text, messageId: String(Date.now()), ts: 1 });
   await hub.onInbound(dm('SECRET-A: hostile upstream page text', '111'));
   await hub.onInbound(dm('hello from chat B', '222'));
