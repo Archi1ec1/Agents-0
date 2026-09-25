@@ -19334,7 +19334,8 @@ async function handlePickPath(req, res) {
    two routes do only the filesystem work. Token-gated like every /api route (main route table). ---- */
 
 // stat helper: is `abs` an existing directory? (never throws)
-async function isHarnessDir(abs) { try { const st = await fsp.stat(abs); return st.isDirectory(); } catch (_) { return false; } }
+// A network/device path is never "an existing directory" here: even the stat would be an SMB touch (audit #19).
+async function isHarnessDir(abs) { if (harnessImport.nonLocalPathReason(abs)) return false; try { const st = await fsp.stat(abs); return st.isDirectory(); } catch (_) { return false; } }
 
 // read at most `maxBytes` (default 128KB) of a REGULAR file as utf-8; anything else — missing, unreadable, a
 // directory, or a SYMLINK/JUNCTION — yields null (the scanner treats null as "file absent"). lstat first (does NOT
@@ -19365,7 +19366,8 @@ async function harnessReadClamped(abs, maxBytes, realBase) {
 }
 
 // realpath a directory the harness routes will read under; null when it can't resolve (caller skips it).
-async function harnessRealDir(abs) { try { return await fsp.realpath(abs); } catch (_) { return null; } }
+// A local link that resolves onto a network share is skipped like any other unreadable base (audit #19).
+async function harnessRealDir(abs) { try { const real = await fsp.realpath(abs); return harnessImport.nonLocalPathReason(real) ? null : real; } catch (_) { return null; } }
 
 // never read these off an imported home, even if a future whitelist entry named one (defense in depth — the current
 // filesWanted list is all persona/memory markdown + one config, none of which match).
@@ -19415,6 +19417,8 @@ async function handleHarnessScan(req, res) {
   const harness = body.harness === 'hermes' ? 'hermes' : (body.harness === 'openclaw' ? 'openclaw' : null);
   const root = typeof body.root === 'string' ? body.root : '';
   if (!harness) return json(400, { ok: false, reason: 'harness must be "openclaw" or "hermes"' });
+  const nonLocal = root ? harnessImport.nonLocalPathReason(root) : '';
+  if (nonLocal) return json(400, { ok: false, reason: 'root refused: ' + nonLocal });
   if (!root || !path.isAbsolute(root)) return json(400, { ok: false, reason: 'root must be an absolute path' });
   if (!(await isHarnessDir(root))) return json(400, { ok: false, reason: 'root is not an existing directory' });
 
