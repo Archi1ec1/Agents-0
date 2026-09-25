@@ -242,5 +242,54 @@ const fast = { attempts: 3, pollMs: 0, sleep: async () => {} };
     A.eq(bg2.status('a', 'bg_1').killed, false, 'and never marked killed');
   }
 
+  // ---- 7. an UNSETTLED kill is retryable: it keeps its cap slot, a second kill re-runs it, killAll retries it ----
+  {
+    const denyOn3000 = (w) => (pids) => {   // access denied on 3000: everything else dies
+      const kill = []; for (const r of w.rows) if (r.pid !== 3000 && (pids.indexOf(r.pid) >= 0 || r.ppid === 1000 || r.pid === 1000)) kill.push(r.pid);
+      w.remove(kill);
+      for (const c of w.children) if (kill.indexOf(c.pid) >= 0) setImmediate(() => c._exit(1));
+      return pids.indexOf(3000) >= 0 ? 1 : 0;
+    };
+    const w = makeWorld(); w.nextPid = 1000;
+    const ledger = mkLedger();
+    const bg = makeShellBg({ spawn: w.spawn, isWin: true, clock: { now: () => 9000 }, ledger, processTable: w.table, killVerify: fast, maxPerAgent: 1 });
+    bg.start({ agentId: 'a', cmd: 'node server.js' });
+    w.rows = [{ pid: 1000, ppid: 1, created: 5000 }, { pid: 2000, ppid: 1000, created: 5001 }, { pid: 3000, ppid: 2000, created: 5002 }];
+    const defaultTk = w.onTaskkill;
+    w.onTaskkill = denyOn3000(w);
+    const r1 = await bg.kill('a', 'bg_1');
+    A.eq(r1.incomplete, true, 'first kill leaves 3000 alive (incomplete)');
+    A.eq(bg.status('a', 'bg_1').running, false, 'the root itself did exit');
+    A.eq(bg.count('a'), 1, 'a failed kill whose survivor is still running KEEPS its cap slot (it used to free it)');
+    // the OS lets go of 3000 now: a retry must actually run, not hand back the stale incomplete verdict
+    w.onTaskkill = defaultTk;
+    const before = w.taskkills.length;
+    const r2 = await bg.kill('a', 'bg_1');
+    A.eq(r2.verified, true, 'a second kill after an incomplete verdict is re-run and can succeed');
+    A.ok(w.taskkills.length > before, 'the retry launched taskkill again');
+    A.ok(w.taskkills.slice(before).every(t => !/\/pid 1000\b/.test(t)), 'the retry never names the exited root PID (it may be a stranger now)');
+    A.ok(w.taskkills.slice(before).some(t => /\/pid 3000/.test(t)), 'it names the survivor by its re-proven identity');
+    A.ok(!w.rows.some(x => x.pid === 3000), 'the survivor is gone');
+    A.eq(bg.status('a', 'bg_1').killState, 'verified', 'killState is now verified');
+    A.eq(bg.count('a'), 0, 'and the slot frees only now');
+    A.eq(ledger.released, [1000], 'the receipt is released on the proven retry');
+    A.ok((await bg.kill('a', 'bg_1')).verified, 'a verified verdict is final: a later kill returns it');
+
+    // E-STOP / shutdown: killAll retries a record whose earlier kill was not proven
+    const w2 = makeWorld(); w2.nextPid = 1000;
+    const bg2 = makeShellBg({ spawn: w2.spawn, isWin: true, clock: { now: () => 9000 }, processTable: w2.table, killVerify: fast });
+    bg2.start({ agentId: 'a', cmd: 'node server.js' });
+    w2.rows = [{ pid: 1000, ppid: 1, created: 5000 }, { pid: 2000, ppid: 1000, created: 5001 }, { pid: 3000, ppid: 2000, created: 5002 }];
+    const defaultTk2 = w2.onTaskkill;
+    w2.onTaskkill = denyOn3000(w2);
+    A.eq((await bg2.kill('a', 'bg_1')).incomplete, true, 'the agent kill is incomplete');
+    w2.onTaskkill = defaultTk2;
+    A.eq(bg2.killAll(), 1, 'killAll counts and retries the unsettled record (it used to skip every killRequested record)');
+    for (let i = 0; i < 40 && bg2.status('a', 'bg_1').killState === 'pending'; i++) await tick();
+    A.eq(bg2.status('a', 'bg_1').killState, 'verified', 'and the retry is confirmed');
+    A.ok(!w2.rows.some(x => x.pid === 3000), 'the survivor E-STOP was owed is gone');
+    A.eq(bg2.killAll(), 0, 'a verified record is never re-killed');
+  }
+
   A.report('shellbg.kill-verified.test');
 })().catch(e => { console.log('FAIL: shellbg.kill-verified.test threw — ' + (e && e.stack || e)); process.exit(1); });
