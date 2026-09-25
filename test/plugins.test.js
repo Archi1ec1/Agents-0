@@ -269,6 +269,23 @@ async function writePlugin(id, source, manifest) {
       await spine.invoke('post_tool_call', { tool_name: 'x' });
       A.eq(global.__helperSays, null, 'a disabled plugin stays off until it is re-approved and re-loaded');
 
+      // no injected clock => no rate limit: a drift is caught on the VERY NEXT call (never fails open for want of a clock)
+      {
+        const errs3 = [];
+        const loader3 = mk({ clock: undefined, requireModule: reqFresh, onError: (e) => errs3.push(e) });
+        const spine3 = makeHooks();
+        const r3 = await loader3.load(spine3);
+        A.eq(r3.loaded.length, 1, 'clockless loader: the approved plugin loads');
+        global.__helperSays = null;
+        await spine3.invoke('post_tool_call', { tool_name: 'x' });
+        A.eq(global.__helperSays, 'approved-helper', 'clockless loader: the approved helper runs');
+        await fsp.writeFile(helperFile, "module.exports = () => 'TAMPERED';", 'utf8');
+        global.__helperSays = null;
+        await spine3.invoke('post_tool_call', { tool_name: 'x' });
+        A.eq(global.__helperSays, null, 'clockless loader: a helper edit is caught on the next call with no time passing');
+        await fsp.writeFile(helperFile, "module.exports = () => 'approved-helper';", 'utf8');
+      }
+
       // guard findings cover helpers, not only main
       const seen = [];
       await mk({ guard: { scanText: (f) => { seen.push(f); return []; } } }).discover();

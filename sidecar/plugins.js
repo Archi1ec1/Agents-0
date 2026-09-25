@@ -56,7 +56,9 @@
     const allowFile = deps.allowFile;
 
     const readJson = async (f, fb) => { try { return JSON.parse(await fsp.readFile(f, 'utf8')); } catch (_) { return fb; } };
-    const now = () => (deps.clock && typeof deps.clock.now === 'function') ? Number(deps.clock.now()) || 0 : Date.now();
+    // Injected clock (determinism lint). WITHOUT one there is no rate limit: every handler call re-hashes — the
+    // re-verification must never fail open for want of a clock.
+    const now = (deps.clock && typeof deps.clock.now === 'function') ? () => Number(deps.clock.now()) || 0 : null;
 
     /* treeDigest(base) -> { digest, files: [{ rel, text }] } | { error }
        Every regular file under the plugin folder, walked with lstat and in sorted order, contributes
@@ -254,12 +256,14 @@
            plugin require()s lazily (or reads at event time) can still change after load. Every handler call
            re-verifies the folder digest (re-hashed at most every RECHECK_MS) and a drift disables the WHOLE
            plugin until the Commander approves the new code — it goes back to pending on the next listing. */
-        let checkedAt = now(), disabled = false;
+        let checkedAt = now ? now() : 0, disabled = false;
         const stillApproved = async () => {
           if (disabled) return false;
-          const t = now();
-          if (t - checkedAt < RECHECK_MS && t >= checkedAt) return true;
-          checkedAt = t;
+          if (now) {
+            const t = now();
+            if (t - checkedAt < RECHECK_MS && t >= checkedAt) return true;
+            checkedAt = t;
+          }
           const cur = await treeDigest(p.dir);
           if (cur.digest === p.digest) return true;
           disabled = true;
