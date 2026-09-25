@@ -1099,7 +1099,16 @@
           return { content: 'Kill sent to background process ' + id + ' but NOT confirmed: ' + (r.error || 'the process tree could not be read back')
             + (r.rootExited ? ' (its main process did exit).' : '.'), summary: 'kill unconfirmed' };
         }
-        const proven = r && r.verified ? ' — the whole process tree (' + (r.killedPids || []).length + ' process(es)) is confirmed gone.' : '.';
+        /* 'verified' is proof about HOST processes. On a docker/ssh backend the host-side record is the docker exec /
+           ssh client, so a verified verdict says nothing about the job inside the container or on the remote host. */
+        const backendId = environment
+          ? (typeof environment.backendIdFor === 'function' ? environment.backendIdFor(aid) : environment.backendId)
+          : null;
+        const remote = !!(environment && backendId && backendId !== 'local');
+        const proven = remote
+          ? ' — the kill was sent through the ' + backendId + ' backend, but the process tree inside it could not be confirmed gone (unverified).'
+          : (r && r.verified ? ' — the whole process tree (' + (r.killedPids || []).length + ' process(es)) is confirmed gone.' : '.');
+        if (r && r.ok && !r.alreadyExited && remote) return { content: 'Kill sent to background process ' + id + proven, summary: 'kill unconfirmed' };
         return { content: r.ok ? (r.alreadyExited ? 'Process ' + id + ' had already exited.' : 'Killed background process ' + id + proven) : ('Could not kill: ' + r.error), summary: r.ok ? 'killed' : 'not killed' };
       }
     };

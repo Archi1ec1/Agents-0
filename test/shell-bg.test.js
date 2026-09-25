@@ -212,5 +212,23 @@ const reaperBlock = (async () => {
   const remote = await asyncTools.execTool.run({ cmd: 'node server.js', background: true }, ctx);
   A.ok(/Started background process bg_remote/.test(remote.content), 'shell tool awaits an async persistent-backend startup');
 
+  // a docker/ssh kill is never reported as a confirmed tree kill: the host-side proof covers only the exec client
+  for (const backendId of ['docker', 'ssh']) {
+    const env = Object.assign({}, asyncEnvironment, { backendId,
+      killBackground: () => Promise.resolve({ ok: true, verified: true, bgId: 'bg_remote', killedPids: [11, 12] }) });
+    const t = makeShellTool({ environment: env, fs, pathMod: path, root: path.join('root'), clock, platform: 'win32' });
+    const kr = await t.bgKillTool.run({ id: 'bg_remote' }, ctx);
+    A.ok(!/confirmed gone\./.test(kr.content) && !/^Killed/.test(kr.content), backendId + ': the kill does not claim the whole tree is confirmed gone');
+    A.ok(/unverified/.test(kr.content) && new RegExp(backendId).test(kr.content), backendId + ': it says the kill went through the backend and is unverified');
+    A.eq(kr.summary, 'kill unconfirmed', backendId + ': honest summary');
+  }
+  {
+    const env = Object.assign({}, asyncEnvironment, { backendId: 'local',
+      killBackground: () => Promise.resolve({ ok: true, verified: true, bgId: 'bg_l', killedPids: [11, 12] }) });
+    const t = makeShellTool({ environment: env, fs, pathMod: path, root: path.join('root'), clock, platform: 'win32' });
+    const kr = await t.bgKillTool.run({ id: 'bg_l' }, ctx);
+    A.ok(/confirmed gone/.test(kr.content) && kr.summary === 'killed', 'the local backend keeps its proven wording');
+  }
+
   A.report('shell-bg.test');
 })().catch(function (e) { console.error(e); process.exit(1); });
