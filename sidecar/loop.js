@@ -1025,7 +1025,7 @@
        reaches for an ambient timer or time, so it stays deterministic; no ticker (or no clock) = no heartbeat,
        and every existing caller is byte-identical. */
     const waitTicker = (typeof o.waitTicker === 'function' && clock && typeof clock.now === 'function') ? o.waitTicker : null;
-    const NO_WAIT = { phase() {}, stop() {} };
+    const NO_WAIT = { phase() {}, pause() {}, resume() {}, stop() {} };
     function waitClock() {
       try { const t = Number(clock.now()); return isFinite(t) ? t : 0; }
       catch (e) { failNote('loop.wait.clock', e); return 0; }
@@ -1033,9 +1033,9 @@
     // One wait: `beatNow` emits a first heartbeat immediately (a retried attempt going out — see its call site).
     function startWaiting(phase, beatNow) {
       if (!waitTicker) return NO_WAIT;
-      const st = { phase, since: waitClock(), live: true, disarm: null };
+      const st = { phase, since: waitClock(), live: true, paused: false, disarm: null };
       const beat = () => {
-        if (!st.live || signal.aborted) return;
+        if (!st.live || st.paused || signal.aborted) return;
         // runs on the HOST's timer, outside the loop's own try blocks: a throwing emit must never escape into it
         try { emit('agent.waiting', { agentId, runId, phase: st.phase, sinceMs: Math.max(0, Math.round(waitClock() - st.since)), model: String(model) }); }
         catch (e) { failNote('loop.wait.emit', e); }
@@ -1045,6 +1045,15 @@
       if (beatNow) beat();
       return {
         phase(p) { st.phase = p; },   // first_byte -> streaming keeps `since`: the wait began when the call went out
+        // Visible output silences the heartbeat WITHOUT disarming it: the same stream can go quiet again (a sentence,
+        // then minutes of streaming tool arguments the Commander cannot see), and that new silence must keep beating.
+        pause() { st.paused = true; },
+        // A NEW silent stretch begins (tool arguments started streaming after visible text): beat again, counting
+        // from now. A no-op unless paused, so a wait that never showed output keeps its original `since`.
+        resume(p) {
+          if (!st.live || !st.paused) return;
+          st.paused = false; st.phase = p || st.phase; st.since = waitClock();
+        },
         stop() {
           if (!st.live) return;
           st.live = false;
@@ -1584,15 +1593,17 @@
               const delta = String(ev.delta == null ? '' : ev.delta);
               // the wait is over the moment the Commander SEES output. Reasoning, usage and streaming tool arguments
               // show nothing (agent.tool_call fires only after the stream), and a retry's deduped re-stream is
-              // buffered — the heartbeat keeps beating 'streaming' through all of those.
-              if (delta && dedupeAgainst == null) waiting.stop();
+              // buffered — the heartbeat keeps beating 'streaming' through all of those. PAUSED, not stopped: a tool
+              // call streaming after the text re-arms it (below), or a worker writing a long file after one sentence
+              // went silent for minutes and the liveness sweep (subagents.checkStalls) marked it stale.
+              if (delta && dedupeAgainst == null) waiting.pause();
               acc.text += delta;
               if (dedupeAgainst == null) emit('agent.token', { agentId, runId, delta });
               else streamedTextChunks.push(delta);
             }
             else if (ev.type === 'reasoning') { if (ev.block) acc.reasoning.push(ev.block); }
-            else if (ev.type === 'tool_start') { acc.toolCalls[ev.index] = { id: ev.id, name: ev.name, args: '' }; }
-            else if (ev.type === 'tool_args') { if (acc.toolCalls[ev.index]) acc.toolCalls[ev.index].args += (ev.chunk || ''); }
+            else if (ev.type === 'tool_start') { acc.toolCalls[ev.index] = { id: ev.id, name: ev.name, args: '' }; waiting.resume('streaming'); }
+            else if (ev.type === 'tool_args') { if (acc.toolCalls[ev.index]) acc.toolCalls[ev.index].args += (ev.chunk || ''); waiting.resume('streaming'); }
             else if (ev.type === 'usage') { usage = ev.usage; if (cost) emit('cost.estimate', Object.assign({ agentId, runId }, cost.estimate(usage, model))); }
             else if (ev.type === 'done') { lastFinishReason = ev.finishReason; sawTruncation = !!ev.truncated; }   // A3: remember WHY the turn stopped
             // 'tool_done' needs no action here
