@@ -1013,12 +1013,11 @@ const { note: failNote } = require('../../failopen');
         // glob (e.g. "src/" + star + ".js") matched nothing and returned a clean "0 matches" — indistinguishable
         // from "the text isn't there". Match on the same rule target:'files' already uses: a pattern containing
         // a slash is a PATH pattern, everything else is a name pattern.
-        let globRe = null, globPath = false, fgNorm = null;
+        let globRe = null, globPath = false;
         if (args.file_glob) {
           let fg = String(args.file_glob);
           globPath = fg.indexOf('/') >= 0;
           if (!globPath && fg.charAt(0) !== '*') fg = '*' + fg;
-          fgNorm = fg;
           globRe = globToRe(fg, ic);
         }
 
@@ -1031,7 +1030,10 @@ const { note: failNote } = require('../../failopen');
           if (!args.regex) argv.push('-F');
           if (ic) argv.push('-i');
           if (cx) argv.push('-C', String(cx));
-          if (fgNorm) { argv.push('-g', fgNorm); if (ic) argv.push('--glob-case-insensitive'); }
+          /* file_glob is NOT handed to rg as -g. rg matches -g relative to its cwd (the scoped `path`), so a path glob
+             meant something else once `path` was set, and an rg -g glob OVERRIDES ignore rules, so a glob could reach
+             .gitignored files the walker skips. Both engines now apply the same globRe in JS: a path glob against the
+             WORKSPACE-relative path (the base every result path uses), a name glob against the basename. */
           argv.push('-e', q);
           const byFile = new Map();   // rel -> hit
           let searched = null;
@@ -1044,6 +1046,7 @@ const { note: failNote } = require('../../failopen');
             if (!d.path || typeof d.path.text !== 'string' || !d.lines || typeof d.lines.text !== 'string') return;
             const rel = rgRel(d.path.text), idx = Number(d.line_number) - 1;
             if (!(idx >= 0)) return;
+            if (globRe && !globRe.test(globPath ? rel : rel.split('/').pop())) return;
             let h = byFile.get(rel);
             if (!h) { h = { rel, idxs: [], lines: {}, maxIdx: 0 }; byFile.set(rel, h); }
             h.lines[idx] = d.lines.text.replace(/\r?\n$/, '');

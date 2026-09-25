@@ -65,6 +65,17 @@ async function contract(tools, label) {
   A.ok(lines(off).indexOf('node_modules/dep/x.js') < 0, label + ': node_modules stays skipped even with gitignore:false');
   const cxr = await tools.searchTool.run({ query: 'NEEDLE', file_glob: '*.md', context: 1, limit: 100 }, ctx);
   A.ok(/^docs\/guide\.md$/m.test(cxr.content) && /^ {2}1: NEEDLE guide$/m.test(cxr.content), label + ': context/densified rendering is stable');
+  // a PATH-shaped file_glob is workspace-relative on BOTH engines, with or without a scoped `path`
+  const pg = await tools.searchTool.run({ query: 'NEEDLE', file_glob: 'src/*.js', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pg), ['src/app.js'], label + ': a path file_glob matches the workspace-relative path');
+  const pgScoped = await tools.searchTool.run({ query: 'NEEDLE', path: 'src', file_glob: 'src/*.js', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pgScoped), ['src/app.js'], label + ': …and means the SAME thing when `path` is set (rg used to match it against the scoped dir)');
+  const pgDeep = await tools.searchTool.run({ query: 'NEEDLE', path: 'docs', file_glob: 'docs/**', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pgDeep).sort(), ['docs/guide.md', 'docs/top-only.txt'], label + ': a scoped ** path glob');
+  const pgMiss = await tools.searchTool.run({ query: 'NEEDLE', path: 'src', file_glob: '*/app.js', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pgMiss), ['src/app.js'], label + ': */app.js is relative to the workspace root, not the scoped dir');
+  const logGlob = await tools.searchTool.run({ query: 'NEEDLE', file_glob: '*.log', output_mode: 'files_only', limit: 100 }, ctx);
+  A.ok(lines(logGlob).indexOf('build.log') < 0, label + ': a file_glob never re-includes a .gitignored file (an rg -g glob overrides ignore rules)');
   const flat = await tools.searchTool.run({ query: 'guide', limit: 100 }, ctx);
   A.eq(flat.content, 'docs/guide.md:1: NEEDLE guide', label + ': the flat path:line: text row is byte-identical');
 }
