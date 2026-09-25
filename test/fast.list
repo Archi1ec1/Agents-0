@@ -700,6 +700,7 @@ test/channels.sse.test.js
 test/channels.replay.test.js
 test/browser-workflow.test.js
 test/mcp.client.test.js
+test/mcp.description-untrusted.test.js
 test/mcp.resources-prompts.test.js
 test/mcp.transport.test.js
 test/mcp.stdio.test.js
