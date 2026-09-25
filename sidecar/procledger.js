@@ -132,7 +132,7 @@
     const now = (deps.clock && typeof deps.clock.now === 'function') ? deps.clock.now : () => 0;
     const isWin = (deps.isWin != null) ? deps.isWin : WIN;
     const log = typeof deps.log === 'function' ? deps.log : () => {};
-    const execFile = deps.execFile || ((typeof require === 'function') ? require('node:child_process').execFile : null);
+    const execFile = deps.execFile || ((typeof require === 'function') ? require('./child-env.js').guardChildProcess(require('node:child_process')).execFile : null);
     const probe = deps.probe || (isWin ? makeWin32Probe(execFile) : makePosixProbe(execFile));
     const killTree = deps.killTree || makeKillTree(execFile, isWin);
     /* The owned-tree walk needs the WHOLE process table (Windows). Real only in production wiring: a caller that

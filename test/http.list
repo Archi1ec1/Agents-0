@@ -10,6 +10,8 @@ test/sidecar.http.test.js
 test/channels.replay.e2e.test.js
 test/config-permissions-import.e2e.test.js
 test/secret-redaction.e2e.test.js
+test/harness-scan-local.e2e.test.js
+test/child-env.e2e.test.js
 test/connector-security.e2e.test.js
 test/connector-oauth-refresh-race.e2e.test.js
 test/github-device.http.test.js

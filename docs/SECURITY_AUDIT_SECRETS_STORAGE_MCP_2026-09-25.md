@@ -23,7 +23,12 @@ Out of scope, because other lanes own these areas: code.run, channel owner gates
 | 8 | Medium | Connector-OAuth legs vulnerable to DNS rebinding (validated once, resolved again at connect) | Fixed |
 | 9 | Medium | Zip bomb in `.docx`/`.xlsx` extraction (`inflateRawSync` with no output cap) | Fixed |
 | 10 | Low-Med | Uncaught-fault text went unredacted to the unauthenticated `/api/health`, the crash ledger and the log | Fixed |
-| 11–22 | Low / Med | See "Open" below | Open |
+| 13 | Low-Med | Helper processes (git in user repos, shell hooks, PowerShell helpers, Chrome, PTY fallback, loop checks) inherited the sidecar's whole env: API/IPC tokens, desktop-injected keys, exported service keys | Fixed on `agent/sec-env` |
+| 17 | Low | Plugin approval hashed only `main`; helper files could change without re-approval, and links were followed | Fixed on `agent/sec-env` |
+| 18 | Low | `save-conflict-<client>.json` files grew without limit | Fixed on `agent/sec-env` (notebook-restore count cap still open) |
+| 19 | Low | `/api/harness/scan` accepted UNC and device-namespace roots | Fixed on `agent/sec-env` |
+| 21 | Low | Connector-OAuth discovery ignored the advertised PKCE methods and `issuer`; the catalog `authorization_endpoint` was not URL-checked | Fixed on `agent/sec-env` |
+| 11, 12, 14–16, 20, 22 | Low / Med | See "Open" below | Open |
 
 ## Fixed
 
@@ -160,21 +165,94 @@ The existing test could not have noticed, because it searched the base64 bundle 
 
 **Test:** `test/process-fault.test.js` (78).
 
+## Fixed afterwards on `agent/sec-env` (2026-09-25)
+
+Base: trunk `95b4f4fa7`. Worktree `gen-trees/sec-env`, not merged. Each item was re-verified against that trunk before fixing.
+
+### 13. Helper processes no longer inherit the station's secrets
+
+**Re-verified on trunk:** `test/child-env.e2e.test.js` pointed at the trunk sidecar fails 3 of 9. A scratch repo's `core.fsmonitor` (code the user's repo runs whenever the project scan calls `git status`) received `STARNET_WORKSPACES`, the planted station secret and the exported service key.
+
+**The rule** (`sidecar/child-env.js`, the one builder): strip what the station put there, keep what the user put there.
+
+1. Every `STARNET_*` / `SKYNET_*` name. The desktop shell injects every secret it hands the sidecar under these names (API/IPC tokens, provider keys and pools, channel tokens, credits token, connector vault key), and the sidecar reads its own secrets only through them.
+2. Every name the sidecar itself exported into `process.env` (the KEYS-tab service keys, tracked by `servicekeys.applyEnv`).
+3. Any variable whose value is a secret the station currently holds (the same live collector as `redact()`'s known-value layer). `PATH`, `HOME` and the other runtime basics are never stripped by this rule.
+
+A variable the user exported in their own shell (`NPM_TOKEN`, `GITHUB_TOKEN`, a bare `OPENAI_API_KEY`) stays visible to host helpers, unless its value is one the station holds. Agent-driven commands are stricter: `environment.sanitizeChildEnv` (shell.exec, background jobs, terminals) now runs this builder first and then strips every secret-shaped name as before. The service keys come back only through `mergeServiceEnv`, the one surface they were pasted for. MCP stdio, LSP, code.run and the computer-use runtime keep their own allowlist builders, which are stricter still.
+
+**Wiring:** `guardChildProcess()` fills a missing `env` on every `spawn`/`execFile`/`exec`/`execSync`/`fork` call. An explicit `env` passes through untouched. `index.js` wraps its `child_process` once, which covers git (checkpoints, patch apply, project scan, build describe), shell hooks, loop checks, the folder picker, native STT, the process table and taskkill. These modules wrap their own: `inputguard`, `procledger`, `desktop`, `win32desktop` (whose PowerShell env is now built per call), `browser` (Chrome), and `mcp/transport.stdio` (its taskkill). The PTY fallback in `terminal-sessions` uses the builder too.
+
+**Tests:**
+
+- `test/child-env.test.js` (80): real children through `execFile`, `spawn` and `execSync` cannot see the planted secrets but still see `PATH`, `HOME` and the user's vars. It also pins that every sidecar `child_process` require is guarded or builds its own allowlist.
+- `test/child-env.e2e.test.js` (9, live sidecar, `http.list`).
+- Passing unchanged: environment, shell ×6, shell-bg, terminal-sessions, terminal-tools, procledger ×3, inputguard, desktop, win32desktop, mcp.stdio, servicekeys.env and `servicekeys.shell.e2e` (service keys still reach `shell.exec`).
+
+### 17. Plugin approval covers every file in the folder
+
+**Re-verified on trunk:** with the new cases run against trunk `plugins.js`, 10 assertions fail. An edited or added helper kept its approval, a lazily required helper edited after load ran, and a folder containing a link was offered for approval.
+
+**Fix:**
+
+- The digest walks the whole plugin folder with `lstat`, in sorted order and bounded (512 files, 16 MiB, depth 12).
+- A link or junction anywhere in the folder, or a folder that is itself a link, is refused.
+- The guard's findings now cover helper files, not only `main`.
+- Exec-time re-verification: every handler call re-checks the folder digest (re-hashed at most every 2 s). A drift disables the whole plugin until the Commander re-approves it.
+
+**Upgrade note:** approvals recorded under the old main-only digest ask once more after this lands.
+
+**Test:** `test/plugins.test.js` (51 → 64).
+
+### 18. Save-conflict snapshots are bounded
+
+**Fix:** `savestore` keeps the newest 20 `<agent>.save-conflict-*.json` per agent (by mtime). The snapshot just written always survives, and other agents' files are untouched. A failed prune is noted and never fails the save response.
+
+**Still open:** the notebook-restore count cap was not touched.
+
+**Test:** `test/save-concurrency.test.js` (bounded-conflict case). Save, cloudsave-concurrency, upgrade-085-090, update-state-parity and the fail-open ratchet all pass.
+
+### 19. The harness scan refuses network and device paths
+
+**Fix:**
+
+- `harness-import.nonLocalPathReason()` refuses UNC (`\\host\share`, `//host`), device-namespace (`\\?\`, `\\.\`, `\??\`) and NUL roots on the raw string, before any filesystem call.
+- `/api/harness/scan` returns a named 400.
+- `isHarnessDir` (also used by detect's per-agent probe from `openclaw.json`) never stats such a path.
+- A local link whose realpath lands on a share is skipped.
+
+**Tests:** `test/harness-import.test.js` (75), and `test/harness-scan-local.e2e.test.js` (13, live sidecar, `http.list`). The e2e shows each refusal arrives before any network lookup, and that a local workspace still scans.
+
+### 21. Connector-OAuth metadata checks
+
+**Fix:** `mcp/oauth.js discover()` now refuses:
+
+- an `issuer` that differs from the authorization server the resource named (mix-up; a trailing slash is tolerated);
+- a server that advertises `code_challenge_methods_supported` without `S256`;
+- authorization, token or registration endpoints that are not https on a public host, or that carry embedded credentials;
+- an authorization endpoint with a fragment.
+
+This applies to catalog rows and custom servers alike. `buildAuthorizeUrl` applies the same check to every URL it hands the browser, including catalog `staticOauth` rows.
+
+**Tolerated on purpose:** a missing `issuer` and a missing method list, because several hosted MCP servers omit them and refusing would break their sign-in.
+
+**Tests:** `test/mcp.oauth.test.js` (69 → 85). The OAuth e2e suites still pass: connector-security, refresh-race, google-signin, oauth-status, github-device, and mcp.oauth-fetch.
+
 ## Open (not fixed here)
 
 | # | Severity | Finding | Where | Suggested fix |
 |---|---|---|---|---|
 | 11 | Medium | On desktop, **Slack and Matrix tokens stay plaintext** in `channels/secrets.json`. `is_known_channel` / `SIDECAR_CHANNEL_TOKEN_ENVS` only cover telegram and discord, so the frontend falls back to the POST body | `src-tauri/src/credentials.rs:69,159`; `frontend/.../messaging.js` fallback | Add slack and matrix to the keychain envs, then push and strip (write and verify the keychain entry before removing the plaintext copy) |
 | 12 | Medium | Server-supplied **MCP tool descriptions and schemas** reach the model unfenced and do not latch taint (tool poisoning). Tool *results* are fenced and taint-latched | `mcp/translate.js:119-122` | Fence and length-cap descriptions; treat a changed description as a re-consent event. Coordinate with the taint lane |
-| 13 | Low-Med | Every process inherits the sidecar's full `process.env` (provider keys, channel tokens, `SKYNET_API_TOKEN`, `SKYNET_IPC_TOKEN`, service keys) when it is spawned with no `env`: `execFile('git')` (index.js ~3287/8357/14284, including the project scan in user repos, where hooks and fsmonitor run), `shellhooks.js:179`, `inputguard.js`, `procledger.js`, `desktop.js`, `native-stt.js`, `folderpick.js` | spawn sites | Pass `environment.sanitizeChildEnv(process.env)` |
+| 13 | Low-Med | Every process inherits the sidecar's full `process.env` (provider keys, channel tokens, `SKYNET_API_TOKEN`, `SKYNET_IPC_TOKEN`, service keys) when it is spawned with no `env`: `execFile('git')` (index.js ~3287/8357/14284, including the project scan in user repos, where hooks and fsmonitor run), `shellhooks.js:179`, `inputguard.js`, `procledger.js`, `desktop.js`, `native-stt.js`, `folderpick.js` | spawn sites | **Fixed on `agent/sec-env`** (see above) |
 | 14 | Low | Connector vault is plaintext when there is no OS key (bare `npm start` sidecar). This is by design and is now 0600 | `connector-vault.js:40` | Document it; optionally derive a per-user key |
 | 15 | Low | MCP HTTP transport has no private-IP or DNS guard (loopback is allowed on purpose, and the URL is user-set through the token-gated UI or config import) | `mcp/transport.http.js:39` | Warn in the UI for private ranges, or pin the resolution |
 | 16 | Low | The stdio allowlist compares basenames only and includes `node`/`python` (so `-e`/`-c` run arbitrary code). Containment is the Safe Cell container only. `STARNET_MCP_STDIO_ALLOW='*'` disables the check | `mcp/transport.stdio.js:23-38` | Acceptable while stdio stays Safe-Cell-only |
-| 17 | Low | Plugin approval hashes only `main`. Helper files `require`d by an approved plugin can change without re-approval, and plugin folders and main files are followed through symlinks | `plugins.js:72-77,197` | Hash the whole plugin folder with `lstat`. After fix #1, `plugins/` is only writable by a host shell or Full Power |
-| 18 | Low | `save-conflict-<client>.json` files grow without limit, and notebook restore has no count cap (both token-gated) | `savestore.js:239`; `notebookrestore.js` | Prune to the newest N |
-| 19 | Low | `/api/harness/scan` accepts any absolute root, including UNC `\\host\share` (an SMB/NTLM touch on `stat`) | index.js `handleHarnessScan` | Refuse UNC roots, as pathtrust does |
+| 17 | Low | Plugin approval hashes only `main`. Helper files `require`d by an approved plugin can change without re-approval, and plugin folders and main files are followed through symlinks | `plugins.js:72-77,197` | **Fixed on `agent/sec-env`** (see above) |
+| 18 | Low | `save-conflict-<client>.json` files grow without limit, and notebook restore has no count cap (both token-gated) | `savestore.js:239`; `notebookrestore.js` | **save-conflict fixed on `agent/sec-env`**; notebook-restore cap still open |
+| 19 | Low | `/api/harness/scan` accepts any absolute root, including UNC `\\host\share` (an SMB/NTLM touch on `stat`) | index.js `handleHarnessScan` | **Fixed on `agent/sec-env`** (see above) |
 | 20 | Low | `live-doctor.js clean()` is a weaker, separate scrubber for probe `detail` (raw `e.message`); `GET /api/providers` returns `currentBaseUrl` raw (userinfo would show) | `live-doctor.js:18`; index.js `/api/providers` | Route both through `redact()` |
-| 21 | Low | Connector-OAuth discovery ignores `code_challenge_methods_supported` and does not validate `issuer`. The catalog `authorization_endpoint` is not URL-checked before the UI opens it (custom targets are) | `mcp/oauth.js`; index.js ~12205 | Check the issuer, and apply the public-URL check to every target |
+| 21 | Low | Connector-OAuth discovery ignores `code_challenge_methods_supported` and does not validate `issuer`. The catalog `authorization_endpoint` is not URL-checked before the UI opens it (custom targets are) | `mcp/oauth.js`; index.js ~12205 | **Fixed on `agent/sec-env`** (see above) |
 | 22 | Low | `skills/package.js:191` calls `rmSync(visible, {recursive})` without the `insideRoot` guard. This is latent, because today's ids are slugged | `skills/package.js` | Add the guard |
 
 ## Verified good (no action)

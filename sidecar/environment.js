@@ -24,6 +24,7 @@
   const nodeCrypto = require('node:crypto');
   const { note: envFailNote } = require('./failopen.js');
   const { trackChild } = require('./procledger.js');   // F2: foreground receipts for the boot orphan sweep
+  const { stationChildEnv } = require('./child-env.js');   // the shared station-secret strip (audit 2026-09-25 #13)
   const { assertWorkspaceId } = require('./workspace-reserved.js');   // station-owned dirs are never agent jails
   const WIN = (typeof process !== 'undefined' && process.platform) === 'win32';
   const DEFAULT_DOCKER_IMAGE = 'node:20-bookworm';
@@ -65,8 +66,10 @@
   const SECRET_ENV_NAME_RE = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASS|AUTH|BEARER|COOKIE|CREDENTIAL)(?:_|$)|(?:APIKEY|ACCESSTOKEN|ACCESSKEY|SECRETKEY|AUTHTOKEN|APITOKEN|PRIVATEKEY|PASSWD)|(?:^|_)PAT(?:_|$)/i;
   const INTERNAL_ENV_NAME_RE = /^(?:STARNET|SKYNET)_/i;
   const EXECUTION_HOOK_ENV_RE = /^(?:NODE_OPTIONS|NODE_PATH|npm_config_script_shell|COMSPEC)$/i;
+  /* Agent-driven commands: the shared station-secret strip (child-env.js — StarNet's own names, the service-key
+     names the sidecar exported, any held secret VALUE), then every secret-SHAPED name on top. */
   function sanitizeChildEnv(base) {
-    const src = base || {};
+    const src = stationChildEnv(base || {});
     const out = {};
     for (const k of Object.keys(src)) {
       if (SECRET_ENV_NAME_RE.test(k) || INTERNAL_ENV_NAME_RE.test(k) || EXECUTION_HOOK_ENV_RE.test(k)) continue;

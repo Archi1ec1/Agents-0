@@ -17,7 +17,7 @@
   const P = require('node:path');
   const OS = require('node:os');
   const FS = require('node:fs');
-  const CP = require('node:child_process');
+  const CP = require('../../child-env.js').guardChildProcess(require('node:child_process'));   // Chrome never inherits station secrets
   const NET = require('node:net');
   const { swallow } = require('../../failopen.js');
   const Challenge = require('./browserchallenge.js');

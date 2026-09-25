@@ -156,6 +156,7 @@ const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } =
 const { makeEmitter } = require('../shared/emitter.js');
 const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const { setStationSecretSource } = require('./child-env.js');   // station-secret-free env for every helper process
 const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
 const { makeConnectorOauthFetch } = require('./mcp/oauth-fetch.js');   // DNS-pinned fetch for every connector-OAuth leg
 const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
@@ -341,7 +342,11 @@ const { makeRoutineTools } = require('./tools/builtin/routines.js'); // ROUTINES
 const { makeLoopTools } = require('./tools/builtin/loops.js');       // LOOPS: model-facing durable standing-objective controls
 const { makeCommsTools } = require('./tools/builtin/comms.js');      // COMMS: outbound reach — an agent messages a connected chat
 const cronGuard = require('./cron-guard.js');                        // routine prompt-injection tripwire (pure, see file header)
-const { execFile, spawn: childSpawn } = require('node:child_process');   // shadow-git runner + shell subprocess — ambient, here only
+// Every child this file spawns gets the station-secret-free env by default (child-env.js, audit 2026-09-25 #13):
+// git in user repos, shell hooks, loop checks, the folder picker, fs.search's rg. An explicit `env` (the agent
+// shell's sanitizeChildEnv) is passed through untouched.
+const stationChildProcess = require('./child-env.js').guardChildProcess(require('node:child_process'));
+const { execFile, spawn: childSpawn } = stationChildProcess;   // shadow-git runner + shell subprocess — ambient, here only
 let lspManager = null;   // initialized beside procLedger so abrupt desktop-sidecar death is recoverable on next boot
 const loopbackListenerProbe = makeLoopbackListenerProbe({ execFile, platform: process.platform, env: process.env });
 const { makeSubagentManager } = require('./subagents.js');          // durable background worker registry
@@ -4636,7 +4641,7 @@ applyServiceKeysEnv();          // boot: persisted keys are live for the first r
    exact values the sidecar holds RIGHT NOW (read live, so a rotated/added key is covered on the next call).
    The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
    URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
-setKnownSecretSource(() => collectSecretValues([
+function stationSecretValues() { return collectSecretValues([
   { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
   { values: Object.values(runtimeKeys) },
   { values: Object.values(runtimeKeyPools) },
@@ -4647,7 +4652,10 @@ setKnownSecretSource(() => collectSecretValues([
   { keyed: connectorOauth },
   { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
   { keyed: serviceKeys }
-]));
+]); }
+setKnownSecretSource(stationSecretValues);
+// Helper processes: strip the same held values, plus every name the sidecar itself exported (service keys).
+setStationSecretSource({ names: () => Object.keys(serviceKeysOwnedEnv || {}), values: stationSecretValues });
 // Verified persist (secret-durability law): ok ONLY when a read-back proves the write reached disk. On
 // ok:false the in-memory list stays live but the route reports the failure — never a false "saved".
 function saveServiceKeys() {
@@ -12271,7 +12279,8 @@ async function handleConnectorOauthStart(req, res) {
     const verifier = mcpOauth.makeVerifier(crypto.randomBytes(48));
     const state = crypto.randomBytes(16).toString('hex');
     // This URL is opened in the user's browser rather than fetched by the sidecar, so validate it explicitly too.
-    // Catalog entries retain their established behavior; the new untrusted custom-server boundary is fail-closed.
+    // Every discovered endpoint already passed mcpOauth's https/public-host/no-credentials check (catalog too); the
+    // untrusted custom-server boundary additionally resolves DNS and fails closed on a private answer.
     if (target.custom) await connectorOauthPublicUrl(disc.authorizationEndpoint);
     connectorOauthPending.set(state, { id: entry.id, attemptId, label: entry.name, custom: target.custom === true, verifier: verifier, clientId: clientId,
       clientSecret: clientSecret, tokenEndpointAuthMethod: tokenEndpointAuthMethod,
@@ -19351,7 +19360,8 @@ async function handlePickPath(req, res) {
    two routes do only the filesystem work. Token-gated like every /api route (main route table). ---- */
 
 // stat helper: is `abs` an existing directory? (never throws)
-async function isHarnessDir(abs) { try { const st = await fsp.stat(abs); return st.isDirectory(); } catch (_) { return false; } }
+// A network/device path is never "an existing directory" here: even the stat would be an SMB touch (audit #19).
+async function isHarnessDir(abs) { if (harnessImport.nonLocalPathReason(abs)) return false; try { const st = await fsp.stat(abs); return st.isDirectory(); } catch (_) { return false; } }
 
 // read at most `maxBytes` (default 128KB) of a REGULAR file as utf-8; anything else — missing, unreadable, a
 // directory, or a SYMLINK/JUNCTION — yields null (the scanner treats null as "file absent"). lstat first (does NOT
@@ -19382,7 +19392,8 @@ async function harnessReadClamped(abs, maxBytes, realBase) {
 }
 
 // realpath a directory the harness routes will read under; null when it can't resolve (caller skips it).
-async function harnessRealDir(abs) { try { return await fsp.realpath(abs); } catch (_) { return null; } }
+// A local link that resolves onto a network share is skipped like any other unreadable base (audit #19).
+async function harnessRealDir(abs) { try { const real = await fsp.realpath(abs); return harnessImport.nonLocalPathReason(real) ? null : real; } catch (_) { return null; } }
 
 // never read these off an imported home, even if a future whitelist entry named one (defense in depth — the current
 // filesWanted list is all persona/memory markdown + one config, none of which match).
@@ -19432,6 +19443,8 @@ async function handleHarnessScan(req, res) {
   const harness = body.harness === 'hermes' ? 'hermes' : (body.harness === 'openclaw' ? 'openclaw' : null);
   const root = typeof body.root === 'string' ? body.root : '';
   if (!harness) return json(400, { ok: false, reason: 'harness must be "openclaw" or "hermes"' });
+  const nonLocal = root ? harnessImport.nonLocalPathReason(root) : '';
+  if (nonLocal) return json(400, { ok: false, reason: 'root refused: ' + nonLocal });
   if (!root || !path.isAbsolute(root)) return json(400, { ok: false, reason: 'root must be an absolute path' });
   if (!(await isHarnessDir(root))) return json(400, { ok: false, reason: 'root is not an existing directory' });
 
@@ -19886,7 +19899,7 @@ function computeVersionSurface() {
   if (envHarness) { out.harness = envHarness; out.harnessSource = 'env'; }
   else {
     try {
-      const { execSync } = require('node:child_process');
+      const { execSync } = stationChildProcess;
       const desc = String(execSync('git describe --always --dirty --tags', {
         cwd: path.resolve(__dirname, '..'), stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000
       }) || '').trim();
@@ -19902,7 +19915,7 @@ function computeVersionSurface() {
   if (envBuildDirty === '0' || envBuildDirty === '1') out.buildDirty = envBuildDirty === '1';
   if (!out.buildSha && out.harnessSource === 'git') {
     try {
-      const { execSync } = require('node:child_process');
+      const { execSync } = stationChildProcess;
       const sha = String(execSync('git rev-parse HEAD', {
         cwd: path.resolve(__dirname, '..'), stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000
       }) || '').trim();
