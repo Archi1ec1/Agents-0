@@ -12262,7 +12262,8 @@ async function handleConnectorOauthStart(req, res) {
     const verifier = mcpOauth.makeVerifier(crypto.randomBytes(48));
     const state = crypto.randomBytes(16).toString('hex');
     // This URL is opened in the user's browser rather than fetched by the sidecar, so validate it explicitly too.
-    // Catalog entries retain their established behavior; the new untrusted custom-server boundary is fail-closed.
+    // Every discovered endpoint already passed mcpOauth's https/public-host/no-credentials check (catalog too); the
+    // untrusted custom-server boundary additionally resolves DNS and fails closed on a private answer.
     if (target.custom) await connectorOauthPublicUrl(disc.authorizationEndpoint);
     connectorOauthPending.set(state, { id: entry.id, attemptId, label: entry.name, custom: target.custom === true, verifier: verifier, clientId: clientId,
       clientSecret: clientSecret, tokenEndpointAuthMethod: tokenEndpointAuthMethod,
