@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "661bf621aa5a409a885dcaa95211caca86e32392",
+    "sourceCommit": "7890bb663a2643a9f96c84bbc56c684644dfa306",
     "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
@@ -598,8 +598,8 @@
       },
       {
         "path": "frontend/app/linewatch.js",
-        "bytes": 19121,
-        "sha256": "d1ffe3fcc0dcad928cd5a880c42b0cf24505d1810ce7e7461dd921566ad8a269"
+        "bytes": 19574,
+        "sha256": "e78c7a75cf51160fc339501e11097cf73da5ce67331df40e921d1332f217851c"
       },
       {
         "path": "frontend/app/logoclip.js",
@@ -1248,8 +1248,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 61120,
-        "sha256": "c1f40d69e8815bf340d1d801e77acbaacf58c4801bc542fde35c23fa901e91c5"
+        "bytes": 62109,
+        "sha256": "aa902d9e42761c8136287b0ff59008b05c30d7258280cf69d7f8924a4091b1cb"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1258,13 +1258,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 34982,
-        "sha256": "09289f7a7b9e42937fcca13620cb00d78120721cf8693e473940469a3a4f0d87"
+        "bytes": 36364,
+        "sha256": "87cbce945f6c569f09e4382eee5131eb06e5e42dacefea59fb489cba3e98ce36"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 106717,
-        "sha256": "0cd55e9b9f532e25dfef0123194bf8d38ac9447f09260c5649c4a30dd1a76a2a"
+        "bytes": 111525,
+        "sha256": "381e2ea368b7bb0b8a8cbb0dc707af2afc8cfce595c3a6cd2737572ca084ae6c"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1313,8 +1313,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 803338,
-        "sha256": "c8669fc948bc59e82499b049fcc1383ba25f9d50269d26a4665a96eda18f9d6a"
+        "bytes": 804110,
+        "sha256": "b63a153e615188b42dc8e0e05525caf95da4aa913b08fff004a0a925d6974d4e"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1329,7 +1329,7 @@
       {
         "path": "frontend/app/worldmodel.js",
         "bytes": 184795,
-        "sha256": "03cf1840fb32790d1dfd1080137dc61f4457b1baf45b367757d0863a384366a9"
+        "sha256": "15b1ce071552f7108c9def308cd20b2daeb09993f4a2e3138d2e47ed98fbd2c5"
       },
       {
         "path": "frontend/app/worldrenderer.js",
@@ -1418,8 +1418,8 @@
       },
       {
         "path": "frontend/css/comms.css",
-        "bytes": 53016,
-        "sha256": "9b44ca49fc9eca851ce1a836a81c099796d7b1c35f1747a6b0832e8043b0197c"
+        "bytes": 52975,
+        "sha256": "64e9c4154f4092c5b255ac4754c8774d281324bdda439982d93b7c7973e6ba5f"
       },
       {
         "path": "frontend/css/glass-comms.css",

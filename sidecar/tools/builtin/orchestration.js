@@ -178,12 +178,36 @@
   }
   // The per-worker spill: the host parker (ctx.parkOutput) writes the worker's WHOLE text into the lead's own
   // workspace (.output/<tool>-<worker>-…txt), where fs.read can page it back. No parker = no file, said plainly.
+  /* IDEMPOTENT PARKING. team.subagents is a read the lead POLLS: every list call re-parked every long worker result,
+     so a lead checking on its crew each turn wrote a fresh .output file per worker per poll — identical copies piling
+     up in its workspace. The same text for the same worker now reuses the file it was already saved to. Scoped to
+     the host parker (one per run: capCtx.parkOutput), keyed by tool + worker id + a digest of the text, bounded. */
+  const parkedByParker = (typeof WeakMap === 'function') ? new WeakMap() : null;
+  const PARK_MEMO_MAX = 256;
+  function textDigest(s) {
+    let h1 = 0x811c9dc5, h2 = 0x01000193;   // two FNV-1a lanes (different seeds) + the length: ~2^-64 collisions
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = Math.imul(h2 ^ c, 0x01000193) >>> 0;
+    }
+    return h1.toString(16) + h2.toString(16) + ':' + s.length;
+  }
   function workerParker(ctx, tool) {
     if (!ctx || typeof ctx.parkOutput !== 'function') return null;
+    let memo = parkedByParker ? parkedByParker.get(ctx.parkOutput) : null;
+    if (parkedByParker && !memo) { memo = new Map(); parkedByParker.set(ctx.parkOutput, memo); }
     return async (text, row) => {
       const who = String((row && (row.agentId || row.label)) || 'worker').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 24);
+      const key = tool + '\u0000' + String((row && (row.id || row.agentId || row.label)) || 'worker') + '\u0000' + textDigest(String(text));
+      if (memo && memo.has(key)) return memo.get(key);
       const p = await ctx.parkOutput(text, { tool: tool + '-' + who, reason: 'aggregate-fair-share' });
-      return p && p.path ? String(p.path) : null;
+      const path = p && p.path ? String(p.path) : null;
+      if (memo && path) {   // a failed save is not remembered: the next call may succeed
+        if (memo.size >= PARK_MEMO_MAX) memo.delete(memo.keys().next().value);
+        memo.set(key, path);
+      }
+      return path;
     };
   }
   function fitNote(fit) {

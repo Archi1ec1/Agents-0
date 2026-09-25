@@ -260,18 +260,23 @@
   /* the INBOX plate text — null when the server has not answered for this line:
        [0] the one-line plate that sits on the floor at rest (the counts you watch move);
        [1] the $ + time line; [2] the whole reading in one line (the hover glance — never a window) */
+  /* THE $ DAY IS SAID (2026-09-24): the line-spend ledger keeps the UTC day (line-stats spendDay:'utc') while the run
+     counts beside it are the LOCAL day — a $ cell that just said TODAY claimed a window it does not read. When the
+     server says spendDay 'utc', the $ is labelled (UTC). */
+  const utcDay = s => !!(s && s.spendDay === 'utc');
   function plateLines(s) {
     if (!s || typeof s !== 'object') return null;
     const a = (s.runs | 0) + ' RUN' + ((s.runs | 0) === 1 ? '' : 'S') + ' · ' + (s.shipped | 0) + ' SHIPPED · ' + (s.failed | 0) + ' FAILED';
-    const b = fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : '') + ' TODAY' + (s.medianMs != null ? ' · ~' + fmtDur(s.medianMs) + '/RUN' : '');
-    return [a, b, 'TODAY · ' + a + ' · ' + b.replace(/ TODAY/, '') + (s.capUsdPerDay == null ? ' · NO DAILY CAP' : '')];
+    const day = utcDay(s) ? ' TODAY (UTC)' : ' TODAY';
+    const b = fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : '') + day + (s.medianMs != null ? ' · ~' + fmtDur(s.medianMs) + '/RUN' : '');
+    return [a, b, 'TODAY · ' + a + ' · ' + b.replace(day, utcDay(s) ? ' (UTC DAY)' : '') + (s.capUsdPerDay == null ? ' · NO DAILY CAP' : '')];
   }
   // the Workflow panel header row: labelled cells
   function statsRow(s) {
     if (!s || typeof s !== 'object') return null;
     return [
       ['RUNS', String(s.runs | 0)], ['SHIPPED', String(s.shipped | 0)], ['FAILED', String(s.failed | 0)],
-      ['$ TODAY', fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : ' · no cap')],
+      [utcDay(s) ? '$ TODAY (UTC)' : '$ TODAY', fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : ' · no cap')],
       ['MEDIAN', s.medianMs != null ? fmtDur(s.medianMs) + '/run' : '—']
     ];
   }

@@ -171,7 +171,9 @@ async function spawnSidecar(ws, env, onLine) {
     STARNET_PORT: String(port), SKYNET_PORT: String(port),
     STARNET_API_TOKEN: token, SKYNET_API_TOKEN: token
   });
-  const child = spawn(process.execPath, [SIDECAR], { cwd: REPO, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  // an ipc channel so stopChild can ask for the sidecar's GRACEFUL shutdown (Windows has no SIGTERM)
+  const child = spawn(process.execPath, [SIDECAR], { cwd: REPO, env: childEnv, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  try { if (child.channel && typeof child.channel.unref === 'function') child.channel.unref(); } catch (_) {}
   const tail = [];
   const onData = d => {
     for (const line of String(d).split(/\r?\n/)) {
@@ -194,13 +196,25 @@ async function spawnSidecar(ws, env, onLine) {
   try { child.kill(); } catch (_) {}
   throw new Error('the station did not become healthy within 45s\n' + tail.join('\n'));
 }
-async function stopChild(child, ws) {
+/* The sidecar's gracefulShutdown has a HARD 3s deadline (sidecar/index.js). Every wait here outlasts it by 0.5s, so
+   the graceful path is never cut off by our own escalation. */
+const SIDECAR_SHUTDOWN_DEADLINE_MS = 3000;
+const STOP_GRACE_MS = SIDECAR_SHUTDOWN_DEADLINE_MS + 500;
+async function stopChild(child, ws, timing) {
   if (!child) return;
+  const t = Object.assign({ graceMs: STOP_GRACE_MS, termMs: STOP_GRACE_MS, killMs: 1000 }, timing || {});
   if (child.exitCode === null) {
     const gone = new Promise(r => child.once('exit', r));
-    try { child.kill(); } catch (_) {}   // SIGTERM → the sidecar's graceful path on POSIX; TerminateProcess on Windows
-    await Promise.race([gone, sleep(2500)]);
-    if (child.exitCode === null) { try { child.kill('SIGKILL'); } catch (_) {}; await Promise.race([gone, sleep(1000)]); }
+    const alive = () => child.exitCode === null && child.signalCode == null;
+    /* 1. Ask over IPC. On Windows child.kill() is TerminateProcess: the sidecar's graceful path (reap background
+          jobs, MCP/LSP children, release locks) never ran, so they leaked. The message runs that path on every OS. */
+    if (child.connected && typeof child.send === 'function') {
+      try { child.send({ type: 'starnet.shutdown' }); await Promise.race([gone, sleep(t.graceMs)]); } catch (_) {}
+    }
+    // 2. SIGTERM → the sidecar's graceful path on POSIX (TerminateProcess on Windows) — with the same full grace
+    if (alive()) { try { child.kill(); } catch (_) {}; await Promise.race([gone, sleep(t.termMs)]); }
+    // 3. only then SIGKILL
+    if (alive()) { try { child.kill('SIGKILL'); } catch (_) {}; await Promise.race([gone, sleep(t.killMs)]); }
   }
   /* Windows has no SIGTERM: the sidecar is terminated outright and never runs its exit hook, so ITS owner claim
      stays behind. The station reclaims a dead-pid claim on the next boot anyway; we simply do that bookkeeping
@@ -497,4 +511,4 @@ if (require.main === module) {
     e => { log('starnet: ' + ((e && e.stack) || e)); process.exit(core.EXIT.RUN_FAILED); });
 }
 
-module.exports = { desktopWorkspaces, bareWorkspaces, defaultWorkspace, discoverDesktop, makeClient, bootstrapWorkspace, resolveStation, _core: core };
+module.exports = { desktopWorkspaces, bareWorkspaces, defaultWorkspace, discoverDesktop, makeClient, bootstrapWorkspace, resolveStation, stopChild, STOP_GRACE_MS, SIDECAR_SHUTDOWN_DEADLINE_MS, _core: core };

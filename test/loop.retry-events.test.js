@@ -125,5 +125,30 @@ async function run(provider, extra) {
     A.eq(retries.length, 0, 'no provider.retry for a non-retryable failure');
   }
 
+  // ---- 9. maxAttempts is truthful when the patience budget ends the ladder early ----
+  {
+    // the adapter already spent 2 rungs AND ~all of the local patience before handing the failure up
+    const spent = Object.assign(httpErr(503, 'upstream overloaded'), { preStreamRetriesExhausted: true, preStreamAttempts: 3, preStreamWaitMs: Policy.RETRY_PATIENCE_MS - 600 });
+    const p = scripted(n => (n === 1 ? { throw: spent } : { events: answer('ok') }));
+    const { res, retries } = await run(p);
+    A.eq(res.reason, 'done', 'the last rung recovered');
+    A.eq([retries[0].attempt, retries[0].delayMs, retries[0].maxAttempts], [3, 600, 3], 'the rung that spends the last of the budget says 3/3, not 3/6');
+    const p2 = scripted(n => (n <= 2 ? { throw: httpErr(503, 'upstream overloaded') } : { events: answer('ok') }));
+    A.eq((await run(p2)).retries.map(r => r.maxAttempts), [6, 6], 'budget left: the rung count stands');
+  }
+
+  // ---- 10. a truncated stream resets the idle-stall count (it DID deliver bytes) ----
+  {
+    const { timeouts } = require('../sidecar/providers/provider.js');
+    const idle = () => timeouts.timeoutError(300000, 'idle');
+    const p = scripted(n => n === 1 ? { throw: idle() }
+      : n === 2 ? { events: [{ type: 'text', delta: 'partial' }, { type: 'done', finishReason: null, truncated: true }] }
+      : n === 3 ? { throw: idle() }
+      : { events: answer('ok') });
+    const { res } = await run(p);
+    A.eq(res.reason, 'done', 'stall, truncation, stall: two NON-consecutive stalls never end the run provider_stalled');
+    A.eq(p.calls.length, 4, 'every attempt went out');
+  }
+
   A.report('loop.retry-events');
 })().catch(e => { console.error(e); process.exit(1); });

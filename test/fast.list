@@ -620,6 +620,7 @@ test/chain.multibay.test.js
 test/routing.steptest.test.js
 test/routing.steptest.multibay.test.js
 test/routing.triggers.test.js
+test/trigger-polish.test.js
 test/channels.multibay.test.js
 test/cron.multibay.test.js
 test/refit-card-stack.test.js
@@ -867,6 +868,7 @@ test/overseer-ui.test.js
 test/workspace-owner-election.test.js
 test/project-home-ui.test.js
 test/cli.test.js
+test/cli.stop-child.test.js
 test/loop.truncated-args-refuse.test.js
 test/loop.verify-on-stop-failed-check.test.js
 test/loop.grace-no-tools.test.js

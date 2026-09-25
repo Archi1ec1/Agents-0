@@ -152,6 +152,9 @@ A.eq(LW.plateLines(null), null, 'no server answer -> no plate (never fake zeros)
 A.eq(LW.plateLines({ runs: 3, shipped: 1, failed: 1, usdToday: 0.0125, capUsdPerDay: 5, medianMs: 2500 }), ['3 RUNS · 1 SHIPPED · 1 FAILED', '$0.013 / $5.00 TODAY · ~2.5s/RUN', 'TODAY · 3 RUNS · 1 SHIPPED · 1 FAILED · $0.013 / $5.00 · ~2.5s/RUN'], 'plate text: rest line, $ line, hover line');
 A.eq(LW.plateLines({ runs: 1, shipped: 0, failed: 0, usdToday: 0, capUsdPerDay: null, medianMs: null }), ['1 RUN · 0 SHIPPED · 0 FAILED', '$0.000 TODAY', 'TODAY · 1 RUN · 0 SHIPPED · 0 FAILED · $0.000 · NO DAILY CAP'], 'no cap, no timing — said, not hidden');
 A.eq(LW.statsRow({ runs: 2, shipped: 0, failed: 1, usdToday: 1.5, capUsdPerDay: null, medianMs: 61000 })[3], ['$ TODAY', '$1.50 · no cap'], 'panel row $ cell');
+// the $ ledger keeps the UTC day (line-stats spendDay:'utc'): said, never passed off as the local day the counts use
+A.eq(LW.statsRow({ runs: 2, shipped: 0, failed: 1, usdToday: 1.5, capUsdPerDay: null, medianMs: 61000, spendDay: 'utc' })[3], ['$ TODAY (UTC)', '$1.50 · no cap'], 'a UTC-day $ is labelled (UTC) in the panel');
+A.eq(LW.plateLines({ runs: 1, shipped: 1, failed: 0, usdToday: 0.5, capUsdPerDay: 5, medianMs: null, spendDay: 'utc' }), ['1 RUN · 1 SHIPPED · 0 FAILED', '$0.500 / $5.00 TODAY (UTC)', 'TODAY · 1 RUN · 1 SHIPPED · 0 FAILED · $0.500 / $5.00 (UTC DAY)'], 'the plate says the $ day is UTC');
 A.eq(LW.fmtDur(61000), '1m', 'minute durations');
 const mid = LW.localMidnight(Date.UTC(2026, 8, 23, 15, 0, 0));
 A.eq(new Date(mid).getHours() + new Date(mid).getMinutes(), 0, 'local midnight');

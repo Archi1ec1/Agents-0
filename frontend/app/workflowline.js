@@ -480,6 +480,25 @@
     return { mine, live, sentences };
   }
 
+  /* ---------- LINE TRIGGERS: repaint only what changed (2026-09-24) ----------
+     The panel re-reads the trigger list every 5 s while an INBOX is open. Rebuilding the whole card on each read
+     remounted the WHEN picker (the picked schedule snapped back to daily 9:00), replaced an ARMED two-click
+     DELETE / NEW KEY button (its confirm then missed) and collapsed open sections. triggerSig is a row's data
+     fingerprint; rowPatch(prev, next) — each a list of [id, sig] in display order — says what to repaint:
+     { all:true } when the rows themselves changed (added / removed / reordered), else just the ids whose data
+     changed ([] = touch nothing). Pure: the panel owns the DOM. */
+  function triggerSig(t, extra) {
+    const str = JSON.stringify([t == null ? null : t, extra == null ? null : extra]);
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+    return h.toString(36) + '.' + str.length.toString(36);
+  }
+  function rowPatch(prev, next) {
+    const a = Array.isArray(prev) ? prev : [], b = Array.isArray(next) ? next : [];
+    if (a.length !== b.length || a.some((r, i) => !r || !b[i] || String(r[0]) !== String(b[i][0]))) return { all: true, changed: [] };
+    return { all: false, changed: b.filter((r, i) => String(r[1]) !== String(a[i][1])).map(r => String(r[0])) };
+  }
+
   /* ---------- the test input a dock's "Try this step" starts from ----------
      the previous dock's last test OUTPUT (what it would really hand over), or the line's test job for the
      first dock. null = nothing honest to offer yet ("test <prev> first"). */
@@ -507,5 +526,5 @@
   const isLive = s => !!s && !TERMINAL[s.state];
 
   return { ROLE, GENERIC, roleInfo, starters, lineFlow, physicalOrder, neighbours, howItRuns, readiness, pillText,
-    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
+    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
 });

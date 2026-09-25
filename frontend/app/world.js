@@ -635,7 +635,11 @@ const World = (() => {
     novelty = []; seenProps = null; seenBelts = null;   // re-learn the scene from scratch (no cross-station novelty)
     beltWatch = null;                                   // ...and the belt-watch claim: this floor's belts are gone, so a claim on them is a ghost holding the slot
     clearDeferredShips();                               // a crate waiting on the OLD floor's handoff must never land on this one
-    dockLineWork.clear();
+    dockLineWork.clear(); activeDock.clear();          // ...and the dock glow it feeds (written together in intakeMessage)
+    // LINE WATCH state is keyed by prop id, and a fresh doc reissues low ids — the old floor's lamps/plates would
+    // light this floor's colliding bays. Drop the watch (lazily rebuilt; acks re-read from localStorage) and the
+    // stats (re-asked by rederive's lineStatsSoon) so every lamp re-earns its state from THIS floor's events.
+    watch = null; lineStats = { known: false, byLine: {}, since: 0 }; hoverBay = null; hoverCrate = null;
     propFoot = new Map(); pendingMourn = null;          // forget where things stood (no cross-station grief)
     agentDecor.length = 0; ownPlaced.clear(); placeCd = 0;   // forget which decor it placed (the new floor is a clean slate)
     if (agent && agent.fond) agent.fond.clear();        // forget the old floor's haunts — the new floor earns its own
@@ -1540,6 +1544,11 @@ const World = (() => {
         if (onClick) onClick(hit.agentId || hit.id);
         return;
       }
+      // CLICK PRIORITY MIRRORS HOVER PRIORITY (mousemove above: body > OUTBOX > crate > bay): whatever tag the
+      // cursor is showing is what the click acts on — a crate riding past an OUTBOX must not steal its click.
+      // G2.3: a stacked OUTBOX is the collect tap — clicking it opens the oldest pending run's review
+      const ob = outboxAt(wp);
+      if (ob && onOutbox) { onOutbox(ob); return; }
       // LINE WATCH: a crate riding a belt opens its station card; a FAILED bay's red lamp is acked by a click
       const crate = crateAt(wp);
       if (crate && openCrate(crate, ev)) return;
@@ -1547,9 +1556,6 @@ const World = (() => {
       if (fb && ackBay(fb)) return;
       const arc = arcadeAt(wp);
       if (arc && onArcade) { onArcade(arc); return; }
-      // G2.3: a stacked OUTBOX is the collect tap — clicking it opens the oldest pending run's review
-      const ob = outboxAt(wp);
-      if (ob && onOutbox) { onOutbox(ob); return; }
       // G1b: the MISSION BOARD is the quest log's body — clicking it opens the log (never gated, never dead)
       const mb = missionBoardAt(wp);
       if (mb && onMissionBoard) { onMissionBoard(mb); return; }
@@ -8988,7 +8994,7 @@ const World = (() => {
     const s = w.status(d.propId, lwNow());
     if (s.state === 'working') return { text: 'WORKING · ' + lwSecs(lwNow() - s.since) + (s.usd > 0 ? ' · ' + U.usd(s.usd) : ''), col: LAMP.working };
     if (s.state === 'waiting') return { text: 'WAITING · ' + s.queued + (s.queued === 1 ? ' CRATE' : ' CRATES') + ' QUEUED', col: LAMP.waiting };
-    if (s.state === 'failed') return { text: 'FAILED · ' + String(s.reason || 'error').toUpperCase().replace('_', ' ') + ' — CLICK TO CLEAR', col: LAMP.failed };
+    if (s.state === 'failed') return { text: 'FAILED · ' + String(s.reason || 'error').toUpperCase().replace(/_/g, ' ') + ' — CLICK TO CLEAR', col: LAMP.failed };
     if (s.state === 'paused') return { text: 'PAUSED · STEP TEST WAITS HERE', col: LAMP.paused };
     return { text: 'IDLE', col: '#9fb0a8' };
   }

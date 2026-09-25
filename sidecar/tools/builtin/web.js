@@ -1,9 +1,10 @@
 /* sidecar/tools/builtin/web.js — the WEB capability: web_search(query) and web_fetch(url).
-   Zero extra API keys for the MVP. Node 18+ (global fetch). No deps.
+   Zero extra API keys for the MVP. Node 18+. One runtime dep: undici (its fetch + a per-hop Agent that pins the
+   DNS-validated address — the rebinding guard; staged into the desktop bundle by scripts/stage-voice-deps.mjs).
 
    makeWebTools(deps?) -> { searchTool, fetchTool, register(registry),
                             webSearch(query,opts), webFetch(url,opts) }   // raw fns exported for reuse/testing
-     deps.fetchImpl  : (url, init) => Promise<Response>   // injectable for tests; defaults to global fetch
+     deps.fetchImpl  : (url, init) => Promise<Response>   // injectable for tests; defaults to undici.fetch
      deps.openrouter : { apiKey, model } | null           // enables the OpenRouter search/fetch FALLBACK
      deps.userAgent  : override UA string
 

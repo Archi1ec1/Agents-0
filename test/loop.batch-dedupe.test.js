@@ -68,6 +68,7 @@ async function run(turns, o) {
   reg.register({ name: 'channel_send', schema: ANY, run: async (a) => { ran.push(['channel_send', a]); return 'sent to ' + a.channel; } });
   reg.register({ name: 'fs_write', schema: ANY, run: async (a) => { ran.push(['fs_write', a]); return 'wrote ' + a.path; } });
   reg.register({ name: 'fs_read', schema: ANY, run: async (a) => { ran.push(['fs_read', a]); return 'contents of ' + a.path; } });
+  for (const n of ['browser.press', 'browser.scroll', 'terminal.write', 'computer.use']) reg.register({ name: n, schema: ANY, run: async (a) => { ran.push([n, a]); return n + ' ok'; } });
   const messages = [{ role: 'user', content: 'go' }];
   const res = await runAgentLoop({
     messages, provider, emit, cost: makeCostEngine({ priceOf }), model: 'm', agentId: 'a', runId: 'r',
@@ -181,6 +182,47 @@ async function run(turns, o) {
     const clean = [{ id: 'a', name: 't', args: {}, argsRaw: '{}', parseError: null }, { id: 'b', name: 't', args: { k: 1 }, argsRaw: '{"k":1}', parseError: null }];
     _internals.normalizeBatch(clean, []);
     A.eq(clean.map(c => c.id), ['a', 'b'], 'a well-formed batch is untouched');
+  }
+
+  // ---- 8. the kept call's result TELLS the model its identical copies were merged ----
+  {
+    const { messages } = await run(batch([
+      ['s1', 'channel_send', '{"channel":"ops","text":"hi"}'],
+      ['s2', 'channel_send', '{"channel":"ops","text":"hi"}'],
+      ['s3', 'channel_send', '{"channel":"ops","text":"hi"}']
+    ]));
+    const r = messages.filter(m => m.role === 'tool');
+    A.eq(r.length, 1, 'three identical sends: one result');
+    A.ok(r[0].content.indexOf('sent to ops') === 0, 'the real result comes first');
+    A.ok(/3 times in one turn; it ran ONCE/.test(r[0].content) && /2 identical copies were not dispatched/.test(r[0].content), 'and it says the 2 copies were not dispatched');
+    const { messages: m2 } = await run(batch([['a1', 'fs_read', '{"path":"a.txt"}'], ['a2', 'fs_read', '{"path":"b.txt"}']]));
+    A.ok(m2.filter(m => m.role === 'tool').every(m => m.content.indexOf('harness note') < 0), 'no note when nothing was merged');
+  }
+
+  // ---- 9. INPUT EVENTS are never merged: each identical press/scroll/write/key IS the intent ----
+  {
+    const { ran, messages } = await run(batch([
+      ['k1', 'browser.press', '{"key":"ArrowDown"}'],
+      ['k2', 'browser.press', '{"key":"ArrowDown"}'],
+      ['k3', 'browser.scroll', '{"dy":400}'],
+      ['k4', 'browser.scroll', '{"dy":400}'],
+      ['k5', 'terminal.write', '{"data":"y"}'],
+      ['k6', 'terminal.write', '{"data":"y"}'],
+      ['k7', 'computer.use', '{"action":"key","text":"Tab"}'],
+      ['k8', 'computer.use', '{"action":"key","text":"Tab"}']
+    ]));
+    A.eq(ran.length, 8, 'two identical presses, scrolls, terminal writes and desktop keys all run twice');
+    A.eq(messages.filter(m => m.role === 'tool').length, 8, 'each has its own result');
+    A.ok(messages.filter(m => m.role === 'tool').every(m => m.content.indexOf('harness note') < 0), 'and none claims a merge');
+    A.ok(pairedTranscript(messages), 'transcript valid');
+    // the pure seam: wire-form names are exempt too, and the return value maps kept id -> copies dropped
+    const calls = [
+      { id: 'w1', name: 'browser_scroll', args: { dy: 1 }, parseError: null }, { id: 'w2', name: 'browser_scroll', args: { dy: 1 }, parseError: null },
+      { id: 'c1', name: 'channel_send', args: { t: 1 }, parseError: null }, { id: 'c2', name: 'channel_send', args: { t: 1 }, parseError: null }
+    ];
+    const dropped = _internals.dropDuplicateCalls(calls);
+    A.eq(calls.map(c => c.id), ['w1', 'w2', 'c1'], 'wire-form input tool kept twice; the send merged');
+    A.eq(Array.from(dropped.entries()), [['c1', 1]], 'dropDuplicateCalls reports which kept call absorbed how many copies');
   }
 
   A.report('loop.batch-dedupe.test');

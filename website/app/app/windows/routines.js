@@ -144,6 +144,11 @@
     // armed/disarmed story via AutoJobs.armStateLine. #rt-out lives in the ACTIVE pane (sibling of #rt-list); when a
     // run fires we splice it in right AFTER its row, and after every list re-render positionOut() re-slots it there.
     let lastRunId = null, schedulerArmed = false, listedJobs = [], editSaving = false;
+    // EDIT TASK size: POST /api/cron/update reads at most 64 KB of JSON (readBody 1 << 16). The textarea caps the
+    // characters a little under it; the save re-checks the REAL serialized request bytes (UTF-8 + JSON escapes) so an
+    // oversized edit is refused here with a reason instead of dying as a bare 'bad body' from the server.
+    const EDIT_BODY_MAX = 1 << 16, EDIT_PROMPT_MAX = 60000;
+    const utf8Bytes = s => { try { return new TextEncoder().encode(String(s)).length; } catch (e) { return String(s).length * 3; } };
     function showRunOut(rowEl, id) {
       lastRunId = id;
       const nmEl = rowEl && rowEl.querySelector('.mc-top b');
@@ -215,7 +220,7 @@
         const retry = pending.map(f => Date.parse(f.nextAttemptAt)).filter(Number.isFinite).sort((a, b) => a - b)[0];
         line = '<div class="mc-detail">' + pending.length + ' result' + (pending.length === 1 ? '' : 's') + ' awaiting delivery' +
           (retry ? ' · next retry ' + esc(wallClock(new Date(retry).toISOString())) : '') +
-          (pending.length >= 100 ? ' · new runs deferred until the destination recovers' : '') + '</div>';
+          (maxPendingDeliveries > 0 && pending.length >= maxPendingDeliveries ? ' · new runs deferred until the destination recovers' : '') + '</div>';
       }
       if (j.lastDeliveryAt && j.lastDeliveryOk === false) line += '<div class="mc-detail" style="color:var(--bad)">✕ delivery failed — ' + esc(j.lastDeliveryError || 'notification could not be sent') +
         ' <span class="dim">' + esc(fmtRel(j.lastDeliveryAt)) + '</span></div>';
@@ -226,6 +231,7 @@
     // off GET /api/cron (real store state) — a paused-by-failures row says so, and a still-enabled row with a
     // streak shows how close it is to the ceiling. Nothing is rendered for a clean job (honest no-signal).
     let maxConsecutive = 0;   // GET /api/cron .maxConsecutiveFailures (0 = the ceiling is off)
+    let maxPendingDeliveries = 0;   // GET /api/cron .maxPendingDeliveries (0 = an older sidecar that does not say)
     function failureStreakLine(j) {
       const n = Number(j.consecutiveFailures) || 0;
       if (j.enabled === false && j.disabledReason === 'consecutive-failures') {
@@ -326,6 +332,7 @@
         const createState = body.querySelector('#rt-create-state');
         if (createState) createState.textContent = schedulerArmed ? 'Scheduling is enabled. Saving adds this task to the schedule shown below.' : 'Scheduling is off. You can save a routine, but it will not run automatically until you enable scheduling in Active Routines.';
         maxConsecutive = (j && Number(j.maxConsecutiveFailures)) || 0;
+        maxPendingDeliveries = (j && Number(j.maxPendingDeliveries)) || 0;
         // DEGRADED STORE (routine hardening, 2026-08-21): GET /api/cron carries `degraded` when cron.jobs.json AND
         // its .bak were both unreadable at boot. The sidecar quarantined the file, froze the scheduler, and refuses
         // to persist an empty list until the Commander accepts the loss. Say so loudly; the one action is explicit.
@@ -521,7 +528,7 @@
       host.className = 'rt-edit mc-form';
       host.innerHTML =
         '<label class="sn-menu-field">Name<input class="key-input" data-edit-name maxlength="80" autocomplete="off"></label>' +
-        '<label class="sn-menu-field">What should it do?<textarea class="key-input" data-edit-prompt rows="5" style="resize:vertical"></textarea></label>' +
+        '<label class="sn-menu-field">What should it do?<textarea class="key-input" data-edit-prompt rows="5" maxlength="' + EDIT_PROMPT_MAX + '" style="resize:vertical"></textarea></label>' +
         '<div class="mc-detail" data-edit-error role="alert" hidden></div>' +
         '<div class="mc-acts"><button class="bb xs" data-edit="save">✓ SAVE CHANGES</button>' +
         '<button class="bb xs" data-edit="cancel">CANCEL</button></div>';
@@ -539,7 +546,8 @@
         if (editSaving) return;
         if (action.dataset.edit === 'cancel') { sfx('click'); closeEdit(); return; }
         const name = nameEl.value.trim(), prompt = promptEl.value.trim();
-        const error = !name ? 'give this routine a name' : (!prompt && !job.script ? 'enter instructions for this routine' : '');
+        const error = !name ? 'give this routine a name' : (!prompt && !job.script ? 'enter instructions for this routine' : '')
+          || (utf8Bytes(JSON.stringify({ id, patch: { name, prompt } })) > EDIT_BODY_MAX ? 'these instructions are too long (the station accepts up to 64 KB) — shorten them' : '');
         if (error) { errorEl.textContent = error; errorEl.hidden = false; sfx('bad'); return; }
         // Only send changed fields. An agent may have edited the other field since this form opened;
         // posting both old values would silently undo that newer edit.

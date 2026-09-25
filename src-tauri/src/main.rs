@@ -143,6 +143,12 @@ mod guardian_cap_tests {
     }
 
     #[test]
+    fn sidecar_ready_timeout_outlasts_a_slow_boot_under_memory_pressure() {
+        // 2026-09-23: healthy boots under memory pressure took 30 s+; the old 25 s timeout killed them.
+        assert!(SIDECAR_READY_TIMEOUT >= Duration::from_secs(60));
+    }
+
+    #[test]
     fn intentional_exits_never_count_as_crashes() {
         assert!(sidecar_exit_is_intentional(Some(0)));
         assert!(sidecar_exit_is_intentional(Some(75)));
@@ -1502,6 +1508,14 @@ fn project_root(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// How long one sidecar spawn may take to open its port before it is declared stuck and stopped.
+/// Shared by the first spawn, the guardian respawn and the user restart paths. It was 25 s, but
+/// the 2026-09-23 incident showed a healthy boot under memory pressure taking 30 s+ — killing it
+/// at 25 s turned a slow start into a failed one (and a crash-loop count on the guardian path).
+/// A child that EXITS is still noticed at once (see `wait_for_port_or_exit`), so this only bounds
+/// a child that is alive but silent.
+const SIDECAR_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Block (briefly) until the sidecar is accepting connections, or give up.
 /// Wait for the sidecar's loopback port, but bail EARLY when the child we are waiting on has already exited —
 /// a sidecar that refuses its workspace (exit 73) or throws at boot (exit 1) used to pin the
@@ -1940,7 +1954,7 @@ fn spawn_sidecar(state: &AppState) -> bool {
             Ok(pid) => {
                 let (listening, exited) = wait_for_port_or_exit(
                     state.port,
-                    Duration::from_secs(25),
+                    SIDECAR_READY_TIMEOUT,
                     Some(&state.sidecar),
                 );
                 log_startup(
@@ -1991,10 +2005,10 @@ fn spawn_sidecar(state: &AppState) -> bool {
 /// a native error box that names the startup.log path (the diagnostic) and offers Retry.
 ///
 /// Returns `true` if the user chose Retry (caller should re-attempt the spawn), `false` on
-/// Cancel/close. On non-Windows there is no dialog dependency wired, so we log and return `false`
-/// (honest degradation — the AV-block scenario this fixes is Windows-specific).
+/// Cancel/close. Off Windows there is no Retry/Cancel box: a non-blocking notice tells the user
+/// and startup continues with the guardian retrying (see the not(windows) variant below).
 #[cfg(windows)]
-fn show_startup_failure_dialog(startup_log: &Option<PathBuf>) -> bool {
+fn show_startup_failure_dialog(_app: &AppHandle, startup_log: &Option<PathBuf>) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDRETRY, MB_ICONERROR, MB_RETRYCANCEL, MB_SETFOREGROUND, MB_SYSTEMMODAL,
     };
@@ -2024,19 +2038,78 @@ fn show_startup_failure_dialog(startup_log: &Option<PathBuf>) -> bool {
     result == IDRETRY
 }
 
+/// Off Windows there is no Retry/Cancel box: the app keeps starting and the guardian keeps
+/// retrying, but the user is TOLD (non-blocking, so setup never waits on the dialog). Always
+/// returns `false` — nobody pressed Retry.
 #[cfg(not(windows))]
-fn show_startup_failure_dialog(startup_log: &Option<PathBuf>) -> bool {
+fn show_startup_failure_dialog(app: &AppHandle, startup_log: &Option<PathBuf>) -> bool {
     log_startup(
         startup_log,
-        "startup failed: sidecar did not come up and no native dialog is wired on this platform",
+        "startup failed: sidecar did not come up; showing a non-blocking notice",
     );
     eprintln!("[starnet] startup failed: sidecar did not come up (see startup.log)");
+    show_nonblocking_startup_notice(
+        app,
+        "StarNet — local engine not ready",
+        format!(
+            "StarNet could not start its local engine yet. It will keep retrying in the background, \
+             but the station may stay unreachable until it does.\n\n{}",
+            startup_log_line(startup_log)
+        ),
+        || {},
+    );
     false
 }
 
+#[cfg(not(windows))]
+fn startup_log_line(startup_log: &Option<PathBuf>) -> String {
+    match startup_log {
+        Some(p) => format!("Details were written to:\n{}", p.display()),
+        None => "No startup log path was available.".to_string(),
+    }
+}
+
+/// macOS/Linux user-visible startup notice. Never `blocking_show`: this runs during setup or on a
+/// watchdog thread, and a blocking dialog on the main thread before the event loop runs would hang.
+/// `then` runs once the user dismisses the dialog.
+#[cfg(not(windows))]
+fn show_nonblocking_startup_notice(
+    app: &AppHandle,
+    title: &str,
+    body: String,
+    then: impl FnOnce() + Send + 'static,
+) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    app.dialog()
+        .message(body)
+        .title(title)
+        .kind(MessageDialogKind::Error)
+        .show(move |_| then());
+}
+
 /// Independent of WebView2: even a stalled window constructor must be diagnosable.
-fn report_window_startup_failure(log: &Option<PathBuf>, detail: &str) {
+/// Windows: a blocking native box. Elsewhere: a non-blocking dialog; `on_dismiss` runs when the
+/// user closes it (Windows runs it right after the blocking box returns).
+fn report_window_startup_failure(
+    app: &AppHandle,
+    log: &Option<PathBuf>,
+    detail: &str,
+    on_dismiss: impl FnOnce() + Send + 'static,
+) {
     log_startup(log, format!("webview-startup: {detail}"));
+    #[cfg(not(windows))]
+    {
+        let path = log
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "unavailable".into());
+        show_nonblocking_startup_notice(
+            app,
+            "StarNet — window startup",
+            format!("StarNet's window could not finish starting.\n\n{detail}\n\nQuit StarNet and reopen it. If this persists, include startup.log in your bug report:\n{path}"),
+            on_dismiss,
+        );
+    }
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -2060,13 +2133,15 @@ fn report_window_startup_failure(log: &Option<PathBuf>, detail: &str) {
                 MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
             );
         }
+        let _ = app;
+        on_dismiss();
     }
 }
 
 /// Retry only in response to the native dialog. Cancel is a full startup abort;
 /// the guardian must not turn a cancelled launch into hidden background work.
 /// Returns whether startup should proceed.
-fn spawn_sidecar_with_retry(state: &AppState) -> bool {
+fn spawn_sidecar_with_retry(app: &AppHandle, state: &AppState) -> bool {
     loop {
         if spawn_sidecar(state) {
             return true;
@@ -2075,14 +2150,14 @@ fn spawn_sidecar_with_retry(state: &AppState) -> bool {
         // `false` as one aborted setup and panicked the app on any slow or failed first spawn. Keep the
         // pre-dialog behaviour there — open the window and let the guardian keep retrying.
         if !cfg!(windows) {
-            show_startup_failure_dialog(&state.startup_log);
+            show_startup_failure_dialog(app, &state.startup_log);
             log_startup(
                 &state.startup_log,
                 "startup: no native dialog on this platform — continuing; the guardian keeps retrying",
             );
             return true;
         }
-        if !show_startup_failure_dialog(&state.startup_log) {
+        if !show_startup_failure_dialog(app, &state.startup_log) {
             log_startup(
                 &state.startup_log,
                 "startup: cancelled; stopping local engine",
@@ -2675,6 +2750,7 @@ fn webview_init_script(port: u16, api_token: &str) -> String {
 
 /// What the user had on screen, carried from a crashed main window into its rebuilt replacement.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(windows), allow(dead_code))] // only crash recovery (Windows) constructs one
 struct MainWindowRestore {
     visible: bool,
     maximized: bool,
@@ -2982,11 +3058,15 @@ fn schedule_main_window_rebuild(app: AppHandle, why: &'static str) {
         let destroy_app = app.clone();
         let queued = app.run_on_main_thread(move || {
             let restore = destroy_app.get_webview_window("main").map(|win| {
+                let maximized = win.is_maximized().unwrap_or(false);
+                // A maximized window's geometry IS the monitor: carrying it over would make the
+                // rebuilt window's normal (restored) size fill the screen. Let it keep its default
+                // normal size and just re-maximize on first load.
                 let restore = MainWindowRestore {
                     visible: win.is_visible().unwrap_or(true),
-                    maximized: win.is_maximized().unwrap_or(false),
-                    position: win.outer_position().ok(),
-                    size: win.inner_size().ok(),
+                    maximized,
+                    position: if maximized { None } else { win.outer_position().ok() },
+                    size: if maximized { None } else { win.inner_size().ok() },
                 };
                 let _ = win.destroy();
                 restore
@@ -2997,10 +3077,40 @@ fn schedule_main_window_rebuild(app: AppHandle, why: &'static str) {
             Ok(()) => rx.recv_timeout(Duration::from_secs(5)).ok().flatten(),
             Err(_) => None,
         };
-        // Tauri frees the "main" label once the destroyed window's teardown has run.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while app.get_webview_window("main").is_some() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
+        // Tauri frees the "main" label once the destroyed window's teardown has run. Building while
+        // the label is still registered fails with a duplicate-label error and leaves NO window, so
+        // never build early: keep `webview_rebuilding` set (holds off ExitRequested and the second-
+        // launch zombie exit) and keep waiting until the destroy is observed, re-issuing it every 5 s.
+        let mut next_destroy = Instant::now() + Duration::from_secs(5);
+        let mut warned = false;
+        while app.get_webview_window("main").is_some() {
+            if app
+                .try_state::<AppState>()
+                .map_or(true, |s| s.shutting_down.load(Ordering::SeqCst))
+            {
+                log_startup(&log, "webview-recovery: shutting down; rebuild abandoned");
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.webview_rebuilding.store(false, Ordering::SeqCst);
+                }
+                return;
+            }
+            if Instant::now() >= next_destroy {
+                if !warned {
+                    log_startup(
+                        &log,
+                        "webview-recovery: old main window still registered after 5s; re-issuing destroy and waiting",
+                    );
+                    warned = true;
+                }
+                let retry_app = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let Some(win) = retry_app.get_webview_window("main") {
+                        let _ = win.destroy();
+                    }
+                });
+                next_destroy = Instant::now() + Duration::from_secs(5);
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         let restore = restore.unwrap_or(MainWindowRestore {
             visible: true,
@@ -4444,8 +4554,14 @@ fn main() {
             reap_orphan_sidecars(&node_binary(&state.root), &state.startup_log);
             // Bring the sidecar up before starting background supervision. Cancel drops
             // the owned state and child, before a guardian or hidden window can be created.
-            if !spawn_sidecar_with_retry(&state) {
-                return Err("local engine startup cancelled".into());
+            // A setup Err becomes a panic in Tauri, and release builds use panic = "abort" — a user
+            // pressing Cancel used to "crash" with 0xC0000409. Stop the child ourselves and exit cleanly.
+            if !spawn_sidecar_with_retry(app.handle(), &state) {
+                state.shutting_down.store(true, Ordering::SeqCst);
+                state.kill_sidecar();
+                log_startup(&state.startup_log, "startup: cancelled by user; exiting cleanly");
+                drop(state);
+                std::process::exit(0);
             }
             app.manage(state);
             app.manage(PendingUpdate(Mutex::new(None)));
@@ -4522,7 +4638,7 @@ fn main() {
                 std::thread::sleep(Duration::from_secs(45));
                 if let Some(state) = startup_watch.try_state::<AppState>() {
                     if !state.shutting_down.load(Ordering::SeqCst) && state.startup_reveal.is_pending() {
-                        report_window_startup_failure(&state.startup_log, "The window did not finish loading within 45 seconds.");
+                        report_window_startup_failure(&startup_watch, &state.startup_log, "The window did not finish loading within 45 seconds.", || {});
                     }
                 }
             });
@@ -4532,8 +4648,18 @@ fn main() {
                     state.shutting_down.store(true, Ordering::SeqCst);
                     state.kill_sidecar();
                 }
-                report_window_startup_failure(&startup_log_path(app.handle()), &error.to_string());
-                return Err(error.into());
+                // Never return the Err: Tauri panics on a setup Err and release builds abort
+                // (0xC0000409). The sidecar is already stopped; tell the user, then exit(1).
+                // Windows blocks in the native box, then exits. Elsewhere the notice is
+                // non-blocking, so setup returns Ok and the process exits when it is dismissed.
+                let _ = app.remove_tray_by_id("starnet-tray");
+                report_window_startup_failure(
+                    app.handle(),
+                    &startup_log_path(app.handle()),
+                    &error.to_string(),
+                    || std::process::exit(1),
+                );
+                return Ok(());
             }
             app.state::<AppState>()
                 .main_window_built

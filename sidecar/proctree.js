@@ -54,10 +54,13 @@ function parseTable(text) {
   return rows;
 }
 
+// one snapshot is bounded by this (callers size their own budgets from it — see shellbg.killBudgetMs)
+const DEFAULT_TABLE_TIMEOUT_MS = 15000;
+
 function makeWin32ProcessTable(execFile, opts) {
   opts = opts || {};
   if (typeof execFile !== 'function') throw new Error('makeWin32ProcessTable requires execFile');
-  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 15000;
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : DEFAULT_TABLE_TIMEOUT_MS;
   const selfPid = opts.selfPid != null ? Number(opts.selfPid) : ((typeof process !== 'undefined' && Number(process.pid)) || 0);
   const exe = opts.exe || ((typeof process !== 'undefined' && process.env && process.env.SystemRoot)
     ? process.env.SystemRoot + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' : 'powershell.exe');
@@ -148,4 +151,4 @@ async function confirmGone(o) {
   return { gone: false, unknown: false, survivors: survivors };
 }
 
-module.exports = { makeWin32ProcessTable, ownedTree, survivorsOf, confirmGone, _internals: { parseTable, WIN_TABLE_SCRIPT, MAX_TREE } };
+module.exports = { makeWin32ProcessTable, ownedTree, survivorsOf, confirmGone, DEFAULT_TABLE_TIMEOUT_MS, _internals: { parseTable, WIN_TABLE_SCRIPT, MAX_TREE } };

@@ -71,6 +71,18 @@
       turnMax: clamp(w * TURN_WINDOW_SHARE * CHARS_PER_TOKEN, TURN_FLOOR_CHARS, TURN_OUTPUT_MAX)
     };
   }
+  /* WHICH WINDOW SIZES THE BUDGET. catalogTokens = the provider catalog's figure for the run's current model (0 =
+     unknown); liveTokens = the context manager's live window, which loop.js LOWERS when a provider names a smaller
+     real ceiling in an overflow error (adoptReportedWindow) — so the caps must follow it, or a result budgeted for the
+     catalog's 200k lands in a window the provider enforces at 100k. The smaller KNOWN figure wins. With no catalog
+     figure the live window counts only when it is not the host's cold-catalog GUESS (coldGuessTokens): an unknown
+     window keeps today's caps exactly, as outputBudgetFor documents. */
+  function outputWindowFor(catalogTokens, liveTokens, coldGuessTokens) {
+    const cat = Math.floor(Number(catalogTokens) || 0), live = Math.floor(Number(liveTokens) || 0);
+    if (!(live > 0)) return cat > 0 ? cat : 0;
+    if (cat > 0) return Math.min(cat, live);
+    return live === Math.floor(Number(coldGuessTokens) || 0) ? 0 : live;
+  }
   // The host's per-dispatch budget (ctx.outputMax: number or thunk). 0 = none -> the module OUTPUT_MAX, as before.
   // A figure at or above OUTPUT_MAX IS the ceiling, i.e. the legacy path exactly (a large window changes nothing).
   function hostOutputCap(ctx) {
@@ -506,5 +518,5 @@
     return { register, get, list, wireFormat, dispatch };
   }
 
-  return { makeRegistry, closestToolNames, unknownToolMessage, outputBudgetFor, OUTPUT_MAX };
+  return { makeRegistry, closestToolNames, unknownToolMessage, outputBudgetFor, outputWindowFor, OUTPUT_MAX };
 });

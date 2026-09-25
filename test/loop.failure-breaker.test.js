@@ -185,5 +185,35 @@ function realRegistry() {
     }
   }
 
+  // ---- a parallel fan-out failing together is ONE failed attempt, and a stop never shares the warning's turn ----
+  {
+    const b = Breaker.makeLoopBreaker({ unattended: true });
+    const fan = (t, k) => {
+      const calls = repeat(k, i => ({ id: 't' + t + '_' + i, name: 'web_fetch', args: { url: 'https://x.invalid/' + t + '/' + i } }));
+      return b.observe(calls, calls.map(c => ({ callId: c.id, isError: true, summary: 'error', content: 'fetch failed' })));
+    };
+    const first = fan(0, 8);
+    A.eq(first.stop, null, '8 parallel failing web_fetch calls in ONE turn do not hard-stop an unattended run');
+    A.eq(first.notes.length, 0, 'one failed turn is not yet a streak worth a nudge');
+    A.eq(b.snapshot().fails[0][1], 1, 'the fan-out counted as one failure');
+    A.eq(fan(1, 8).stop, null, 'second failed turn: no stop');
+    const third = fan(2, 8);
+    A.eq(third.stop, null, 'third failed turn: no stop');
+    A.eq(third.notes.filter(n => n.indexOf('<failure_streak>') === 0).length, 1, 'third failed turn: the nudge reaches the model');
+    let stoppedOn = -1;
+    for (let t = 3; t < 12 && stoppedOn < 0; t++) if (fan(t, 8).stop) stoppedOn = t;
+    A.eq(stoppedOn, 7, 'the hard stop lands on the 8th failed TURN, not the 8th failed result');
+  }
+  {
+    // warn and stop configured to coincide: the stop waits one turn so the warning is never discarded
+    const b = Breaker.makeLoopBreaker({ unattended: true, limits: { sameToolWarnAfter: 2, sameToolStopAfter: 2 } });
+    const fail = t => b.observe([{ id: 'c' + t, name: 'net_get', args: { u: t } }], [{ callId: 'c' + t, isError: true, summary: 'error', content: 'boom' }]);
+    A.eq(fail(0).stop, null, 'turn 1: counting');
+    const w = fail(1);
+    A.eq(w.stop, null, 'turn 2: the warning turn never stops');
+    A.eq(w.notes.length, 1, 'turn 2: the warning is delivered');
+    A.ok(fail(2).stop && true, 'turn 3: stops after the model was warned');
+  }
+
   A.report('loop.failure-breaker.test');
 })();

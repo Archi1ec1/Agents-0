@@ -52,7 +52,8 @@ const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
   A.ok(/id="set-close-to-tray"/.test(settings) && /Lifecycle\.setCloseToTray/.test(settings), 'Settings renders and wires CLOSE WINDOW TO TRAY');
   A.ok(/close_exit_pending\.store\(true[\s\S]*RunEvent::ExitRequested\s*\{\s*api,\s*code[\s\S]*close_exit_pending\.swap\(false[\s\S]*api\.prevent_exit\(\)/.test(main), 'only a paired main-window close prevents event-loop exit while the close worker decides');
 
-  A.ok(/if !spawn_sidecar_with_retry\(&state\) \{\s*return Err/.test(main), 'startup Cancel aborts before the guardian starts');
+  A.ok(/if !spawn_sidecar_with_retry\((?:app\.handle\(\),\s*)?&state\) \{[\s\S]{0,300}?kill_sidecar\(\)[\s\S]{0,300}?std::process::exit\(0\)[\s\S]{0,600}?spawn_guardian\(/.test(main), 'startup Cancel stops the sidecar and exits cleanly before the guardian starts');
+  A.ok(!/if !spawn_sidecar_with_retry\((?:app\.handle\(\),\s*)?&state\) \{\s*return Err/.test(main), 'startup Cancel never returns a setup Err (release panic=abort turns it into a crash)');
   A.ok(/sidecar_startup::spawn/.test(main) && /!listening && exited.is_none\(\)[\s\S]{0,150}sidecar_startup::stop_timed_out/.test(main), 'the desktop uses tracked spawning and reaps a timed-out attempt');
   A.ok(/startup_reveal.is_pending\(\)/.test(main) && /report_window_startup_failure/.test(main), 'a hidden stalled window gets a native diagnostic');
   A.report('desktop-lifecycle-preferences');

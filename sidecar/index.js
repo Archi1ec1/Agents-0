@@ -40,7 +40,7 @@ const { makeUpdatePreparation } = require('./update-preparation.js');
 const { makeAgentLifecycle } = require('./agent-lifecycle.js');
 const { makeConsentWait } = require('./consentwait.js');   // EL-11: fail-closed consent timer + human-visible ack extension
 const { killAll } = require('./halt.js');
-const { makeRegistry, outputBudgetFor } = require('./tools/registry.js');
+const { makeRegistry, outputBudgetFor, outputWindowFor } = require('./tools/registry.js');
 const { makeOutputArtifacts } = require('./output-artifacts.js');
 const { makeWebTools, makePoliteScheduler } = require('./tools/builtin/web.js');
 const { makeWebReader } = require('./tools/builtin/webreader.js');
@@ -208,7 +208,7 @@ const { makeStepTest } = require('./routing/steptest.js');   // the conveyor STE
 const { lineStats: foldLineStats } = require('./routing/line-stats.js');   // LINE WATCH: per-line runs/shipped/failed/$ + each bay's last outcome (GET /api/routing/lines/stats)
 const { makeLineSpend } = require('./routing/line-spend.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
 const LineTriggers = require('./routing/triggers.js');   // LINE TRIGGERS (2026-09-23): folder/webhook events that start ONE line
-const { makeTriggerRunner } = require('./routing/trigger-runner.js');
+const { makeTriggerRunner, crewedDocksOnLine } = require('./routing/trigger-runner.js');
 const { makeFolderWatcher, makeFolderPolicy } = require('./routing/trigger-folder.js');
 const { makeConnectorManager } = require('./mcp/manager.js');
 const { makeHttpTransport } = require('./mcp/transport.http.js');
@@ -225,7 +225,8 @@ const connectorStateMod = require('./connectorstate.js');   // one transactional
 const cron = require('./cron.js');                         // pure schedule math (parse/nextFire/planTick)
 const cronStore = require('./cron-store.js');              // pure CronJob lifecycle reducer
 const mintLedger = require('./mint-ledger.js');            // W6: pure dedup gate + per-agent mint ledger (never re-create what exists)
-const { makeCronDriver } = require('./cron-driver.js');    // the autonomous tick driver (ambient deps injected here)
+const cronDriverMod = require('./cron-driver.js');
+const { makeCronDriver } = cronDriverMod;    // the autonomous tick driver (ambient deps injected here)
 const loopjob = require('./loopjob.js');                   // LOOPS: pure gate + ledger digest for standing objectives
 const loopjobStore = require('./loopjob-store.js');        // LOOPS: pure LoopJob lifecycle reducer (iterations, verdicts)
 const { makeLoopDriver } = require('./loopjob-driver.js'); // LOOPS: the verdict-triggered tick driver
@@ -1287,8 +1288,8 @@ function recordDiagError(message, ts, runId) {
 const diagnostics = makeDiagnostics({ redact });   // pure assembler; redact injected for the second sanitization backstop
 /* Which proxy env vars are set, HOST ONLY (see diagnostics.proxyHostOnly — credentials are stripped there before
    anything is reported). Reading process.env belongs here, not in the pure assembler. This exists because Node's
-   fetch IGNORES these variables (measured on v22.23: a dead HTTPS_PROXY still reached the network, and neither
-   `require('undici')` nor `node:undici` is available in a bundled build to install a ProxyAgent) — so a user
+   fetch IGNORES these variables (measured on v22.23: a dead HTTPS_PROXY still reached the network; undici now ships
+   as a staged runtime dependency, but no ProxyAgent is wired) — so a user
    behind a proxy gets a working UI and a sidecar that cannot reach any provider. Surfacing the mismatch is the
    honest move until real proxy routing is built. */
 const PROXY_ENV_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'];
@@ -4134,7 +4135,15 @@ function cronScriptSpec(job) {
 async function executeCronScript(job, signal) {
   const spec = cronScriptSpec(job);
   if (!spec) return null;
-  const r = await cronScriptTool.run({ cmd: spec.cmd, cwd: spec.cwd, timeoutMs: Math.min(120000, Math.max(1000, Number(job.scriptTimeoutMs) || 30000)) }, { agentId: job.agentId, runId: job.id, callId: 'cron-script', signal, surface: 'autonomous', emit: () => {} });
+  let r;
+  try {
+    r = await cronScriptTool.run({ cmd: spec.cmd, cwd: spec.cwd, timeoutMs: Math.min(120000, Math.max(1000, Number(job.scriptTimeoutMs) || 30000)) }, { agentId: job.agentId, runId: job.id, callId: 'cron-script', signal, surface: 'autonomous', emit: () => {} });
+  } catch (e) {
+    // a TIMEOUT/CANCELLED throw carries up to 64KB of captured output: clip it like the non-zero-exit path below
+    const clipped = new Error(cronDriverMod.clipScriptError((e && e.message) || e));
+    if (e && e.toolSummary) clipped.toolSummary = e.toolSummary;
+    throw clipped;
+  }
   const content = String((r && r.content) || '');
   const m = content.match(/\n\[exit (-?\d+)[^\]]*\]\s*$/);
   const output = content.replace(/\n\[exit [^\]]*\]\s*$/, '').trim();
@@ -10129,6 +10138,16 @@ function quiesceForProcessFault() {
     const devInflight = (devHub && devHub._internals) ? devHub._internals.inflight : null;
     killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null);
   });
+  // line triggers, as E-STOP does (handleHalt): no further folder poll, every waiting item dropped, every trigger
+  // hub's live run killed. Its own containment — triggerRunner is declared further down this file, and a fault
+  // before it initializes must not abort the kill of every other run above. The runner's halted() also reads
+  // processFaultQuiesced, so a webhook call that still reaches it is refused rather than fired.
+  contain('triggers', () => {
+    if (triggerPollTimer) clearInterval(triggerPollTimer);
+    triggerPollTimer = null;
+    triggerRunner.haltAll();
+    killAll(null, ...triggerRunner.inflights());
+  });
   contain('groups', () => groupSessions && groupSessions.halt && groupSessions.halt());
   contain('subagents', () => subagents && subagents.interruptAll && subagents.interruptAll());
   contain('shell-background', () => shellBg && shellBg.killAll && shellBg.killAll());
@@ -10190,6 +10209,17 @@ if (require.main === module) {
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));   // Windows console Ctrl+Break (harmless elsewhere)
   } catch (_) {}
+  /* PARENT-REQUESTED GRACEFUL STOP over the IPC channel. Windows has no SIGTERM: a parent's child.kill() is
+     TerminateProcess, so the handlers above never run and background jobs / MCP / LSP children leak. A parent that
+     spawned us WITH an ipc channel (the `starnet` CLI) sends { type: 'starnet.shutdown' } first. No new attack
+     surface: the channel exists only between this process and the parent that created it (no port, no token). */
+  if (typeof process.send === 'function') {
+    try {
+      process.on('message', (m) => { if (m && m.type === 'starnet.shutdown') gracefulShutdown('IPC'); });
+      // the channel must never be what keeps the station alive (the HTTP server is)
+      if (process.channel && typeof process.channel.unref === 'function') process.channel.unref();
+    } catch (e) { failNote('shutdown.ipc', e); }
+  }
 }
 
 /* ---- SSE bridge: forward validated channel/work-item telemetry to the live station HUD ---- */
@@ -10413,12 +10443,13 @@ async function handleRoutingSample(req, res) {
        line gate on, so the refusal and the line semantics quote ONE artifact. The hub's own resolveAgent call
        below stays the one and only counter-advancing resolution (one-resolver law). */
     /* When the proof is line-scoped, the same reach question is asked OF THAT LINE: a dock counts only
-       when the plan's sources feed it AND it crews the named line (plan.lineOfAgent — the compiled map,
-       same artifact the gate reads). Lines are connected components, so a dock on line B is only ever
-       reachable through line B's own doors — the intersection is exact, still lane-choice-blind, and the
-       refusal still never names a dock. */
-    const reachedDocks = Object.keys((plan && plan.reach) || {})
-      .filter(a => plan.reach[a] && (!line || ((plan.lineOfAgent || {})[a] === line)));
+       when the plan's sources feed it AND it sits on the named line. Asked of the DOCK layer (reachDock +
+       lineOfDock — multi-bay: an agent crewing bays on two lines has one lineOfAgent entry, its entry dock's,
+       so the agent view refused a working second line); a plan with no dock layer falls back to the agent
+       view. Lines are connected components, so a dock on line B is only ever reachable through line B's own
+       doors — the intersection is exact, still lane-choice-blind, and the refusal still never names a dock.
+       ONE helper (trigger-runner.crewedDocksOnLine) answers this for the sample AND every line trigger. */
+    const reachedDocks = crewedDocksOnLine(plan, line || null);
     if (!reachedDocks.length) {
       return json(409, line
         ? { ok: false, error: 'line "' + line + '" routes this job to no dock — crew a bay on that line (bind an agent to it) and try again.' }
@@ -10581,6 +10612,9 @@ function makeTriggerHub(hooks) {
     resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
     stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),
     onResolved: hooks.onResolved, onLineOutcome: hooks.onLineOutcome,
+    // a trigger's work item IS external data (a webhook body, a watched file's contents): the entry run starts
+    // TAINTED, so its sensitive tools stay consent-gated like any run that has read untrusted content
+    entryTaint: 'line trigger payload',
     streamId: () => hooks.streamId()
   });
 }
@@ -10595,7 +10629,8 @@ const triggerRunner = makeTriggerRunner({
     const lim = chainEffectiveLimits(router.lineLimits(lineId), {}, (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null);
     return { cap: lim.maxUsdPerDay, spent: lineSpend.spentToday(lineId) };
   },
-  halted: () => cronHalted === true,
+  // the durable automation E-STOP, OR a process fault that quiesced this torn process (no new fire may start)
+  halted: () => cronHalted === true || processFaultQuiesced === true,
   runsFor: (streamId) => (runStore.list(null, { limit: 50 }) || []).filter(r => r && String(r.streamId || '') === streamId)
     .map(r => ({ runId: r.runId, agentId: r.agentId, reason: r.reason, usd: r.usd, streamId: r.streamId })),
   emit: chanEmit, bumpQueue: bumpQueue, queueCap: QUEUE_CAP,
@@ -10603,7 +10638,7 @@ const triggerRunner = makeTriggerRunner({
   now: () => Date.now(), newId: () => crypto.randomUUID(),
   warn: (m) => console.warn(m)
 });
-const triggerPollTimer = setInterval(() => { triggerRunner.tickFolders().catch(swallow('triggers.folders')); }, triggerPollMs);
+let triggerPollTimer = setInterval(() => { triggerRunner.tickFolders().catch(swallow('triggers.folders')); }, triggerPollMs);
 triggerPollTimer.unref();
 const triggerHookUrl = (id) => 'http://127.0.0.1:' + PORT + '/api/hooks/' + id;
 function triggerView(v) {
@@ -10874,7 +10909,9 @@ function handleLineStats(req, res) {
     const out = foldLineStats({
       rows: runStore.list(null, { limit: 1000 }) || [], lines, since,
       spentToday: id => lineSpend.spentToday(id),
-      capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay
+      capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay,
+      // SHIPPED = a job that left through the OUTBOX: only a run at a dock whose lane reaches it (never a mid-line stage)
+      shipsToOutbox: (agentId, dockId) => router.chainShipsToOutbox(agentId, dockId)
     });
     return json(200, Object.assign({ ok: true }, out));
   } catch (e) {
@@ -12460,7 +12497,9 @@ function cronStateSnapshot(now) {
   });
   return { jobs: jobs, enabled: cronArmed, halted: cronHalted, tickMs: CRON_TICK_MS, health: health,
     degraded: cronDegraded ? { quarantinePath: cronDegraded.quarantinePath, since: cronDegraded.since } : null,
-    maxConsecutiveFailures: CRON_MAX_CONSECUTIVE_FAILURES };
+    maxConsecutiveFailures: CRON_MAX_CONSECUTIVE_FAILURES,
+    // the delivery backlog ceiling the driver defers new runs at (cron-store) — the panel quotes it, never a copy
+    maxPendingDeliveries: cronStore.MAX_PENDING_DELIVERIES };
 }
 
 function handleCronList(req, res) {
@@ -17305,7 +17344,8 @@ async function runOnceCore(o) {
   const runOutputBudget = () => {
     let w = CONTEXT_LIMIT_OVERRIDE;
     if (!w) { try { w = Number(provider.contextLimit(model)) || 0; } catch (e) { failNote('run.outputBudget.window', e); w = 0; } }
-    return outputBudgetFor(w);
+    // a window the provider NAMED (loop.js adoptReportedWindow lowers ctxMgr's) outranks the catalog when smaller
+    return outputBudgetFor(outputWindowFor(w, ctxMgr.contextLimit, CONTEXT_LIMIT_OVERRIDE ? 0 : COLD_CATALOG_CONTEXT_TOKENS));
   };
   capCtx.outputMax = () => runOutputBudget().resultMax;
   // The summarizer is itself a paid model call. It RETURNS its reconciled {usd,tokens} so the loop folds the

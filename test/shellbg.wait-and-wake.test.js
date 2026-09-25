@@ -89,6 +89,27 @@ let T = 1000; const clock = { now: () => T };
     A.eq(t3.summary, 'not found', 'an unknown id is not found');
   }
 
+  // ---- shell.bg.wait on a POLLED backend (ssh: status only): timeoutMs 0 checks once and never sleeps ----
+  {
+    let polls = 0;
+    const env = { backendId: 'ssh', ensureWorkspace: () => '/w', getCwd: () => '/w', workspaceRoot: () => '/w',
+      statusBackground: () => { polls++; return { bgId: 'bg_r', running: true, cmd: 'x', tail: '' }; } };
+    const fs = { mkdirSync() {}, existsSync() { return true; } };
+    const tools = makeShellTool({ environment: env, fs, pathMod: path, root: path.join('root'), clock, platform: 'win32' });
+    const t0 = Date.now();
+    const r0 = await tools.bgWaitTool.run({ id: 'bg_r', timeoutMs: 0 }, { agentId: 'a' });
+    const took = Date.now() - t0;
+    A.eq(r0.summary, 'still running', 'timeoutMs 0 answers still running');
+    A.eq(polls, 1, 'with exactly one status check');
+    A.ok(took < 500, 'and without the 1s sleep it used to take (' + took + 'ms)');
+    polls = 0;
+    const t1 = Date.now();
+    await tools.bgWaitTool.run({ id: 'bg_r', timeoutMs: 1200 }, { agentId: 'a' });
+    const took1 = Date.now() - t1;
+    A.ok(took1 >= 1100 && took1 < 1800, 'a 1.2s wait sleeps ~1.2s, not rounded up to 2s (' + took1 + 'ms)');
+    A.eq(polls, 3, 'initial check + one per step');
+  }
+
   // ---- wake: the note rides the REAL steer buffer into the owning agent's live run ----
   {
     const steer = makeSteerBuffers({ maxPending: 8, maxNoteChars: 2000 });
