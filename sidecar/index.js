@@ -40,7 +40,7 @@ const { makeUpdatePreparation } = require('./update-preparation.js');
 const { makeAgentLifecycle } = require('./agent-lifecycle.js');
 const { makeConsentWait } = require('./consentwait.js');   // EL-11: fail-closed consent timer + human-visible ack extension
 const { killAll } = require('./halt.js');
-const { makeRegistry, outputBudgetFor } = require('./tools/registry.js');
+const { makeRegistry, outputBudgetFor, outputWindowFor } = require('./tools/registry.js');
 const { makeOutputArtifacts } = require('./output-artifacts.js');
 const { makeWebTools, makePoliteScheduler } = require('./tools/builtin/web.js');
 const { makeWebReader } = require('./tools/builtin/webreader.js');
@@ -17305,7 +17305,8 @@ async function runOnceCore(o) {
   const runOutputBudget = () => {
     let w = CONTEXT_LIMIT_OVERRIDE;
     if (!w) { try { w = Number(provider.contextLimit(model)) || 0; } catch (e) { failNote('run.outputBudget.window', e); w = 0; } }
-    return outputBudgetFor(w);
+    // a window the provider NAMED (loop.js adoptReportedWindow lowers ctxMgr's) outranks the catalog when smaller
+    return outputBudgetFor(outputWindowFor(w, ctxMgr.contextLimit, CONTEXT_LIMIT_OVERRIDE ? 0 : COLD_CATALOG_CONTEXT_TOKENS));
   };
   capCtx.outputMax = () => runOutputBudget().resultMax;
   // The summarizer is itself a paid model call. It RETURNS its reconciled {usd,tokens} so the loop folds the

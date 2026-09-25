@@ -11,7 +11,7 @@
    that the per-turn cut stays inside 30%, and that a result the turn cut shortens is now parked first. */
 'use strict';
 const A = require('./_assert.js');
-const { makeRegistry, outputBudgetFor, OUTPUT_MAX } = require('../sidecar/tools/registry.js');
+const { makeRegistry, outputBudgetFor, outputWindowFor, OUTPUT_MAX } = require('../sidecar/tools/registry.js');
 const { CHARS_PER_TOKEN } = require('../sidecar/context.js');
 const { _internals } = require('../sidecar/loop.js');
 
@@ -160,6 +160,18 @@ function regWith(text) {
     A.ok(results.every(r => r.turnClamped && r.content.indexOf(r.parkedPath) >= 0 && /THE FULL OUTPUT OF THIS CALL WAS SAVED/.test(r.content)), 'every squeezed result names its saved file');
     const noParker = await _internals.executeCalls(calls, (c, ctx) => reg.dispatch(c, ctx), openCtx({ outputMax: b.resultMax }), () => {}, { agentId: 'a', runId: 'r', parallelSafe: () => true, turnOutputMax: b.turnMax });
     A.ok(noParker.every(r => r.parkedPath === null && /narrow it/.test(r.content)), 'no parker wired -> the old cut, verbatim');
+  }
+
+  // ---- a window the provider NAMED (adopted into the context manager) outranks a larger catalog figure ----
+  {
+    const COLD = 131072;
+    A.eq(outputWindowFor(200000, 100000, COLD), 100000, 'adopted 100k beats the catalog 200k');
+    A.eq(outputBudgetFor(outputWindowFor(200000, 100000, COLD)).turnMax, outputBudgetFor(100000).turnMax, 'so the per-turn cap shrinks with it');
+    A.eq(outputWindowFor(200000, 200000, COLD), 200000, 'no adoption: the catalog figure, unchanged');
+    A.eq(outputWindowFor(32000, 200000, COLD), 32000, 'a live window never RAISES the catalog figure');
+    A.eq(outputWindowFor(0, COLD, COLD), 0, 'cold catalog + the cold guess = unknown (the default caps)');
+    A.eq(outputWindowFor(0, 60000, COLD), 60000, 'cold catalog + a provider-named window = that window');
+    A.eq(outputWindowFor(200000, 0, COLD), 200000, 'no context manager figure: the catalog');
   }
 
   A.report('registry.window-scaled-cap.test');
