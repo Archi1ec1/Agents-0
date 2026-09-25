@@ -157,6 +157,7 @@ const { makeEmitter } = require('../shared/emitter.js');
 const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
 const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
+const { makeConnectorOauthFetch } = require('./mcp/oauth-fetch.js');   // DNS-pinned fetch for every connector-OAuth leg
 const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
 const { runRouteFailure } = require('./runroute.js');   // a failure escaping handleRun must never read as an empty 200
 const { json: respondJson, readJsonBody, isAgentId } = require('./respond.js');   // canonical json()/body/agent-id helpers — adopt incrementally, don't mass-migrate
@@ -4713,10 +4714,16 @@ async function connectorOauthPublicUrl(raw) {
   await skillWebInternals.assertResolvedSafe(u, host => dns.promises.lookup(host, { all: true }));
   return u;
 }
-async function connectorOauthFetch(raw, options) {
-  const u = await connectorOauthPublicUrl(raw);
-  return globalThis.fetch(u.href, Object.assign({}, options || {}, { redirect: 'manual' }));
-}
+// Every leg's socket is PINNED to the address that passed the check (sidecar/mcp/oauth-fetch.js): resolving once to
+// validate and again to connect let a DNS-rebinding authorization server aim DCR/token POSTs at a private address.
+const connectorOauthFetcher = makeConnectorOauthFetch({
+  assertSafeUrl: skillWebInternals.assertSafeUrl,
+  assertResolvedSafe: skillWebInternals.assertResolvedSafe,
+  lookup: host => dns.promises.lookup(host, { all: true }),
+  agentFactory: options => new (require('undici').Agent)(options),
+  onCloseError: e => failNote('connector.oauth.dispatcher-close', e)
+});
+async function connectorOauthFetch(raw, options) { return connectorOauthFetcher.connectorOauthFetch(raw, options); }
 // drop the cached dynamically-registered client for an authorization server (when the AS reports it invalid), so the
 // next sign-in RE-REGISTERS a fresh one instead of wedging forever on a pruned/rotated client id.
 function forgetOauthClient(authServer) {
