@@ -10497,7 +10497,7 @@ async function handleRoutingSample(req, res) {
     // store, so [0] is the LAST stage that ran — the one whose reply the line delivered).
     let runs = [];
     try {
-      runs = (runStore.list(null, { limit: 50 }) || [])
+      runs = (runStore.list(null, { streamId: streamId, limit: 200 }) || [])   // THIS sample's rows, not the station's newest 50
         .filter(r => r && String(r.streamId || '') === streamId)
         .map(r => ({ runId: r.runId, agentId: r.agentId, reason: r.reason, usd: r.usd, ts: r.ts, title: r.title, streamId: r.streamId, turns: r.turns }));
     } catch (_) { runs = []; }
@@ -10648,7 +10648,7 @@ const triggerRunner = makeTriggerRunner({
   },
   // the durable automation E-STOP, OR a process fault that quiesced this torn process (no new fire may start)
   halted: () => cronHalted === true || processFaultQuiesced === true,
-  runsFor: (streamId) => (runStore.list(null, { limit: 50 }) || []).filter(r => r && String(r.streamId || '') === streamId)
+  runsFor: (streamId) => (runStore.list(null, { streamId: streamId, limit: 200 }) || []).filter(r => r && String(r.streamId || '') === streamId)
     .map(r => ({ runId: r.runId, agentId: r.agentId, reason: r.reason, usd: r.usd, streamId: r.streamId })),
   emit: chanEmit, bumpQueue: bumpQueue, queueCap: QUEUE_CAP,
   watcher: triggerWatcher,

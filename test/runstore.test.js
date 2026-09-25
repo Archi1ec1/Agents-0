@@ -292,4 +292,21 @@ const clock = { now: () => clk };
   A.eq(dup.count(), 2, 'rows of runs that were never interrupted are never collapsed');
 }
 
+// ---- STREAM FILTER (conveyor sweep 2026-09-25): a trigger fire / sample reads back ITS rows by streamId ----
+// It used to read the station's newest 50 rows and filter — a busy station pushed the fire's own rows out of that
+// window, so a finished fire said "no run was recorded". list({ streamId }) scans the whole window for that stream.
+{
+  const s = makeRunStore({ io: memIo(), clock });
+  s.record({ runId: 'mine-1', agentId: 'a', reason: 'done', streamId: 'trigger-abc' });
+  s.record({ runId: 'mine-2', agentId: 'b', reason: 'done', streamId: 'trigger-abc' });
+  for (let i = 0; i < 80; i++) s.record({ runId: 'busy-' + i, agentId: 'c', reason: 'done', streamId: 'other-' + i });
+  A.eq(s.list(null, { limit: 50 }).filter(r => r.streamId === 'trigger-abc').length, 0, '(the old read: the fire\'s rows are outside the newest 50)');
+  const mine = s.list(null, { streamId: 'trigger-abc', limit: 200 });
+  A.eq(mine.map(r => r.runId), ['mine-2', 'mine-1'], 'list({ streamId }) returns exactly that stream\'s rows, newest-first');
+  A.eq(s.list(null, { streamId: 'nope' }).length, 0, 'an unknown stream has no rows');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  A.ok(/runsFor: \(streamId\) => \(runStore\.list\(null, \{ streamId: streamId/.test(src), 'the trigger runner reads its fire back by streamId');
+  A.ok(/runs = \(runStore\.list\(null, \{ streamId: streamId, limit: 200 \}\)/.test(src), 'the sample route reads its runs back by streamId');
+}
+
 A.report('runstore.test');

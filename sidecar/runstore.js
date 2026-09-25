@@ -318,6 +318,8 @@
       const beforeRunId = o.beforeRunId == null ? '' : str(o.beforeRunId);
       const since = num(o.since);
       const through = num(o.through);
+      // one workstream's rows (a trigger fire / a sample reads back ITS runs — never the station's global newest N)
+      const wantStream = o.streamId == null ? null : str(o.streamId);
       const out = [];
       let afterCursor = !beforeRunId;
       for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {   // newest-first
@@ -329,6 +331,7 @@
         }
         const row = view(raw);
         if (want != null && row.agentId !== want) continue;
+        if (wantStream != null && str(row.streamId) !== wantStream) continue;
         if (since > 0 && num(row.ts) <= since) continue;
         if (through > 0 && num(row.ts) > through) continue;
         out.push(row);
