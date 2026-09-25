@@ -78,7 +78,7 @@
      DOCK layer (reachDock / dockChains / Pipeline.chainStepDock) — writer@A → editor@B → writer@C is three
      columns with the writer in two of them. A plan without the dock layer derives it (Pipeline.dockLayer). */
   function lineFlow(plan, comp, P, props) {
-    const out = { cols: [], docks: {}, gates: [], order: [], edges: {}, probeIn: {}, outbox: { propId: null, reached: false }, trigger: { propId: null } };
+    const out = { cols: [], docks: {}, gates: [], order: [], edges: {}, probeIn: {}, probeNext: {}, outbox: { propId: null, reached: false, reachedOnceCrewed: false }, trigger: { propId: null } };
     if (!comp) return out;
     out.trigger.propId = (comp.intakes && comp.intakes[0]) || null;
     out.outbox.propId = (comp.outboxes && comp.outboxes[0]) || null;
@@ -119,6 +119,19 @@
     if (probe) for (const b of bays) {
       if (b.agentId) continue;
       for (const x of bays) { const ch = pl.dockChains[x.propId]; if (x.propId !== b.propId && ch && (ch.next || []).indexOf(b.propId) >= 0) (out.probeIn[b.propId] = out.probeIn[b.propId] || []).push(x.propId); }
+    }
+    /* CONNECTED, JUST NOT CREWED (sweep 2026-09-25). The real plan routes nothing through an uncrewed bay, so a line
+       whose belts DO run INBOX → bays → OUTBOX read "the last step is not connected to the OUTBOX" and a crewed bay
+       before an uncrewed one read "nowhere — connect a belt" — telling a newcomer to lay belts that are already there.
+       The probe compile (every uncrewed bay given a stand-in agent) is the compiler's answer for "once every bay is
+       crewed": reachedOnceCrewed + probeNext carry it, so the copy can say what is really missing (an agent). The
+       REAL claims (reached, edges, routed) are unchanged — nothing here says work flows today. */
+    out.outbox.reachedOnceCrewed = !!(out.outbox.reached || (probe && L.outboxReached));
+    if (probe) for (const b of bays) {
+      if (!b.agentId || (out.edges[b.propId] || []).length) continue;
+      const ch = pl.dockChains[b.propId];
+      const nx = ch ? (ch.next || []).filter(pid => mine(pid) && !out.docks[pid].agentId) : [];
+      if (nx.length) out.probeNext[b.propId] = nx;
     }
 
     // 3. NOT CONNECTED: a dock no INBOX reaches even once crewed has no place in the run order. It is never
@@ -357,6 +370,7 @@
     }
     T('; ');
     if (flow.outbox.reached) segs.push({ t: 'end', s: 'the result goes to the OUTBOX.' });
+    else if (flow.outbox.propId && flow.outbox.reachedOnceCrewed) segs.push({ t: 'miss', s: '[the result reaches the OUTBOX once every step has an agent]', propId: flow.outbox.propId });
     else if (flow.outbox.propId) segs.push({ t: 'miss', s: '[the last step is not connected to the OUTBOX]', propId: flow.outbox.propId });
     else segs.push({ t: 'miss', s: '[there is no OUTBOX, so the result goes nowhere]', propId: null });
     return segs;
@@ -385,7 +399,9 @@
     }
     if (flow.trigger.propId) { let k = 0; for (const pid of flow.order) { k++; const d = flow.docks[pid]; if (d.detached && d.agentId) blocking.push({ what: 'BAY ' + k + ' is not connected to the INBOX', propId: pid }); } }
     if (!flow.order.length) blocking.push({ what: 'add a BAY', propId: null });
-    else if (!flow.outbox.reached) blocking.push({ what: flow.outbox.propId ? 'connect the last step to the OUTBOX' : 'add an OUTBOX', propId: flow.outbox.propId });
+    // belts that already reach the OUTBOX once every bay is crewed are not a belt problem: the uncrewed bays' own
+    // "needs an agent" items above are what is missing (sweep 2026-09-25)
+    else if (!flow.outbox.reached && !(flow.outbox.reachedOnceCrewed && flow.order.some(pid => !flow.docks[pid].agentId))) blocking.push({ what: flow.outbox.propId ? 'connect the last step to the OUTBOX' : 'add an OUTBOX', propId: flow.outbox.propId });
     const mine = {}; for (const id of (comp.props || [])) mine[id] = true;
     const seenCodes = {};
     for (const e of (f.errors || [])) {

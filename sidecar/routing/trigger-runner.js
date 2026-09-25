@@ -22,12 +22,15 @@
      deps.halted() -> bool                    the durable automation E-STOP (cron halt)
      deps.runsFor(streamId) -> [{runId, agentId, reason, usd}]
      deps.emit(name, payload), deps.bumpQueue(agentId, d) -> depth, deps.queueCap
-     deps.watcher (trigger-folder makeFolderWatcher), deps.now(), deps.newId(), deps.warn(msg) */
+     deps.watcher (trigger-folder makeFolderWatcher), deps.now(), deps.newId(), deps.warn(msg)
+     deps.label(agentId) -> display name|null     for the sentences the owner reads (lastError)
+     deps.folderConflict(path) -> reason|null  a watched folder inside a line's working folder (checked every fire) */
 'use strict';
 const T = require('./triggers.js');
 const Pipeline = require('../../frontend/app/pipeline.js');
 
 const MAX_PENDING = 5;   // work items waiting behind the one in flight, per trigger — a burst beyond this is refused
+const READ_BACKOFF_MS = 15000, READ_BACKOFF_MAX_MS = 10 * 60 * 1000;   // an unreadable folder file's retry backoff
 
 /* crewedDocksOnLine(plan, lineId?) -> the reached, crewed entry points of a line (lineId null = any line). Side-effect
    free and lane-choice-blind (plan.reach / plan.reachDock are BFS answers over every junction lane), so it can
@@ -60,6 +63,8 @@ function makeTriggerRunner(deps) {
   const runsFor = typeof d.runsFor === 'function' ? d.runsFor : function () { return []; };
   const shipsToOutbox = typeof d.shipsToOutbox === 'function' ? d.shipsToOutbox : function () { return false; };
   const planOf = typeof d.plan === 'function' ? d.plan : function () { return null; };
+  // the owner reads an agent's display name in lastError, never its raw id (sweep 2026-09-25)
+  const nameOf = id => { let n = null; try { n = typeof d.label === 'function' ? d.label(id) : null; } catch (e) { warn('[triggers] label: ' + ((e && e.message) || e)); } return n ? String(n) : String(id); };
   const seenStore = d.seen || { load: function () { return {}; }, save: function () {} };
 
   let records = T.normalizeAll(d.load()).triggers;
@@ -68,7 +73,7 @@ function makeTriggerRunner(deps) {
 
   function stateOf(id) {
     let s = live.get(id);
-    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false }; live.set(id, s); }
+    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false, queuedKeys: new Set(), readBackoff: new Map() }; live.set(id, s); }
     return s;
   }
   const get = id => records.find(t => t.id === id) || null;
@@ -113,6 +118,13 @@ function makeTriggerRunner(deps) {
     if (!plan) return 'no work line is armed — the floor has no complete line to run';
     if (!(Array.isArray(plan.lines) ? plan.lines : []).some(l => l && String(l.lineId) === t.lineId)) return 'its line is no longer on the floor (the line changed or was removed) — delete this trigger or re-create it on the line';
     if (!crewedDocksOnLine(plan, t.lineId).length) return 'its line routes work to no crewed dock — assign an agent to the first step';
+    // a folder that is (now) inside a line's working folder would feed that line its own output — re-asked every fire,
+    // because a line's project can change after the trigger was created
+    if (t.kind === 'folder' && typeof d.folderConflict === 'function') {
+      let why = null;
+      try { why = d.folderConflict(t.config.path); } catch (e) { why = 'the station could not check this folder against its lines\' working folders'; warn('[triggers] folder conflict check failed: ' + ((e && e.message) || e)); }
+      if (why) return why;
+    }
     let cap = null;
     try { cap = dayCap(t.lineId); } catch (e) { cap = null; warn('[triggers] day-cap read failed: ' + ((e && e.message) || e)); }
     if (cap && typeof cap.cap === 'number' && cap.cap > 0 && (cap.spent || 0) >= cap.cap) return 'the line reached its $' + cap.cap.toFixed(2) + ' daily limit — it fires again tomorrow';
@@ -144,7 +156,9 @@ function makeTriggerRunner(deps) {
     const a = T.admit(t, nowMs);
     if (!patch(id, () => ({ recent: a.recent }))) return { ok: false, code: 'persist', error: 'the fire could not be recorded durably — refused' };
     const s = stateOf(id);
-    s.queue.push({ text: String(item.text || ''), preview: String(item.preview || '').slice(0, 40), source: String(item.source || '').slice(0, 200), at: nowMs });
+    const seenKey = item.seenKey ? String(item.seenKey) : null;   // a folder file: marked fired only when it dispatches
+    s.queue.push({ text: String(item.text || ''), preview: String(item.preview || '').slice(0, 40), source: String(item.source || '').slice(0, 200), at: nowMs, seenKey });
+    if (seenKey) s.queuedKeys.add(seenKey);
     const position = s.queue.length + (s.busy ? 1 : 0);
     pump(id);
     return { ok: true, queued: position };
@@ -154,13 +168,29 @@ function makeTriggerRunner(deps) {
     const s = stateOf(id);
     if (s.busy || !s.queue.length) return;
     const t = get(id);
-    if (!t) { s.queue.length = 0; return; }
+    if (!t) { dropQueue(s); return; }
+    // THE PRE-FIRE CHECKS AGAIN AT DISPATCH (sweep 2026-09-25): an item waited behind the fire in flight, and while it
+    // waited the line may have hit its daily $ cap, been disarmed or left the floor, or E-STOP was pressed. Admission's
+    // answer is stale by now — every waiting item is dropped with the reason on record, never run past a closed gate.
+    const why = !t.enabled ? 'the trigger was paused' : preflight(t);
+    if (why) {
+      const n = s.queue.length;
+      dropQueue(s);
+      recordError(id, n + ' waiting item' + (n === 1 ? ' was' : 's were') + ' dropped before running: ' + why);
+      return;
+    }
     const item = s.queue.shift();
     s.busy = true;
     Promise.resolve().then(() => dispatch(t, item, s)).catch(e => {
       recordError(id, 'dispatch failed: ' + ((e && e.message) || e));
-    }).then(() => { s.busy = false; s.current = null; pump(id); });
+    }).then(() => {
+      s.busy = false; s.current = null;
+      if (s.removed) { retire(id, s); return; }   // deleted mid-fire: retired only now that the fire has settled
+      pump(id);
+    });
   }
+  // drop every WAITING item; a folder file among them was never marked fired, so it simply fires on a later scan
+  function dropQueue(s) { for (const it of s.queue) if (it && it.seenKey) s.queuedKeys.delete(it.seenKey); const n = s.queue.length; s.queue.length = 0; return n; }
 
   /* ---- the hub: one per trigger, built lazily, bound to hooks that read THIS trigger's live record ---- */
   function hubFor(id, s) {
@@ -184,8 +214,18 @@ function makeTriggerRunner(deps) {
   async function dispatch(t, item, s) {
     const startedAt = now();
     const streamId = 'trigger-' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+    if (item.seenKey) {
+      // the folder file is recorded as FIRED now, as its run begins (durably, before any spend): a restart after this
+      // point never refires it. A record that cannot be written refuses the fire rather than risk running it twice.
+      s.queuedKeys.delete(item.seenKey);
+      const mine = seen[t.id] || (seen[t.id] = {});
+      mine[item.seenKey] = startedAt;
+      if (!saveSeen()) { delete mine[item.seenKey]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); return null; }
+    }
     s.current = { streamId, routed: null, resolved: null, lineOutcome: null, replies: [], turns: {} };
-    patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt }));
+    // the previous fire's outcome is cleared as this one starts: a fire that dies mid-run (a restart, a crash) must
+    // never leave the OLD "✓ reached the OUTBOX" standing beside the NEW lastFiredAt (sweep 2026-09-25)
+    patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt, lastOutcome: null }));
     const hub = hubFor(t.id, s);
     const settled = Promise.resolve(hub.onInbound({ chatId: 'trg-' + t.id, userId: 'trigger', text: item.text, chatType: 'dm' }))
       .catch(e => ({ error: (e && e.message) || String(e) }));
@@ -222,7 +262,7 @@ function makeTriggerRunner(deps) {
       else if (!info || !info.agentId || !s.current.routed || s.current.routed.agentId !== info.agentId) err = firstReply || 'the line routed this work to no dock';
       else if (!onLine) err = 'the work did not enter through this trigger\'s line';
       else if (!runs.length) err = firstReply || 'no run was recorded for this work';
-      else if (!allDone) { const bad = runs.find(r => r.reason !== 'done'); err = 'a stage (' + (bad.agentId || '?') + ') ended "' + (bad.reason || 'unknown') + '"' + (firstReply ? ': ' + firstReply : ''); }
+      else if (!allDone) { const bad = runs.find(r => r.reason !== 'done'); err = 'a stage (' + (bad.agentId ? nameOf(bad.agentId) : '?') + ') ended "' + (bad.reason || 'unknown') + '"' + (firstReply ? ': ' + firstReply : ''); }
       else if (lo && lo.stopped) err = 'the line stopped early: ' + lo.stopped;
       else err = 'the line did not reach its OUTBOX';
     }
@@ -280,7 +320,7 @@ function makeTriggerRunner(deps) {
     if (fields.enabled === true || fields.config || fields.lineId) { changes.lastError = null; changes.lastErrorAt = null; }
     const nx = patch(id, () => changes);
     if (!nx) return { ok: false, error: 'the trigger could not be saved' };
-    if (fields.enabled === false) stateOf(id).queue.length = 0;   // a disabled trigger drops what was waiting
+    if (fields.enabled === false) dropQueue(stateOf(id));   // a disabled trigger drops what was waiting (files stay unfired)
     return { ok: true, trigger: view(id) };
   }
 
@@ -288,10 +328,20 @@ function makeTriggerRunner(deps) {
     if (!get(id)) return { ok: false, code: 'unknown', error: 'no such trigger' };
     if (!commit(records.filter(t => t.id !== id))) return { ok: false, error: 'the trigger could not be deleted' };
     const s = live.get(id);
-    if (s) { s.queue.length = 0; if (s.hub && typeof s.hub.close === 'function') { try { s.hub.close(); } catch (e) { warn('[triggers] hub close: ' + ((e && e.message) || e)); } } }
-    live.delete(id);
+    if (s) {
+      dropQueue(s);
+      // A FIRE IN FLIGHT STAYS REACHABLE (sweep 2026-09-25): its hub's inflight record is what E-STOP kills
+      // (inflights() reads `live`). Dropping the state mid-fire hid a still-spending run from every stop — so a
+      // deleted trigger's state is retired only once its fire settles (pump's settle step), never before.
+      if (s.busy) s.removed = true;
+      else retire(id, s);
+    }
     if (seen[id]) { delete seen[id]; saveSeen(); }
     return { ok: true };
+  }
+  function retire(id, s) {
+    if (s.hub && typeof s.hub.close === 'function') { try { s.hub.close(); } catch (e) { warn('[triggers] hub close: ' + ((e && e.message) || e)); } }
+    if (live.get(id) === s) live.delete(id);
   }
 
   /* ---- the FOLDER poll: one pass over every enabled folder trigger (the host arms the interval) ---- */
@@ -317,16 +367,29 @@ function makeTriggerRunner(deps) {
         for (const f of ready) {
           const c = canAccept(t.id);
           if (!c.ok) { if (c.code === 'refused' || c.code === 'rate') recordError(t.id, c.error); break; }   // the file waits in the folder
-          mine[f.key] = now();
-          if (!saveSeen()) { delete mine[f.key]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); break; }
+          if (s.queuedKeys.has(f.key)) continue;   // already admitted, waiting its turn (marked fired when it dispatches)
+          const bo = s.readBackoff.get(f.key);
+          if (bo && bo.until > now()) continue;    // it failed to read recently: wait out its backoff
           const body = await d.watcher.readItem(f.abs, f.name);
           // a file that could not be READ (EBUSY / locked by the app still holding it / a sync placeholder) did not
-          // fire: un-mark it so a later scan retries it, instead of recording it as fired and dropping it forever
-          if (!body.ok) { delete mine[f.key]; saveSeen(); recordError(t.id, body.error); continue; }
+          // fire: it stays unmarked so a later scan retries it, instead of recording it as fired and dropping it forever.
+          // Each retry BACKS OFF (15 s doubling to 10 min, sweep 2026-09-25) so a file that stays unreadable is not
+          // re-opened on every 3 s poll forever.
+          if (!body.ok) {
+            const k = (bo ? bo.n : 0) + 1;
+            s.readBackoff.set(f.key, { n: k, until: now() + Math.min(READ_BACKOFF_MAX_MS, READ_BACKOFF_MS * Math.pow(2, k - 1)) });
+            if (s.readBackoff.size > 200) s.readBackoff.delete(s.readBackoff.keys().next().value);
+            recordError(t.id, body.error + ' — retrying it later');
+            continue;
+          }
+          if (bo) s.readBackoff.delete(f.key);
           const text = T.composeFolderItem({ name: t.name, task: t.config.task, filePath: f.abs, size: f.size,
             mtimeIso: new Date(f.mtimeMs).toISOString(), binary: body.binary, content: body.content, truncated: body.truncated });
-          const r = enqueue(t.id, { text, preview: 'FILE ' + f.name, source: f.abs });
-          if (!r.ok) { delete mine[f.key]; saveSeen(); break; }
+          /* ADMITTED IS NOT FIRED (sweep 2026-09-25): the waiting queue is in memory, so a file is recorded as fired
+             only when its item DISPATCHES (dispatch marks `seenKey`). A restart, an E-STOP or a pause that drops the
+             waiting item leaves the file unmarked in the folder — it fires on a later scan, never silently lost. */
+          const r = enqueue(t.id, { text, preview: 'FILE ' + f.name, source: f.abs, seenKey: f.key });
+          if (!r.ok) break;
           admitted++;
         }
       } catch (e) {
@@ -337,7 +400,7 @@ function makeTriggerRunner(deps) {
   }
 
   /* E-STOP: drop every waiting item; the host kills the in-flight runs through the hubs' inflight maps. */
-  function haltAll() { let n = 0; for (const s of live.values()) { n += s.queue.length; s.queue.length = 0; } return n; }
+  function haltAll() { let n = 0; for (const s of live.values()) n += dropQueue(s); return n; }
   function inflights() { const out = []; for (const s of live.values()) if (s.hub && s.hub._internals && s.hub._internals.inflight) out.push(s.hub._internals.inflight); return out; }
   function seenFor(id) { return Object.assign({}, seen[id] || {}); }
 

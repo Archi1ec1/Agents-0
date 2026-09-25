@@ -49,11 +49,14 @@ function startMockOpenRouter(script) {
           let parsed = null;
           try { parsed = JSON.parse(body); requests.push(parsed); } catch (_) {}
           const turn = decide(parsed);
+          const answer = () => {
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
           res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: turn.text } }] }) + '\n\n');
           res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }) + '\n\n');
           res.write('data: [DONE]\n\n');
           res.end();
+          };
+          if (turn.delayMs) setTimeout(answer, turn.delayMs); else answer();   // a SLOW stage: the run is observably live
         });
         return;
       }
@@ -126,6 +129,7 @@ function twoStagePlan() {
 
 (async () => {
   const mock = await startMockOpenRouter([
+    { when: 'slow-lane-probe', text: 'stage one findings', delayMs: 2500 },   // (sweep) a slow entry run, to watch it live
     { when: 'stage one findings', text: 'final trigger answer' },   // the chain hop (its handoff carries stage one's output)
     { when: 'line trigger', text: 'stage one findings' }           // the entry dock's own turn (the work item header)
   ]);
@@ -208,11 +212,16 @@ function twoStagePlan() {
     A.eq((await api('/api/routing/triggers')).j.triggers.find(t => t.id === wid).fires, 0, 'refused calls never fired');
     const okHook = await hook(wid, { 'X-StarNet-Hook-Key': key });
     A.eq(okHook.status, 202, 'the right key -> 202 accepted: ' + JSON.stringify(okHook.j));
+    A.ok(okHook.j && okHook.j.accepted === true && okHook.j.durable === false, 'the 202 says honestly that the waiting item is not on disk yet (a restart before it runs drops it)');
     const wdone = await waitFor(async () => { const t = (await list()).find(x => x.id === wid); return t && t.lastOutcome ? t : null; }, 30000, 'the webhook fire to finish');
     A.ok(wdone && wdone.lastOutcome.ok === true && wdone.lastOutcome.runs === 2, 'the webhook ran BOTH docks to the OUTBOX: ' + JSON.stringify(wdone && wdone.lastOutcome) + ' err=' + (wdone && wdone.lastError));
     A.ok(mock.requests.some(rq => JSON.stringify(rq).indexOf('blue widget') >= 0), 'the webhook body reached the entry dock');
-    const viaQuery = await hook(wid, null, '?key=' + encodeURIComponent(key), 'plain text ping');
+    const viaQuery = await hook(wid, null, '?key=' + encodeURIComponent(key), 'plain text ping slow-lane-probe');
     A.eq(viaQuery.status, 202, '?key= works for senders that can only set a URL');
+    // (sweep 2026-09-25) a trigger's run is LIVE state: the reconnect snapshot lists it while it runs, or the floor's
+    // 30 s reconcile stood its bay lamp down to IDLE mid-run and then ignored the run's real end
+    const liveSnap = await waitFor(async () => { const r = await api('/api/state/snapshot'); const hit = ((r.j || {}).runs || []).find(x => x && x.agentId === 'research-agent' && x.source === 'host'); return hit || null; }, 2400, 'the trigger run in /api/state/snapshot');
+    A.ok(liveSnap && /^[0-9a-f-]{20,}$/.test(liveSnap.runId || ''), 'the running trigger stage is listed live in /api/state/snapshot: ' + JSON.stringify(liveSnap));
     await waitFor(async () => { const t = (await list()).find(x => x.id === wid); return t && t.fires === 2 && !t.running && !t.queued ? t : null; }, 30000, 'the second webhook fire');
     const regen = await api('/api/routing/triggers/' + wid + '/secret', 'POST', {});
     A.ok(regen.status === 200 && /^whk_/.test(regen.j.secret) && regen.j.secret !== key, 'regenerate answers a NEW secret once');

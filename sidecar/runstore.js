@@ -276,6 +276,10 @@
         // by the owner before it continued — history must never claim an agent wrote the owner's words. Present
         // only when true, so every other row stays byte-identical.
         ...(e.handoffEdited ? { handoffEdited: true } : {}),
+        // STEP TEST ROW (additive, sweep 2026-09-25): TRUE when the run was a step-through test / try-this-step hop,
+        // set by the host that ran it (never re-derived from a stream prefix). The line stats count these apart —
+        // a test is not a job the line shipped or failed. Present only when true.
+        ...(e.stepTest ? { stepTest: true } : {}),
         // LINE WATCH (additive, 2026-09-23): WHICH work line and WHICH bay (dock prop id) this run worked AT, set
         // by the host that dispatched it (hub / chain hop / routine / step test) — never re-derived from a stream
         // prefix. The per-line stats plate and the bay status lamps read these. Present only when known, so every
@@ -321,6 +325,8 @@
       const beforeRunId = o.beforeRunId == null ? '' : str(o.beforeRunId);
       const since = num(o.since);
       const through = num(o.through);
+      // one workstream's rows (a trigger fire / a sample reads back ITS runs — never the station's global newest N)
+      const wantStream = o.streamId == null ? null : str(o.streamId);
       const out = [];
       let afterCursor = !beforeRunId;
       for (let i = rows.length - 1; i >= 0 && out.length < limit; i--) {   // newest-first
@@ -332,6 +338,7 @@
         }
         const row = view(raw);
         if (want != null && row.agentId !== want) continue;
+        if (wantStream != null && str(row.streamId) !== wantStream) continue;
         if (since > 0 && num(row.ts) <= since) continue;
         if (through > 0 && num(row.ts) > through) continue;
         out.push(row);

@@ -100,6 +100,11 @@ function makeStepTest(o) {
   const store = (o.store && typeof o.store.load === 'function' && typeof o.store.save === 'function') ? o.store : null;
   const label = typeof o.label === 'function' ? o.label : function () { return null; };
   const preflight = typeof o.preflight === 'function' ? o.preflight : function () { return null; };
+  const newRunId = typeof o.newRunId === 'function' ? o.newRunId : null;   // the host's run id (persisted before the run starts)
+  const runRow = typeof o.runRow === 'function' ? o.runRow : null;         // runId -> its run row { usd, spendUnknown } | null
+  // every sentence the OWNER reads names an agent by its display name, never its raw id (sweep 2026-09-25: "the belt
+  // from agent does not reach the OUTBOX") — the id stays in the machine fields (hops[].agentId, running.agentId)
+  const who = id => { let n = null; try { n = label(id); } catch (e) { failNote('steptest.label', e); } return n ? String(n) : String(id); };
 
   let sessions = [];                 // oldest first
   const inflight = new Map();        // sessionId -> { abort, superseded, halted, agentId } — halt.js-compatible (E-STOP)
@@ -120,9 +125,27 @@ function makeStepTest(o) {
       let changed = false;
       for (const s of sessions) {
         if (s.state === 'running') {
-          const who = (s.running && s.running.agentId) || (s._pending && s._pending.job && s._pending.job.agentId) || 'a dock';
+          const deadId = (s.running && s.running.agentId) || (s._pending && s._pending.job && s._pending.job.agentId) || null;
+          const whoDied = deadId ? who(deadId) : 'a dock';
+          /* ITS SPEND IS NOT FORGOTTEN (sweep 2026-09-25): the step's cost used to be noted only after the run returned,
+             so a restart mid-run dropped it from the session's LINE BUDGET and the line's day ledger. The running
+             step persisted its run id; if that run's row recorded a cost, it is counted now. An interrupted run's
+             spend is unknown to the row (the station settles it separately) — the session says so, never $0. */
+          const rid = s.running && s.running.runId;
+          let row = null;
+          if (rid && runRow) { try { row = runRow(rid); } catch (e) { failNote('steptest.runRow', e); row = null; } }
+          const usd = row && !row.spendUnknown ? num(row.usd) : 0;
+          let costNote;
+          if (usd > 0) {
+            s._spent = (s._spent || 0) + usd; s.totalUsd = round6(s._spent);
+            if (daySpend) { try { daySpend.note(s.lineId, usd); } catch (e) { failNote('steptest.dayLedger.boot', e); } }
+            costNote = ' It had already cost $' + usd.toFixed(4) + ' — counted against this test and the line\'s daily budget.';
+          } else {
+            s.spendUnknown = true;
+            costNote = ' What it spent before the restart is not known to this test.';
+          }
           s.state = 'failed'; s.running = null; s.paused = null; s.updatedAt = now();
-          s.error = 'the sidecar restarted while ' + who + ' was working on this step — that run died with it and its result was lost. RE-RUN STEP runs ' + who + ' again.';
+          s.error = 'the sidecar restarted while ' + whoDied + ' was working on this step — that run died with it and its result was lost. RE-RUN STEP runs ' + whoDied + ' again.' + costNote;
           changed = true;
         }
       }
@@ -184,7 +207,7 @@ function makeStepTest(o) {
     if (!target) {
       if (curDock ? call(plan.shipsToOutbox, cur, curDock) : call(plan.shipsToOutbox, cur)) return { next: { kind: 'outbox' }, text };
       const why = lineRefusalNote(plan.lineOf, cur, s.lineId, curDock)
-        || (call(plan.get) ? 'the belt from ' + cur + ' does not reach the OUTBOX — the line ends at this bay' : 'no work line is armed any more — the line ends at this bay');
+        || (call(plan.get) ? 'the belt from ' + who(cur) + ' does not reach the OUTBOX — the line ends at this bay' : 'no work line is armed any more — the line ends at this bay');
       return { next: { kind: 'end', reason: why }, text, end: why };
     }
     const loopHop = !!looping;
@@ -212,7 +235,7 @@ function makeStepTest(o) {
       finish(s, 'done', null); return null;
     }
     if (nx.next.kind === 'end') { s.ended = nx.end; finish(s, 'done', null); return null; }
-    if (nx.refusal) { finish(s, 'stopped', 'the test stopped before ' + nx.target + ': ' + nx.refusal); return null; }
+    if (nx.refusal) { finish(s, 'stopped', 'the test stopped before ' + who(nx.target) + ': ' + nx.refusal); return null; }
     const W = s._w;
     last.sent = edited ? editedText : nx.text; last.edited = edited;
     W.hop += 1;
@@ -245,7 +268,7 @@ function makeStepTest(o) {
       // $ and daily guards, the executor's own words.
       const lim = limitsNow(s);
       const refused = preHopRefusal({ visited: {}, target: job.agentId, loopHop: true, hop: 0, loopHops: 0, lim, spent: s._spent || 0, dayLedger: daySpend, lineId: s.lineId, text: job.input, cur: s._w.cur || job.agentId });
-      if (refused) { s._pending = null; finish(s, 'stopped', 'the test stopped before ' + job.agentId + ' ran: ' + refused + ' (this test has spent $' + (s._spent || 0).toFixed(2) + ', re-runs included)'); return; }
+      if (refused) { s._pending = null; finish(s, 'stopped', 'the test stopped before ' + who(job.agentId) + ' ran: ' + refused + ' (this test has spent $' + (s._spent || 0).toFixed(2) + ', re-runs included)'); return; }
 
       const W = s._w;
       const turn = job.entry ? String(job.input) : hopTurn({ handoffText: o.handoffPrompt, stageBrief: plan.stageBrief, loopGateAfter: plan.loopGateAfter,
@@ -258,6 +281,10 @@ function makeStepTest(o) {
       let r = null;
       try {
         const dr = { agentId: job.agentId, entry: !!job.entry, text: turn, streamId: s.streamId, sessionId: s.id, signal: ac.signal, edited: !!job.edited, lineId: s.lineId };
+        // the run's id is chosen HERE and persisted with the running step before it starts, so a restart mid-run can
+        // find that run's row and count what it cost (sweep 2026-09-25) — see the boot reconcile above
+        const runId = newRunId ? String(newRunId() || '') : '';
+        if (runId) { dr.runId = runId; if (s.running) { s.running.runId = runId; persist(); } }
         if (job.dockId) dr.dockId = job.dockId;
         // LINE WATCH (additive): WHO handed this dock its crate, so the host can ride the handoff crate from that bay
         if (!job.entry && job.from) dr.from = job.from;
@@ -272,7 +299,7 @@ function makeStepTest(o) {
       if (daySpend && usd) { try { daySpend.note(s.lineId, usd); } catch (e) { failNote('steptest.dayLedger', e); } }
       const output = typeof r.text === 'string' ? r.text : '';
       const stoppedBy = rec.halted ? 'E-STOP was pressed — the test stopped mid-run' : (s._stop ? 'stopped by you mid-run' : null);
-      const err = stoppedBy || (r.error ? job.agentId + ' failed: ' + r.error : (!output.trim() ? job.agentId + ' returned nothing' : null));
+      const err = stoppedBy || (r.error ? who(job.agentId) + ' failed: ' + r.error : (!output.trim() ? who(job.agentId) + ' returned nothing' : null));
       s.hops.push({
         i: s.hops.length, agentId: job.agentId, dockId: job.dockId || null, agentLabel: call(label, job.agentId) || null, pass,
         input: String(job.input), output, usd: round6(usd), ms: Math.max(0, (typeof r.ms === 'number' && isFinite(r.ms)) ? r.ms : now() - t0),
@@ -377,9 +404,19 @@ function makeStepTest(o) {
     return answer(s);
   }
 
+  /* THE PREVIEW IS READ NOW, NOT AT PAUSE TIME (sweep 2026-09-25): a bay added / crewed on the floor while paused
+     changes what the paused crate meets next. CONTINUE already resolves it from the current plan; the paused view
+     re-reads the same side-effect-free preview (chainPeek) on every GET, so the panel never shows "EXACT TEXT <the
+     old next dock> WILL GET" after the floor changed. The paused text itself is untouched. */
+  function freshPreview(s) {
+    if (!s || s.state !== 'paused' || !s.paused || !s._w) return;
+    const nx = resolveNext(s, null, false);
+    if (nx && nx.next) s.paused.next = nx.next;
+  }
   function get(id) {
-    if (id == null) { const a = active(); return { ok: true, session: view(a || sessions[sessions.length - 1] || null) }; }
+    if (id == null) { const a = active(); freshPreview(a); return { ok: true, session: view(a || sessions[sessions.length - 1] || null) }; }
     const s = byId(id);
+    if (s) freshPreview(s);
     return s ? answer(s) : refuse('no step-through test with id "' + String(id).slice(0, 80) + '" — it finished long ago or never existed.');
   }
 

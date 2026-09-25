@@ -290,7 +290,7 @@ const WorkflowPanel = (() => {
         if (col.gate) nodes.push({ kind: 'gate', gate: col.gate, propId: col.gate.propId });
       });
       nodes.push({ kind: 'outbox', propId: f.outbox.propId, cls: 'wf-term', ok: f.outbox.reached,
-        html: '<span class="k">OUTBOX</span><span class="t">RESULT</span><span class="a">' + (f.outbox.reached ? 'the line ends here' : f.outbox.propId ? 'not connected yet' : 'no OUTBOX') + '</span>' });
+        html: '<span class="k">OUTBOX</span><span class="t">RESULT</span><span class="a">' + (f.outbox.reached ? 'the line ends here' : f.outbox.propId ? (f.outbox.reachedOnceCrewed ? 'connected · waiting on agents' : 'not connected yet') : 'no OUTBOX') + '</span>' });
     } else if (S.lone) {
       nodes.push({ kind: 'col', col: { docks: [{ propId: S.lone, agentId: (prop(S.lone) || {}).agentId || null, role: (prop(S.lone) || {}).role || null, routed: false }], mode: 'single' }, ok: false });
     }
@@ -399,7 +399,7 @@ const WorkflowPanel = (() => {
     }
     html += '<button type="button" class="bb sm" id="wf-done">✓ DONE</button>';
     foot.innerHTML = html;
-    const b1 = $('#wf-steptest'); if (b1) b1.onclick = () => { H.sfx('click'); S.view = 'test'; paint(true); };
+    const b1 = $('#wf-steptest'); if (b1) b1.onclick = () => { H.sfx('click'); S.view = 'test'; paint(true); if (s && s.state === 'paused') refreshPaused(); };
     const b2 = $('#wf-back'); if (b2) b2.onclick = () => { H.sfx('click'); S.view = 'edit'; paint(true); };
     const b3 = $('#wf-sample'); if (b3) b3.onclick = () => { H.runSample(c, { text: (S.testJob[S.lineKey] || '').trim() || undefined, onUpdate: () => paint(false) }); };
     $('#wf-done').onclick = () => { H.sfx('click'); close(); };
@@ -464,6 +464,8 @@ const WorkflowPanel = (() => {
       else if (nb.next.length) to = nb.next.map(pid => dockLabel(f, pid)).join(' or ');
       else if (!d.agentId) to = 'decided once it has an agent';
       else if (f.outbox.reached && !d.deadEnd) to = 'the OUTBOX';
+      // the belt IS there — the bay it leads to just has no agent yet (never "connect a belt" for a belt that exists)
+      else if (f.probeNext && f.probeNext[p.id]) to = 'nowhere yet — ' + f.probeNext[p.id].map(pid => dockLabel(f, pid)).join(' or ') + ' needs an agent';
       else to = d.deadEnd ? 'nowhere — connect a belt to the next BAY or the OUTBOX' : 'no onward connection confirmed yet';
     }
     return { gets, to };
@@ -635,6 +637,9 @@ const WorkflowPanel = (() => {
       const tick = s => {
         if (!s) return reject(new Error('session lost'));
         if (!WL().isLive(s) || (s.single && s.state !== 'running')) return resolve(s);
+        // the panel closed: stop polling (a closed panel must not keep asking the sidecar for ~14 minutes). The run itself
+        // is real and carries on — its result lands in COMMS and the run history (sweep 2026-09-25)
+        if (!el) return reject(new Error('the panel was closed while this step ran — it kept running; its result is in COMMS'));
         if (++n > 1200) return reject(new Error('the step is still running — check COMMS'));
         setTimeout(() => api('/api/routing/steptest/' + encodeURIComponent(s.id)).then(r => tick(r.j && r.j.session)).catch(reject), 700);
       };
@@ -670,9 +675,9 @@ const WorkflowPanel = (() => {
         + (r.connected ? '' : ' · <span class="trg-warn">not connected</span>') + '</div></div>').join('');
     const feed = H.feedState();
     const feedTxt = !feed.known ? 'Checking what feeds this floor…' : feed.fed ? '✓ FED — a channel, an armed routine, a watched folder or a webhook is wired to drop work on this floor.' : 'NO FEED — nothing is wired to drop work on this floor yet.';
-    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + thumb(d.agentId, 16, 20, 'wf-ithumb') + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
+    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + thumb(d.agentId, 16, 20, 'wf-ithumb') + esc(dockLabel(f, d.propId)) + '</button>';   // the BAY, not just the agent: one agent may crew several (sweep 2026-09-25)
     const dockHint = pid => { const order = docks.map(d => d.propId), i = order.indexOf(pid); if (i <= 0) return 'starts at the first step — the whole line runs, ' + docks.length + ' step' + (docks.length === 1 ? '' : 's');
-      return 'skips ' + order.slice(0, i).map(x => nameOf(docks[order.indexOf(x)].agentId)).join(' and ') + ' — the line runs from ' + nameOf(docks[i].agentId) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
+      return 'skips ' + order.slice(0, i).map(x => dockLabel(f, x)).join(' and ') + ' — the line runs from ' + dockLabel(f, pid) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
     const LD = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_DEFAULTS) || { maxHops: 6, maxUsdPerMessage: 2, maxUsdPerDay: null };
     const LC = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_CEILINGS) || { maxHops: 24, maxUsdPerMessage: 50, maxUsdPerDay: 500 };
     const lim0 = (p.limits && typeof p.limits === 'object') ? p.limits : {};
@@ -1149,6 +1154,25 @@ const WorkflowPanel = (() => {
       }).catch(() => { S.sessionErr = 'sidecar unreachable — the test may still be running'; paint(!typing()); S.pollTimer = setTimeout(poll, 2000); });
     }, 700);
   }
+  /* (sweep 2026-09-25) THE FLOOR FIRST: the sidecar resolves a paused crate's next dock (and a re-run's brief) from the
+     plan it HOLDS — a bay added or crewed in the panel reaches it only when the plan is posted. Every verb that walks
+     the line flushes the plan first (as the brief rewrite always did): CONTINUE after "add a BAY" + crewing it used to
+     end the test at the old plan's dead end. */
+  function afterFlush(fn) {
+    S.busy = true; paint(true);
+    H.planGate(comp()).then(gate => {
+      S.busy = false;
+      if (gate && gate.refuse) { S.sessionErr = gate.refuse; H.sfx('bad'); paint(true); return; }
+      fn();
+    }, () => { S.busy = false; fn(); });
+  }
+  // re-read a paused session after the floor may have changed: the server re-previews the next dock on GET
+  function refreshPaused() {
+    const id = S.session && S.session.id; if (!id) return;
+    H.planGate(comp()).then(() => api('/api/routing/steptest/' + encodeURIComponent(id))).then(r => {
+      if (el && r && r.j && r.j.session && S.session && S.session.id === id) { S.session = r.j.session; paint(!typing()); }
+    }).catch(() => {});
+  }
   function sessionCall(verb, body) {
     const s = S.session; if (!s) return Promise.resolve();
     S.busy = true; paint(true);
@@ -1210,7 +1234,7 @@ const WorkflowPanel = (() => {
     const stp = $('#wf-st-stop'); if (stp) stp.onclick = () => sessionCall('stop');
     wirePaused(s, f);
     const back = $('#wf-hop-back'); if (back) back.onclick = () => { S.hop = null; paint(true); };
-    const rew = $('#wf-hop-rewind'); if (rew) rew.onclick = () => { const i = S.hop; S.hop = null; H.sfx('click'); sessionCall('rewind', { hop: i }); };
+    const rew = $('#wf-hop-rewind'); if (rew) rew.onclick = () => { const i = S.hop; S.hop = null; H.sfx('click'); afterFlush(() => sessionCall('rewind', { hop: i })); };
   }
   function hopDetailHTML(s, i) {
     const h = s.hops[i];
@@ -1244,7 +1268,7 @@ const WorkflowPanel = (() => {
         + '<textarea id="wf-rebrief-in" data-keep="rebrief:' + esc(pid) + '" class="wf-io" rows="4">' + esc(p.brief || '') + '</textarea>'
         + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="wf-rebrief-go">↻ SAVE BRIEF &amp; RE-RUN ' + esc(nameOf(h.agentId)) + '</button></div></details>' : '')
       + (pid && (nextPid || toOut) ? '<details class="wf-more" id="wf-addbay"><summary>Add a BAY before ' + esc(nextPid ? dockLabel(f, nextPid) : 'the OUTBOX') + '</summary>'
-        + '<p class="wf-help">It is placed on the floor between ' + esc(nameOf(h.agentId)) + ' and ' + esc(nx.label) + ', and the paused work rides into it when you continue.</p>'
+        + '<p class="wf-help">It is placed on the floor between ' + esc(dockLabel(f, pid)) + ' and ' + esc(nextPid ? dockLabel(f, nextPid) : nx.label) + ', and the paused work rides into it when you continue.</p>'
         + '<div class="wf-chips">' + ['REVIEWER', 'RESEARCHER', 'WRITER', 'GENERALIST'].map(r => '<button type="button" class="wf-chip" data-addbay="' + r + '">' + r + '</button>').join('') + '</div></details>' : '')
       + '</section>';
   }
@@ -1261,10 +1285,10 @@ const WorkflowPanel = (() => {
     };
     ta.addEventListener('input', sync);
     rs.onclick = () => { ta.value = s.paused.text; sync(); };
-    cont.onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text; sessionCall('continue', ed ? { text: ta.value } : {}); };
-    $('#wf-rerun').onclick = () => { H.sfx('click'); sessionCall('rerun'); };
-    $('#wf-toend').onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text;
-      sessionCall('pause', { pause: 'none' }).then(() => { if (S.session && S.session.state === 'paused') sessionCall('continue', ed ? { text: ta.value } : {}); }); };
+    cont.onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text, text = ta.value; afterFlush(() => sessionCall('continue', ed ? { text } : {})); };
+    $('#wf-rerun').onclick = () => { H.sfx('click'); afterFlush(() => sessionCall('rerun')); };
+    $('#wf-toend').onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text, text = ta.value;
+      afterFlush(() => sessionCall('pause', { pause: 'none' }).then(() => { if (S.session && S.session.state === 'paused') sessionCall('continue', ed ? { text } : {}); })); };
     $('#wf-st-stop2').onclick = () => { H.sfx('click'); sessionCall('stop'); };
     const rb = $('#wf-rebrief-go');
     if (rb) rb.onclick = () => {

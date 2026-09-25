@@ -84,4 +84,29 @@ A.ok(/const schedKey = 'trgsched:' \+ p\.id, wantSched = S\.drafts\[schedKey\];[
 A.ok(/api\('\/api\/cron\/preview', 'POST', \{ schedule: v, tz \}\)/.test(panel), 'the schedule preview sends the same tz the create sends');
 A.ok(/const wasOpen = body\.dataset\.card === cardKey/.test(panel), 'an open section stays open across a repaint of the same card');
 
+// (sweep 2026-09-25) every verb that walks the line flushes the plan first: CONTINUE after "add a BAY" + crewing it
+// used to end the test at the OLD plan's dead end ("the belt from agent does not reach the OUTBOX")
+A.ok(/function afterFlush\(fn\) \{[\s\S]{0,120}H\.planGate\(comp\(\)\)\.then\(gate =>/.test(panel), 'afterFlush posts the plan before the verb');
+A.ok(/afterFlush\(\(\) => sessionCall\('continue', ed \? \{ text \} : \{\}\)\)/.test(panel), 'CONTINUE flushes the plan first');
+A.ok(/afterFlush\(\(\) => sessionCall\('rerun'\)\)/.test(panel), 'RE-RUN STEP flushes the plan first');
+A.ok(/afterFlush\(\(\) => sessionCall\('pause', \{ pause: 'none' \}\)/.test(panel), 'RUN TO END flushes the plan first');
+A.ok(/afterFlush\(\(\) => sessionCall\('rewind', \{ hop: i \}\)\)/.test(panel), 'REWIND flushes the plan first');
+A.ok(/if \(s && s\.state === 'paused'\) refreshPaused\(\);/.test(panel), 'returning to a paused test re-reads its preview after posting the floor');
+
+// (sweep 2026-09-25) a belted-but-uncrewed line never tells the owner to lay a belt that exists
+A.ok(/f\.outbox\.reachedOnceCrewed \? 'connected · waiting on agents' : 'not connected yet'/.test(panel), 'the OUTBOX node says "waiting on agents" when only crew is missing');
+A.ok(/else if \(f\.probeNext && f\.probeNext\[p\.id\]\) to = 'nowhere yet — ' \+ f\.probeNext\[p\.id\]\.map\(pid => dockLabel\(f, pid\)\)\.join\(' or '\) \+ ' needs an agent';/.test(panel), 'a crewed bay before an uncrewed one names the bay that needs an agent');
+
+// (sweep 2026-09-25) one agent on two bays: the owner is told WHICH bay ("between NOVA and NOVA" / two "NOVA" chips)
+A.ok(/It is placed on the floor between ' \+ esc\(dockLabel\(f, pid\)\) \+ ' and ' \+ esc\(nextPid \? dockLabel\(f, nextPid\) : nx\.label\)/.test(panel), 'the mid-test insert names the two BAYS it sits between');
+A.ok(/thumb\(d\.agentId, 16, 20, 'wf-ithumb'\) \+ esc\(dockLabel\(f, d\.propId\)\) \+ '<\/button>'/.test(panel), 'a schedule\'s starting-step chips name the bay, not only the agent');
+A.ok(/'skips ' \+ order\.slice\(0, i\)\.map\(x => dockLabel\(f, x\)\)/.test(panel), 'the starting-step hint names bays too');
+
+// (sweep 2026-09-25) a closed panel stops polling a try-this-step run (it used to poll ~14 min after close)
+{
+  const i = panel.indexOf('function waitDone(sess)'), body = panel.slice(i, panel.indexOf('\n  }\n', i));
+  A.ok(i > 0 && /if \(!el\) return reject\(new Error\('the panel was closed while this step ran/.test(body), 'waitDone stops when the panel closes, saying the run carries on');
+  A.ok(body.indexOf('if (!el) return reject') < body.indexOf('setTimeout('), 'the closed check runs before the next poll is scheduled');
+}
+
 A.report('workflow-panel-source');
