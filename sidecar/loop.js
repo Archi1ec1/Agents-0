@@ -1622,6 +1622,7 @@
           if (truncRetries < MAX_TRUNC_RETRIES && !signal.aborted) {
             truncRetries++;                          // a truncation is transient — re-run the turn once
             armRetryDedupe(acc);                     // half an answer already streamed; don't print it twice
+            idleStalls = 0;                          // a truncated stream DID deliver bytes: not an idle stall
             noteRecovery({ stage: 'provider_stream', action: 'retry', reason: 'truncated', attempt: truncRetries, model, delayMs: STREAM_RETRY_DELAYS[0] });
             emitRetry({ attempt: truncRetries, reason: 'truncated', delayMs: STREAM_RETRY_DELAYS[0], maxAttempts: MAX_TRUNC_RETRIES, stage: sawStreamEvent ? 'mid_stream' : 'pre_stream' });
             if (sleep) { const backoff = startWaiting('retry_backoff', false); try { await sleep(STREAM_RETRY_DELAYS[0]); } catch (_) {} backoff.stop(); }
@@ -1779,7 +1780,11 @@
           // (truthful-telemetry law). The same-provider retry has its OWN event, provider.retry, emitted before
           // the backoff so the Commander sees "retry 3/6 in 30s (overloaded)" instead of silence.
           noteRecovery({ stage: 'provider_stream', action: 'retry', reason: decision.reason, attempt: retriesUsed, model, delayMs: decision.delayMs });
-          emitRetry({ attempt: retriesUsed, reason: String(decision.reason || 'transient'), delayMs: decision.delayMs, maxAttempts: MAX_STREAM_RETRIES,
+          // "retry n/6" must not promise rungs the patience budget will refuse: when THIS rung spent the last of it (the
+          // policy shrank it to fit), it is the last local rung, so the total is n. (A server-stated Retry-After is
+          // honored outside the budget and is not predictable here, so it keeps the rung count.)
+          const patienceSpent = decision.ladderMs > 0 && ladderWaitMs >= STREAM_RETRY_PATIENCE_MS;
+          emitRetry({ attempt: retriesUsed, reason: String(decision.reason || 'transient'), delayMs: decision.delayMs, maxAttempts: patienceSpent ? Math.min(retriesUsed, MAX_STREAM_RETRIES) : MAX_STREAM_RETRIES,
             stage: sawStreamEvent ? 'mid_stream' : 'pre_stream', retryAfterMs: cls.retryAfterMs, waitedMs: waitedBefore, patienceMs: STREAM_RETRY_PATIENCE_MS });
           if (sleep) { const backoff = startWaiting('retry_backoff', false); try { await sleep(decision.delayMs); } catch (_) {} backoff.stop(); }
           if (signal.aborted) break;   // a cancel during the backoff ends cleanly below
