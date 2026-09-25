@@ -102,7 +102,11 @@ const msg = (text, extra) => Object.assign({ channel: 'telegram', chatId: '42', 
   // ---- 4. wiring ----
   {
     const src = fs.readFileSync(path.join(root, 'sidecar', 'index.js'), 'utf8');
-    A.ok(/const untrustedEntryRun = entryUntrusted\(o\);/.test(src), 'runOnce derives the origin verdict from host-minted options');
+    A.ok(/const untrustedEntryRun = entryUntrusted\(o\) \|\| recoverySourceEntryUntrusted\(o\);/.test(src), 'runOnce derives the origin verdict from host-minted options, or from the source run a continuation resumes');
+    // crash + resume must not hand a trigger payload Full Access again: the verdict is journaled and read back
+    A.ok(/runJournal\.begin\(\{[\s\S]{0,1200}?untrustedEntry: untrustedEntryRun === true/.test(src), 'the run journal records the untrusted-entry verdict');
+    A.ok(/function recoverySourceEntryUntrusted\(o\) \{[\s\S]{0,400}?runJournal\.inspect\(sourceRunId\)[\s\S]{0,200}?st\.meta\.untrustedEntry === true[\s\S]{0,300}?return true;/.test(src),
+      'a continuation reads its source journal and fails CLOSED (untrusted) when it cannot');
     A.eq((src.match(/fullAccess: stationBypassNow\(\) \|\| agentFullAccessNow\(\) \|\| connectorFullAccess, untrustedEntry: untrustedEntryRun/g) || []).length, 2,
       'BOTH post-taint boundary calls (first check + after the live prompt) carry the origin verdict');
     A.ok(/withholdHostPower: hostPowerWithheld,\s*\n\s*untrustedEntry: untrustedEntryRun,/.test(src), 'delegated workers inherit the origin verdict');

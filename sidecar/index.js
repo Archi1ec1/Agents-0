@@ -1373,6 +1373,19 @@ const RUN_JOURNAL_DIR = path.join(WORKSPACES, '.run-journal');
 const runJournal = makeRunJournal({ dir: RUN_JOURNAL_DIR, fs, path, clock: { now: () => Date.now() }, redact });
 // sec-taint 09-25: a continuation / resumed conversation starts tainted when what it replays was (taint-replay.js)
 const replayedTaint = require('./taint-replay.js').makeReplayedTaint({ journal: runJournal, transcript: transcriptStore });
+// Was the run a recovery continuation resumes STARTED by third-party content? Read from the source's journal; an
+// unreadable journal answers true when the run IS a continuation (narrowing is the only safe failure).
+function recoverySourceEntryUntrusted(o) {
+  const sourceRunId = o && o.recovery && o.recovery.sourceRunId ? String(o.recovery.sourceRunId) : '';
+  if (!sourceRunId) return false;
+  try {
+    const st = runJournal.inspect(sourceRunId);
+    return !!(st && st.meta && st.meta.untrustedEntry === true);
+  } catch (e) {
+    console.warn('[taint] recovery source journal unreadable; treating its entry as untrusted:', (e && e.message) || e);
+    return true;
+  }
+}
 // Recovery is intentionally lazy. Thousands of unresolved/failed journals are audit evidence and
 // must not be discarded, but parsing all of them synchronously before server.listen made startup
 // proportional to lifetime failures. GET /api/run-recoveries pages through the durable files.
@@ -16274,7 +16287,9 @@ async function runOnceCore(o) {
   const hostPowerWithheld = hostPowerWithheldFor(o);
   // a run STARTED by third-party content (trigger payload / forwarded / attachment entry, and its hops + workers):
   // Full Access no longer lifts its taint lock (run-origin.js entryUntrusted, taint.js postTaintBoundary)
-  const untrustedEntryRun = entryUntrusted(o);
+  // A recovery continuation replays its SOURCE run's context, so it inherits the source's untrusted entry from the
+  // journal (begin meta untrustedEntry) — a crash + resume must never hand a trigger payload Full Access again.
+  const untrustedEntryRun = entryUntrusted(o) || recoverySourceEntryUntrusted(o);
   const agentFullAccessNow = () => !hostPowerWithheld && ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
   const stationBypassNow = () => !hostPowerWithheld && (FULL_ACCESS || masterBypassOn());
   // One central, host-minted meaning for "Full Power": station-wide env/master bypass or this agent's
@@ -18539,7 +18554,8 @@ async function runOnceCore(o) {
         userTitle: o.syntheticTrigger ? '' : latestUserText(msgs), startedAt: Date.now(),
         cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '',
         cronJobName: trigger === 'schedule' ? String(o.cronJobName || '').slice(0, 200) : '',
-        initialTaint: execution.taintedBy() || ''   // additive: a continuation of this run restores it (replayedTaint)
+        initialTaint: execution.taintedBy() || '',   // additive: a continuation of this run restores it (replayedTaint)
+        untrustedEntry: untrustedEntryRun === true   // additive: a continuation keeps Full Access off (recoverySourceEntryUntrusted)
       });
       runJournal.checkpoint(runId, { phase: 'initial', turn: 0, messages: msgs });
       execution.startJournal();
