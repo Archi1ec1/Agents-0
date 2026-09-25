@@ -10809,7 +10809,7 @@ async function stepTestRunDock(h) {
   let brief = null;
   if (h.entry) { try { brief = router.stageBrief(h.agentId, h.dockId); } catch (e) { failNote('steptest.brief', e); brief = null; } }
   const system = h.entry ? dockSystem(persona, brief, true) : persona;
-  const runId = crypto.randomUUID();
+  const runId = (typeof h.runId === 'string' && /^[0-9a-f-]{36}$/i.test(h.runId)) ? h.runId : crypto.randomUUID();   // the step test chose + persisted it
   const st = { buf: '', err: null, usd: 0, tools: 0 };
   const sink = (name, payload) => {
     let p; try { p = redact(payload); } catch (_) { p = payload; }
@@ -10897,7 +10897,9 @@ function getStepTest() {
     getTag: (text) => (Classify.getTag ? Classify.getTag(text) : undefined),   // the SAME classifier a FILTER routes by
     label: stepTestLabel,
     now: () => Date.now(),
-    newId: () => 'st_' + crypto.randomUUID().slice(0, 12)
+    newId: () => 'st_' + crypto.randomUUID().slice(0, 12),
+    newRunId: () => crypto.randomUUID(),   // each step's run id, persisted before it runs (restart spend reconcile)
+    runRow: (runId) => runStore.latest(runId)
   });
   return stepTest;
 }
