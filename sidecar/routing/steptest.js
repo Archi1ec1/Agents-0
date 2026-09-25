@@ -400,9 +400,19 @@ function makeStepTest(o) {
     return answer(s);
   }
 
+  /* THE PREVIEW IS READ NOW, NOT AT PAUSE TIME (sweep 2026-09-25): a bay added / crewed on the floor while paused
+     changes what the paused crate meets next. CONTINUE already resolves it from the current plan; the paused view
+     re-reads the same side-effect-free preview (chainPeek) on every GET, so the panel never shows "EXACT TEXT <the
+     old next dock> WILL GET" after the floor changed. The paused text itself is untouched. */
+  function freshPreview(s) {
+    if (!s || s.state !== 'paused' || !s.paused || !s._w) return;
+    const nx = resolveNext(s, null, false);
+    if (nx && nx.next) s.paused.next = nx.next;
+  }
   function get(id) {
-    if (id == null) { const a = active(); return { ok: true, session: view(a || sessions[sessions.length - 1] || null) }; }
+    if (id == null) { const a = active(); freshPreview(a); return { ok: true, session: view(a || sessions[sessions.length - 1] || null) }; }
     const s = byId(id);
+    if (s) freshPreview(s);
     return s ? answer(s) : refuse('no step-through test with id "' + String(id).slice(0, 80) + '" — it finished long ago or never existed.');
   }
 

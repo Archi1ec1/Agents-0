@@ -84,6 +84,15 @@ A.ok(/const schedKey = 'trgsched:' \+ p\.id, wantSched = S\.drafts\[schedKey\];[
 A.ok(/api\('\/api\/cron\/preview', 'POST', \{ schedule: v, tz \}\)/.test(panel), 'the schedule preview sends the same tz the create sends');
 A.ok(/const wasOpen = body\.dataset\.card === cardKey/.test(panel), 'an open section stays open across a repaint of the same card');
 
+// (sweep 2026-09-25) every verb that walks the line flushes the plan first: CONTINUE after "add a BAY" + crewing it
+// used to end the test at the OLD plan's dead end ("the belt from agent does not reach the OUTBOX")
+A.ok(/function afterFlush\(fn\) \{[\s\S]{0,120}H\.planGate\(comp\(\)\)\.then\(gate =>/.test(panel), 'afterFlush posts the plan before the verb');
+A.ok(/afterFlush\(\(\) => sessionCall\('continue', ed \? \{ text \} : \{\}\)\)/.test(panel), 'CONTINUE flushes the plan first');
+A.ok(/afterFlush\(\(\) => sessionCall\('rerun'\)\)/.test(panel), 'RE-RUN STEP flushes the plan first');
+A.ok(/afterFlush\(\(\) => sessionCall\('pause', \{ pause: 'none' \}\)/.test(panel), 'RUN TO END flushes the plan first');
+A.ok(/afterFlush\(\(\) => sessionCall\('rewind', \{ hop: i \}\)\)/.test(panel), 'REWIND flushes the plan first');
+A.ok(/if \(s && s\.state === 'paused'\) refreshPaused\(\);/.test(panel), 'returning to a paused test re-reads its preview after posting the floor');
+
 // (sweep 2026-09-25) a closed panel stops polling a try-this-step run (it used to poll ~14 min after close)
 {
   const i = panel.indexOf('function waitDone(sess)'), body = panel.slice(i, panel.indexOf('\n  }\n', i));

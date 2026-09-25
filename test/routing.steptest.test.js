@@ -205,6 +205,11 @@ const settle = async (R, id) => { for (let i = 0; i < 50; i++) { await R.st.sett
     const p3 = P.compileRoutingPlan(threeDock());
     A.ok(R.router.setPlan(p3).ok, 'the floor re-posts with an editor bay added');
     A.eq(P.lineOf(p3, 'research'), R.lineId, 'fixture: the line keeps its id (its oldest machine is unchanged)');
+    // (sweep 2026-09-25) the paused VIEW re-previews on read: it names the new bay before CONTINUE, not the old next dock
+    const fresh = R.st.get(s.id).session;
+    A.eq(fresh.paused.next.agentId, 'editor', 'a GET while paused previews the NEW next dock from the current plan');
+    A.eq(fresh.paused.text, s.paused.text, 'the paused handoff text itself is untouched');
+    A.eq(fresh.updatedAt, s.updatedAt, 'a preview refresh is not an edit (updatedAt unchanged, so the panel keeps the owner\'s draft)');
     R.st.continue(s.id, {});
     s = await settle(R, s.id);
     A.eq(s.hops[1].agentId, 'editor', 'the crate rode into the NEW bay (resolved from the current plan)');

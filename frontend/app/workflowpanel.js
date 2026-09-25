@@ -399,7 +399,7 @@ const WorkflowPanel = (() => {
     }
     html += '<button type="button" class="bb sm" id="wf-done">✓ DONE</button>';
     foot.innerHTML = html;
-    const b1 = $('#wf-steptest'); if (b1) b1.onclick = () => { H.sfx('click'); S.view = 'test'; paint(true); };
+    const b1 = $('#wf-steptest'); if (b1) b1.onclick = () => { H.sfx('click'); S.view = 'test'; paint(true); if (s && s.state === 'paused') refreshPaused(); };
     const b2 = $('#wf-back'); if (b2) b2.onclick = () => { H.sfx('click'); S.view = 'edit'; paint(true); };
     const b3 = $('#wf-sample'); if (b3) b3.onclick = () => { H.runSample(c, { text: (S.testJob[S.lineKey] || '').trim() || undefined, onUpdate: () => paint(false) }); };
     $('#wf-done').onclick = () => { H.sfx('click'); close(); };
@@ -1152,6 +1152,25 @@ const WorkflowPanel = (() => {
       }).catch(() => { S.sessionErr = 'sidecar unreachable — the test may still be running'; paint(!typing()); S.pollTimer = setTimeout(poll, 2000); });
     }, 700);
   }
+  /* (sweep 2026-09-25) THE FLOOR FIRST: the sidecar resolves a paused crate's next dock (and a re-run's brief) from the
+     plan it HOLDS — a bay added or crewed in the panel reaches it only when the plan is posted. Every verb that walks
+     the line flushes the plan first (as the brief rewrite always did): CONTINUE after "add a BAY" + crewing it used to
+     end the test at the old plan's dead end. */
+  function afterFlush(fn) {
+    S.busy = true; paint(true);
+    H.planGate(comp()).then(gate => {
+      S.busy = false;
+      if (gate && gate.refuse) { S.sessionErr = gate.refuse; H.sfx('bad'); paint(true); return; }
+      fn();
+    }, () => { S.busy = false; fn(); });
+  }
+  // re-read a paused session after the floor may have changed: the server re-previews the next dock on GET
+  function refreshPaused() {
+    const id = S.session && S.session.id; if (!id) return;
+    H.planGate(comp()).then(() => api('/api/routing/steptest/' + encodeURIComponent(id))).then(r => {
+      if (el && r && r.j && r.j.session && S.session && S.session.id === id) { S.session = r.j.session; paint(!typing()); }
+    }).catch(() => {});
+  }
   function sessionCall(verb, body) {
     const s = S.session; if (!s) return Promise.resolve();
     S.busy = true; paint(true);
@@ -1213,7 +1232,7 @@ const WorkflowPanel = (() => {
     const stp = $('#wf-st-stop'); if (stp) stp.onclick = () => sessionCall('stop');
     wirePaused(s, f);
     const back = $('#wf-hop-back'); if (back) back.onclick = () => { S.hop = null; paint(true); };
-    const rew = $('#wf-hop-rewind'); if (rew) rew.onclick = () => { const i = S.hop; S.hop = null; H.sfx('click'); sessionCall('rewind', { hop: i }); };
+    const rew = $('#wf-hop-rewind'); if (rew) rew.onclick = () => { const i = S.hop; S.hop = null; H.sfx('click'); afterFlush(() => sessionCall('rewind', { hop: i })); };
   }
   function hopDetailHTML(s, i) {
     const h = s.hops[i];
@@ -1264,10 +1283,10 @@ const WorkflowPanel = (() => {
     };
     ta.addEventListener('input', sync);
     rs.onclick = () => { ta.value = s.paused.text; sync(); };
-    cont.onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text; sessionCall('continue', ed ? { text: ta.value } : {}); };
-    $('#wf-rerun').onclick = () => { H.sfx('click'); sessionCall('rerun'); };
-    $('#wf-toend').onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text;
-      sessionCall('pause', { pause: 'none' }).then(() => { if (S.session && S.session.state === 'paused') sessionCall('continue', ed ? { text: ta.value } : {}); }); };
+    cont.onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text, text = ta.value; afterFlush(() => sessionCall('continue', ed ? { text } : {})); };
+    $('#wf-rerun').onclick = () => { H.sfx('click'); afterFlush(() => sessionCall('rerun')); };
+    $('#wf-toend').onclick = () => { H.sfx('click'); const ed = ta.value !== s.paused.text, text = ta.value;
+      afterFlush(() => sessionCall('pause', { pause: 'none' }).then(() => { if (S.session && S.session.state === 'paused') sessionCall('continue', ed ? { text } : {}); })); };
     $('#wf-st-stop2').onclick = () => { H.sfx('click'); sessionCall('stop'); };
     const rb = $('#wf-rebrief-go');
     if (rb) rb.onclick = () => {
