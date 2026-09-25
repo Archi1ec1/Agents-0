@@ -102,7 +102,12 @@
     if (!opts.taintedBy || allowedWhenTainted(tool)) return { allow: true, needsConfirmation: false, oneShot: false };
     // FULL ACCESS is the Commander's explicit zero-prompt posture. Taint still remains latched and fenced, but it
     // cannot silently downgrade Full Access into ASK mode. Hardline floors live outside this policy and still win.
-    if (opts.fullAccess === true) return { allow: true, needsConfirmation: false, oneShot: false };
+    // EXCEPT when the run's ENTRY was untrusted third-party content (sec-taint2 09-25, owner decision): a webhook /
+    // watched-folder trigger payload, a forwarded message or a chat attachment — and every hop and delegated worker
+    // downstream of such an entry (host-minted, sidecar/run-origin.js entryUntrusted). There the Commander never
+    // typed the job at all, so "zero prompts" would hand the payload's author the terminal. Owner-typed runs keep
+    // the override exactly as before, including one that later read a web page.
+    if (opts.fullAccess === true && opts.untrustedEntry !== true) return { allow: true, needsConfirmation: false, oneShot: false };
     if (opts.surface !== 'interactive' || opts.hasPrompt !== true) return { allow: false, needsConfirmation: false, oneShot: false };
     if (opts.decision == null) return { allow: false, needsConfirmation: true, oneShot: false };
     const allow = /^(?:once|session|always|full)$/i.test(String(opts.decision || ''));

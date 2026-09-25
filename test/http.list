@@ -42,6 +42,7 @@ test/e2e.summon.test.js
 test/e2e.dispatch-session.test.js
 test/e2e.worker-access.test.js
 test/taint-lineage.e2e.test.js
+test/e2e.trigger-fullaccess-taint.test.js
 test/e2e.pathtrust.test.js
 test/e2e.subagent-background.test.js
 test/google-signin.e2e.test.js
