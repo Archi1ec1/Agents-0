@@ -10199,6 +10199,17 @@ if (require.main === module) {
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));   // Windows console Ctrl+Break (harmless elsewhere)
   } catch (_) {}
+  /* PARENT-REQUESTED GRACEFUL STOP over the IPC channel. Windows has no SIGTERM: a parent's child.kill() is
+     TerminateProcess, so the handlers above never run and background jobs / MCP / LSP children leak. A parent that
+     spawned us WITH an ipc channel (the `starnet` CLI) sends { type: 'starnet.shutdown' } first. No new attack
+     surface: the channel exists only between this process and the parent that created it (no port, no token). */
+  if (typeof process.send === 'function') {
+    try {
+      process.on('message', (m) => { if (m && m.type === 'starnet.shutdown') gracefulShutdown('IPC'); });
+      // the channel must never be what keeps the station alive (the HTTP server is)
+      if (process.channel && typeof process.channel.unref === 'function') process.channel.unref();
+    } catch (e) { failNote('shutdown.ipc', e); }
+  }
 }
 
 /* ---- SSE bridge: forward validated channel/work-item telemetry to the live station HUD ---- */
