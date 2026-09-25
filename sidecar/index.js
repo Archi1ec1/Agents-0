@@ -5430,7 +5430,7 @@ const cronDriver = makeCronDriver({
           emit: sink, signal: h.signal, runId: hopRunId, streamId: o.streamId,
           surface: 'autonomous', trigger: 'schedule', reflect: true,
           station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
-          lineId: h.lineId || undefined, dockId: h.dockId || undefined,   // LINE WATCH: the hop's line + bay on its run row
+          lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
           preloadSkills: o.preloadSkills, requiredPreloads: o.requiredPreloads, workdir: o.workdir, enabledToolsets: o.enabledToolsets,
           // GRANTS NEVER FLOW DOWN A LINE (2026-08-04): every runAgent call here is a DOWNSTREAM hop (stage one
           // ran in the driver, with the job's own grants). Whatever the caller passes, a hop runs ungranted —
@@ -10842,7 +10842,7 @@ async function stepTestRunDock(h) {
       reasoningEffort: cfg.reasoningEffort || cfg.reasoning_effort, system,
       messages: [{ role: 'user', content: h.text }], agentId: h.agentId, isTask: true, emit: sink, signal: h.signal,
       runId, trigger: 'event', streamId: h.streamId,
-      lineId: h.lineId || undefined, dockId: h.dockId || undefined,   // LINE WATCH: the row records the step's line + bay
+      lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId,   // LINE WATCH: the row records the step's line + bay (run.start names its crate)
       initialTaint: h.entry ? null : 'upstream agent output',
       surface: 'autonomous', broadcast: true, reflect: true,   // NO unattendedGrants — the chain-grants law
       station: station || undefined,
@@ -12611,7 +12611,7 @@ function handleLifecycleArmed(req, res) {
      {
        ts: <ms>,                                  // when this snapshot was taken (server clock)
        runs: [ { runId, agentId, startedAt, source } ],   // live runs (runsMeta + the channel hubs' inflight maps)
-                                                          //   source ∈ 'interactive' | 'cron' | 'workshop' | 'telegram' | 'discord' | 'slack' | 'matrix' | 'signal'
+                                                          //   source ∈ 'interactive' | 'cron' | 'workshop' | 'telegram' | 'discord' | 'slack' | 'matrix' | 'signal' | 'host' (line work runOnce drives: trigger/sample hubs, chain hops, step tests)
                                                           //   Channel runs are driven by the messaging hub, which keeps its OWN inflight
                                                           //   map (keyed by chatId) rather than runsMeta — so they are read from the SAME maps E-STOP kills
                                                           //   (telegram/discord hub._internals.inflight). Without this a reconnect would clear a live
@@ -12632,6 +12632,14 @@ function handleStateSnapshot(req, res) {
       out.runs.push({ runId: runId, agentId: (meta && meta.agentId) || null, startedAt: (meta && meta.startedAt) || null, source: (meta && meta.source) || null });
     }
   } catch (_) {}
+  // every run runOnce is driving (hub entry runs, chain hops, step tests, routine hops) — see runOnceTracked
+  try {
+    for (const [runId, meta] of hostLiveRuns) {
+      if (seenRunIds.has(runId)) continue;
+      seenRunIds.add(runId);
+      out.runs.push({ runId: runId, agentId: (meta && meta.agentId) || null, startedAt: (meta && meta.startedAt) || null, source: 'host' });
+    }
+  } catch (e) { failNote('snapshot.hostRuns', e); }
   // WATCHABLE BACKGROUND workers outlive the interactive response that launched them and therefore do not
   // live in runsMeta. Their durable manager owns the real controller + run.start confirmation. Omitting that
   // source made the CREW rail correct until the next reload/SSE reconnect, when reconciliation erased the
@@ -13217,7 +13225,7 @@ async function handleCronRun(req, res) {
                 emit: hopSink, signal: h.signal, runId: hopRunId, streamId: 'cron-' + runId,
                 surface: 'autonomous', trigger: 'schedule', broadcast: true, reflect: true,
                 station: router.stationFor(h.agentId, h.dockId) || undefined,   // the hop's OWN bay room (multi-bay)
-                lineId: h.lineId || undefined, dockId: h.dockId || undefined,   // LINE WATCH: the hop's line + bay on its run row
+                lineId: h.lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined,   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
                 /* GRANTS NEVER FLOW DOWN A LINE (2026-08-04): the unattended grant was approved for the
                    routine's OWN agent (stage one, above) — a downstream hop is a DIFFERENT agent, and a drawn
                    belt must not silently widen its authority. Mirrors the scheduled fire (cron-driver.js). */
@@ -15994,10 +16002,25 @@ async function runOnce(o) {
         o = { ...o, projectRoot: thread.projectRoot || '', workdir: thread.projectRoot || undefined,
           messages: transcriptStore.reconstruct(o.streamId, { limit: 80 }).concat((o.messages || []).slice(-1)) };
       }
-      return runOnceCore(o);
+      return runOnceTracked(o);
     });
   }
-  return runOnceCore(o);
+  return runOnceTracked(o);
+}
+/* HOST RUNS ARE LIVE RUNS (sweep 2026-09-25). The hubs (line triggers, the sample, the dev injector), the chain hops,
+   the step test and the routine hops drive runOnce with their OWN run ids — most never enter runsMeta, so GET
+   /api/state/snapshot did not list them and the floor's 30 s reconcile stood their bay lamp down to IDLE mid-run (and
+   then ignored the run's real end). Every run runOnce drives is registered here from the moment it is admitted
+   (past the stream's queue) until it returns; the snapshot merges it. Only real in-flight LINE runs — never a guess. */
+const hostLiveRuns = new Map();   // runId -> { agentId, startedAt, source }
+async function runOnceTracked(o) {
+  const rid = o && o.runId ? String(o.runId) : '';
+  // LINE work only (a run the host stamped with its line or bay): harness self-talk and plain chats keep their own
+  // registries — this map exists so a bay lamp is never stood down while its run is really working
+  if (!rid || hostLiveRuns.has(rid) || !(o.lineId || o.dockId) || o.internal || o.outputOnly) return runOnceCore(o);
+  hostLiveRuns.set(rid, { agentId: String((o && o.agentId) || 'agent'), startedAt: Date.now(), source: 'host' });
+  try { return await runOnceCore(o); }
+  finally { hostLiveRuns.delete(rid); }
 }
 async function runOnceCore(o) {
   if (updatePreparation.isFrozen()) {
@@ -16018,6 +16041,12 @@ async function runOnceCore(o) {
     }
   }
   const { key, system: rawSystem, messages = [], agentId = 'agent', signal, runId } = o;
+  // LINE WATCH (additive, sweep 2026-09-25): WHICH bay this run works at, and the crate it picked up when the host
+  // knows it — so the floor lights the right bay for an agent that crews several (never the oldest crate's bay).
+  // Extra fields on agent.run.start validate against the frozen contract (obj() has no additionalProperties:false).
+  const runStartExtra = {};
+  if (o.dockId) runStartExtra.dockId = String(o.dockId);
+  if (o.workitemId) runStartExtra.workitemId = String(o.workitemId);
   const runStartedAt = Date.now();
   let system = rawSystem;
   if (o.workdir) {
@@ -16160,7 +16189,7 @@ async function runOnceCore(o) {
     let checked;
     try { checked = await executeCronScript({ id: runId, agentId, script: o.cronScript, workdir: o.workdir, unattendedGrants, scriptTimeoutMs: o.scriptTimeoutMs }, signal); }
     catch (e) {
-      emit('agent.run.start', { agentId, runId, trigger: trigger, model: o.noAgent ? '' : model });
+      emit('agent.run.start', { agentId, runId, trigger: trigger, model: o.noAgent ? '' : model, ...runStartExtra });
       emit('agent.run.error', { agentId, runId, transient: false, message: (e && e.message) || String(e) });
       emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
       return;
@@ -16168,7 +16197,7 @@ async function runOnceCore(o) {
     if (checked.output) {
       const scan = cronGuard.scanAssembled(checked.output, { hasInjectedData: true });
       if (!scan.ok) {
-        emit('agent.run.start', { agentId, runId, trigger: trigger, model: o.noAgent ? '' : model });
+        emit('agent.run.start', { agentId, runId, trigger: trigger, model: o.noAgent ? '' : model, ...runStartExtra });
         emit('agent.run.error', { agentId, runId, transient: false, message: scan.error });
         emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
         return;
@@ -16178,7 +16207,7 @@ async function runOnceCore(o) {
       if (typeof scan.cleaned === 'string') checked.output = scan.cleaned;
     }
     if (o.noAgent || checked.wakeAgent === false) {
-      emit('agent.run.start', { agentId, runId, trigger: trigger, model: '' });
+      emit('agent.run.start', { agentId, runId, trigger: trigger, model: '', ...runStartExtra });
       emit('agent.token', { agentId, runId, delta: (!checked.wakeAgent || !checked.output) ? '[SILENT]' : checked.output });
       emit('agent.run.end', { agentId, runId, reason: 'done', turns: 0, usd: 0 });
       return;
@@ -16189,7 +16218,7 @@ async function runOnceCore(o) {
       execution.latchTaint('scheduled pre-check script');
     }
   } else if (o.noAgent) {
-    emit('agent.run.start', { agentId, runId, trigger: trigger, model: '' });
+    emit('agent.run.start', { agentId, runId, trigger: trigger, model: '', ...runStartExtra });
     emit('agent.run.error', { agentId, runId, transient: false, message: 'script-only routine has no script' });
     emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
     return;
@@ -16209,13 +16238,13 @@ async function runOnceCore(o) {
   // admitted agent always passes (no new slot). On refusal emit the same start→error→end shape every other
   // up-front refusal uses (Codex sign-in / non-tool model), reason 'error', transient (a slot may free up).
   if (!agentLifecycle.canStart(agentId)) {
-    emit('agent.run.start', { agentId, runId, trigger: trigger, model });
+    emit('agent.run.start', { agentId, runId, trigger: trigger, model, ...runStartExtra });
     emit('agent.run.error', { agentId, runId, transient: true, message: 'This agent is being deleted and cannot start new work.' });
     emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
     return;
   }
   if (!concurrencyGate.tryEnter(agentId)) {
-    emit('agent.run.start', { agentId, runId, trigger: trigger, model });
+    emit('agent.run.start', { agentId, runId, trigger: trigger, model, ...runStartExtra });
     emit('agent.run.error', { agentId, runId, transient: true, message: 'Too many agents are working at once (limit ' + concurrencyGate.max() + '). Wait for one to finish, or raise STARNET_MAX_CONCURRENT_AGENTS.' });
     emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
     return;
@@ -16280,7 +16309,7 @@ async function runOnceCore(o) {
         const msg = exhausted
           ? 'Out of managed credit — add credits in the STORE to keep running (or connect your own provider key).'
           : 'Managed credits are unavailable right now — the credits service did not answer (try again, or use your own provider key).';
-        emit('agent.run.start', { agentId, runId, trigger, model });
+        emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
         emit('agent.run.error', { agentId, runId, transient: !exhausted, reason: 'billing', message: msg });
         emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
         return;   // the outer finally releases the concurrency slot; nothing was reserved (billed stays false)
@@ -16294,7 +16323,7 @@ async function runOnceCore(o) {
       const msg = exhausted
         ? 'Out of managed credit — add credits in the STORE to keep running (or connect your own provider key).'
         : 'Managed credits are unavailable right now — the credits service did not answer (try again, or use your own provider key).';
-      emit('agent.run.start', { agentId, runId, trigger, model });
+      emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
       emit('agent.run.error', { agentId, runId, transient: !exhausted, reason: 'billing', message: msg });
       emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
       return;   // the outer finally releases the concurrency slot; nothing was reserved (billed stays false)
@@ -16951,7 +16980,7 @@ async function runOnceCore(o) {
   resolved = enforceEnabledToolsets(resolved, registry, unrestrictedHostNow() ? null : o.enabledToolsets);
   const agentModelBlocker = ImageTask.agentModelBlocker(providerId, model);
   if (agentModelBlocker) {
-    emit('agent.run.start', { agentId, runId, trigger, model });
+    emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
     emit('agent.run.error', { agentId, runId, transient: false, message: agentModelBlocker });
     emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
     return;
@@ -16968,14 +16997,14 @@ async function runOnceCore(o) {
       model
     });
     if (imageBlocker) {
-      emit('agent.run.start', { agentId, runId, trigger, model });
+      emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
       emit('agent.run.error', { agentId, runId, transient: false, message: imageBlocker });
       emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
       return;
     }
   }
   if (Array.isArray(o.preloadSkills) && o.preloadSkills.length && resolved.tools.indexOf('skill.view') < 0) {
-    emit('agent.run.start', { agentId, runId, trigger, model });
+    emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
     emit('agent.run.error', { agentId, runId, transient: false, message: 'This routine requires saved skills, but its per-job toolset/station does not grant skill.view.' });
     emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
     return;
@@ -16985,7 +17014,7 @@ async function runOnceCore(o) {
       const saved = skillStore.view(agentId, ref, { bump: false });
       const verdict = saved ? skillGate.verify(saved) : null;
       if (!saved || (verdict && verdict.visible === false)) {
-        emit('agent.run.start', { agentId, runId, trigger, model });
+        emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
         emit('agent.run.error', { agentId, runId, transient: false, message: !saved ? ('Required routine skill "' + ref + '" no longer exists.') : ('Required routine skill "' + ref + '" is withheld by the skill guard.') });
         emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
         return;
@@ -17205,7 +17234,7 @@ async function runOnceCore(o) {
     let codexToken;
     try { codexToken = await ensureCodexAccessToken(); }
     catch (e) {
-      emit('agent.run.start', { agentId, runId, trigger: trigger, model });
+      emit('agent.run.start', { agentId, runId, trigger: trigger, model, ...runStartExtra });
       emit('agent.run.error', { agentId, runId, transient: !(e && e.reloginRequired), message: 'ChatGPT sign-in needed: ' + ((e && e.message) || e) });
       emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
       return;
@@ -17218,7 +17247,7 @@ async function runOnceCore(o) {
     let oauthToken;
     try { oauthToken = await ensureOAuthAccessToken(providerId); }
     catch (e) {
-      emit('agent.run.start', { agentId, runId, trigger: trigger, model });
+      emit('agent.run.start', { agentId, runId, trigger: trigger, model, ...runStartExtra });
       emit('agent.run.error', { agentId, runId, transient: !(e && e.reloginRequired), message: oauthLabel(providerId) + ' sign-in needed: ' + ((e && e.message) || e) });
       emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
       return;
@@ -17425,7 +17454,7 @@ async function runOnceCore(o) {
   // a task needs tool calls — refuse a model we KNOW can't call tools, up front, with an actionable message
   // (supportsTools returns null when the catalog is cold, so this never false-refuses a real model).
   if (isTask && provider.supportsTools(model) === false) {
-    emit('agent.run.start', { agentId, runId, trigger: trigger, model });
+    emit('agent.run.start', { agentId, runId, trigger: trigger, model, ...runStartExtra });
     emit('agent.run.error', { agentId, runId, transient: false, message: 'The model "' + model + '" does not support tool calls, so it can\'t run tasks. Pick a tool-capable model (e.g. anthropic/claude-sonnet-4.6 or openai/gpt-4o) on the connect screen.' });
     emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
     return;
@@ -18340,7 +18369,7 @@ async function runOnceCore(o) {
       runJournal.checkpoint(runId, { phase: 'initial', turn: 0, messages: msgs });
       execution.startJournal();
     } catch (e) {
-      emit('agent.run.start', { agentId, runId, trigger, model });
+      emit('agent.run.start', { agentId, runId, trigger, model, ...runStartExtra });
       emit('agent.run.error', { agentId, runId, transient: false, message: 'Run could not start safely because its recovery journal could not be persisted: ' + String((e && e.message) || e) });
       emit('agent.run.end', { agentId, runId, reason: 'error', turns: 0, usd: 0 });
       return;

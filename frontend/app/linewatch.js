@@ -85,7 +85,16 @@
         const rid = str(p.runId), aid = str(p.agentId);
         if (!rid || !aid || runs.has(rid)) return;   // observed twice (local harness + SSE echo)
         const q = pending.get(aid);
-        const w = (q && q.length) ? q.shift() : null;   // the OLDEST placement for this agent is the one it picked up
+        // WHICH crate this run picked up (sweep 2026-09-25): the run start names its crate (workitemId) or its bay
+        // (dockId) when the host knows it — an agent crewing two bays must light the bay it really works at, never the
+        // bay of its oldest crate. Only a start that names neither falls back to the OLDEST placement for the agent.
+        let wi = -1;
+        if (q && q.length) {
+          if (p.workitemId) wi = q.findIndex(x => x.workitemId === str(p.workitemId));
+          if (wi < 0 && p.dockId) wi = q.findIndex(x => x.dockId === str(p.dockId));
+          if (wi < 0) wi = 0;
+        }
+        const w = wi >= 0 ? q.splice(wi, 1)[0] : null;
         if (q && !q.length) pending.delete(aid);
         const rec = { runId: rid, agentId: aid, dockId: w ? w.dockId : null, lineId: w ? w.lineId : null, workitemId: w ? w.workitemId : null,
           steptest: w ? w.steptest : null, preview: w ? w.preview : null, startedAt: now, usd: 0, error: null, ended: null };
@@ -106,7 +115,10 @@
       }
       if (name === 'agent.run.end') {
         const r = runs.get(str(p.runId));
-        if (!r || r.ended) return;
+        // a run the snapshot reconcile stood down ('unknown' — it was not listed live, e.g. mid provider-retry) still
+        // reports its REAL end when it arrives: that end is the truth the lamp owes (sweep 2026-09-25 — a failed run
+        // whose end was ignored left the bay IDLE instead of FAILED). Only a real end already recorded is final.
+        if (!r || (r.ended && r.ended.reason !== 'unknown')) return;
         const reason = str(p.reason) || 'done';
         r.ended = { reason, at: now, usd: fin(p.usd), turns: fin(p.turns) };
         if (r.dockId) {

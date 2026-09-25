@@ -1803,7 +1803,7 @@
                 // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
                 station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
                 taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel,
-                lineId: lineId || undefined, dockId: h.dockId || undefined   // LINE WATCH: the hop's line + bay on its run row
+                lineId: lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
             if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(h.agentId, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }

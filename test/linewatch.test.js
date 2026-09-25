@@ -156,6 +156,52 @@ A.eq(LW.statsRow({ runs: 2, shipped: 0, failed: 1, usdToday: 1.5, capUsdPerDay: 
 A.eq(LW.statsRow({ runs: 2, shipped: 0, failed: 1, usdToday: 1.5, capUsdPerDay: null, medianMs: 61000, spendDay: 'utc' })[3], ['$ TODAY (UTC)', '$1.50 · no cap'], 'a UTC-day $ is labelled (UTC) in the panel');
 A.eq(LW.plateLines({ runs: 1, shipped: 1, failed: 0, usdToday: 0.5, capUsdPerDay: 5, medianMs: null, spendDay: 'utc' }), ['1 RUN · 1 SHIPPED · 0 FAILED', '$0.500 / $5.00 TODAY (UTC)', 'TODAY · 1 RUN · 1 SHIPPED · 0 FAILED · $0.500 / $5.00 (UTC DAY)'], 'the plate says the $ day is UTC');
 A.eq(LW.fmtDur(61000), '1m', 'minute durations');
+// ---- (sweep 2026-09-25) a run start that NAMES its bay lights THAT bay, not the agent's oldest crate's bay ----
+{
+  const m = LW.create({});
+  m.onEvent('workitem.placed', { workitemId: 'x1', agentId: 'quill', dockId: 'bA', lineId: 'L', kind: 'trigger' }, 100);
+  m.onEvent('workitem.placed', { workitemId: 'x2', agentId: 'quill', dockId: 'bC', lineId: 'L2', kind: 'trigger' }, 110);
+  m.onEvent('agent.run.start', { agentId: 'quill', runId: 'rc', trigger: 'event', dockId: 'bC' }, 120);
+  A.eq(m.status('bC', 130).state, 'working', 'the run that named bay C lights bay C');
+  A.ok(m.status('bA', 130).state !== 'working', 'bay A (the OLDER crate) is not claimed as working');
+  A.eq(m.runOfWorkitem('x2').runId, 'rc', 'the run is paired with the crate at its own bay');
+  m.onEvent('workitem.placed', { workitemId: 'x3', agentId: 'mira', dockId: 'bB', kind: 'chain' }, 200);
+  m.onEvent('workitem.placed', { workitemId: 'x4', agentId: 'mira', dockId: 'bB', kind: 'chain' }, 210);
+  m.onEvent('agent.run.start', { agentId: 'mira', runId: 'rm', trigger: 'event', dockId: 'bB', workitemId: 'x4' }, 220);
+  A.eq(m.runOfWorkitem('x4').runId, 'rm', 'a start that names its crate pairs with exactly that crate');
+  A.eq(m.runOfWorkitem('x3'), null, 'not the older one');
+  m.onEvent('agent.run.start', { agentId: 'quill', runId: 'ra', trigger: 'event' }, 300);
+  A.eq(m.status('bA', 310).state, 'working', 'a start that names nothing still falls back to the oldest crate');
+}
+
+// ---- (sweep 2026-09-25) the SIDECAR names the bay on agent.run.start (additive fields, frozen contract intact) ----
+{
+  const fs = require('fs'), path = require('path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  const core = src.slice(src.indexOf('async function runOnceCore(o) {'));
+  A.ok(/if \(o\.dockId\) runStartExtra\.dockId = String\(o\.dockId\);/.test(core) && /if \(o\.workitemId\) runStartExtra\.workitemId = String\(o\.workitemId\);/.test(core), 'runOnceCore carries the run\'s bay + crate');
+  const starts = (core.slice(0, core.indexOf('\n}\n')).match(/emit\('agent\.run\.start', \{[^}]*\}\)/g) || []);
+  A.ok(starts.length > 5 && starts.every(e => /\.\.\.runStartExtra/.test(e)), 'every run.start runOnceCore emits names them (' + starts.length + ')');
+  const hub = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'channels', 'hub.js'), 'utf8');
+  A.ok(/dockId: h\.dockId \|\| undefined, workitemId: h\.workitemId \|\| undefined/.test(hub), 'a hub line hop passes its crate id to the run');
+  const ev = require('../shared/events.js');
+  const v = ev.validate ? ev.validate('agent.run.start', { agentId: 'a', runId: 'r', trigger: 'event', model: 'm', dockId: 'p1', workitemId: 'w1' }) : { ok: true };
+  A.ok(v === true || (v && (v.ok === true || v.valid === true)) || (Array.isArray(v) && !v.length), 'the frozen agent.run.start contract accepts the additive fields: ' + JSON.stringify(v));
+}
+
+// ---- (sweep 2026-09-25) a run the snapshot dropped still reports its REAL end: a failure lights FAILED ----
+{
+  const m = LW.create({});
+  m.onEvent('workitem.placed', { workitemId: 'y1', agentId: 'nova', dockId: 'bA', lineId: 'L', kind: 'trigger' }, 1000);
+  m.onEvent('agent.run.start', { agentId: 'nova', runId: 'ry', trigger: 'event', dockId: 'bA' }, 1010);
+  m.reconcileLive([], 60000, 15000);   // a snapshot that did not list the run (e.g. mid provider-retry backoff)
+  A.eq(m.status('bA', 60010).state, 'idle', '(the snapshot stood the lamp down)');
+  m.onEvent('agent.run.error', { agentId: 'nova', runId: 'ry', message: 'provider 500' }, 90000);
+  m.onEvent('agent.run.end', { agentId: 'nova', runId: 'ry', reason: 'error' }, 90010);
+  A.eq(m.status('bA', 90020).state, 'failed', 'the run\'s REAL end still lands: the bay lamp goes FAILED');
+  A.eq(m.lastOutcome('bA').runId, 'ry', 'with that run as the outcome');
+}
+
 const mid = LW.localMidnight(Date.UTC(2026, 8, 23, 15, 0, 0));
 A.eq(new Date(mid).getHours() + new Date(mid).getMinutes(), 0, 'local midnight');
 
