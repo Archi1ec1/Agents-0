@@ -8,7 +8,8 @@
    DEDUPE is by name+mtime+size (triggers.fileKey), recorded in a durable per-trigger `seen` map the host
    persists, so a restart never refires an old file and a CHANGED file (new mtime/size) fires once more.
    ARMING baselines the folder: every file already there when a trigger is created/enabled/re-pointed is
-   recorded as seen (value 0) and never fires — only files that land AFTER arming do.
+   recorded as seen (stamped with the arming time — trigger-runner create/update) and never fires — only files that
+   land AFTER arming do.
 
    Injected fs/path/clock only (determinism law). The host owns the timer, the seen-store and admission.
 
@@ -105,7 +106,9 @@ function makeFolderPolicy(deps) {
   const fsp = d.fsp, P = d.pathMod;
   if (!fsp || !P) throw new Error('trigger-folder policy: fsp and pathMod are required');
   const winish = d.winish === true;
-  const list = fn => { try { return (typeof fn === 'function' ? fn() : []) || []; } catch (e) { void e; return []; } };
+  /* FAIL CLOSED (2026-09-24): a root reader that THROWS answers null, never [] — an empty system/forbidden list
+     would silently skip the very checks that keep the Windows folder and the station's own data out. check() refuses on null. */
+  const list = fn => { try { return (typeof fn === 'function' ? fn() : []) || []; } catch (e) { failNote('trigger.folder.policy.roots', e); return null; } };
   const hardline = typeof d.hardlineReason === 'function' ? d.hardlineReason : () => null;
   const norm = s => { let v = P.resolve(String(s)); const root = P.parse(v).root; while (v.length > root.length && /[\\/]$/.test(v)) v = v.slice(0, -1); return winish ? v.toLowerCase() : v; };
   function inside(child, parent) {
@@ -114,7 +117,9 @@ function makeFolderPolicy(deps) {
     const rel = P.relative(p, c);
     return !!rel && !rel.startsWith('..') && !P.isAbsolute(rel);
   }
-  async function realOr(p) { try { return await fsp.realpath(p); } catch (e) { void e; return p; } }
+  // the REALPATH or null: an unresolvable path is refused, never judged by its unresolved spelling (a junction the
+  // jail cannot see through could otherwise smuggle a system folder past every check below)
+  async function realOr(p) { try { return await fsp.realpath(p); } catch (e) { failNote('trigger.folder.policy.realpath', e); return null; } }
 
   async function check(raw) {
     const s = String(raw == null ? '' : raw).trim();
@@ -126,14 +131,17 @@ function makeFolderPolicy(deps) {
     try { st = await fsp.stat(s); } catch (e) { void e; return { ok: false, code: 'missing', error: 'that folder does not exist: ' + s }; }
     if (!st.isDirectory()) return { ok: false, code: 'notdir', error: 'that path is a file, not a folder: ' + s };
     const real = await realOr(P.resolve(s));
+    if (!real) return { ok: false, code: 'unresolved', error: 'the folder\'s real location could not be resolved — refused: ' + s };
     const rhr = hardline(real, real);
     if (rhr) return { ok: false, code: 'hardline', error: rhr };
     if (norm(real) === norm(P.parse(real).root)) return { ok: false, code: 'system', error: 'a whole drive cannot be watched — choose a specific folder' };
-    for (const sys of list(d.systemRoots)) if (sys && inside(real, sys)) return { ok: false, code: 'system', error: 'system folders cannot be watched: ' + real };
-    for (const f of list(d.forbiddenRoots)) if (f && inside(real, f)) return { ok: false, code: 'station', error: 'the station\'s own data folder cannot be watched (agents write there): ' + real };
-    const homes = list(d.homeRoots).filter(Boolean);
+    const sysRoots = list(d.systemRoots), forbidden = list(d.forbiddenRoots);
+    if (!sysRoots || !forbidden) return { ok: false, code: 'policy', error: 'the station could not read its protected-folder list — refused (try again)' };
+    for (const sys of sysRoots) if (sys && inside(real, sys)) return { ok: false, code: 'system', error: 'system folders cannot be watched: ' + real };
+    for (const f of forbidden) if (f && inside(real, f)) return { ok: false, code: 'station', error: 'the station\'s own data folder cannot be watched (agents write there): ' + real };
+    const homes = (list(d.homeRoots) || []).filter(Boolean);
     for (const h of homes) if (norm(real) === norm(h)) return { ok: false, code: 'broad', error: 'your whole home folder is too broad — choose a specific folder inside it' };
-    const blessed = list(d.blessedRoots).filter(Boolean);
+    const blessed = (list(d.blessedRoots) || []).filter(Boolean);
     const allowed = homes.some(h => inside(real, h)) || blessed.some(b => inside(real, b));
     if (!allowed) return { ok: false, code: 'outside', error: 'only folders inside your home folder or a project you added can be watched: ' + real };
     return { ok: true, path: real };

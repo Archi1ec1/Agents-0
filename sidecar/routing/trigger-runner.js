@@ -25,8 +25,27 @@
      deps.watcher (trigger-folder makeFolderWatcher), deps.now(), deps.newId(), deps.warn(msg) */
 'use strict';
 const T = require('./triggers.js');
+const Pipeline = require('../../frontend/app/pipeline.js');
 
 const MAX_PENDING = 5;   // work items waiting behind the one in flight, per trigger — a burst beyond this is refused
+
+/* crewedDocksOnLine(plan, lineId?) -> the reached, crewed entry points of a line (lineId null = any line). Side-effect
+   free and lane-choice-blind (plan.reach / plan.reachDock are BFS answers over every junction lane), so it can
+   refuse but never names the dock a real dispatch will take.
+   MULTI-BAY (2026-09-24): the question is asked of the DOCK layer — reachDock + lineOfDock — because an agent that
+   crews bays on two lines has ONE lineOfAgent entry (its entry dock's line): reading the agent view refused a
+   working line-2 trigger "routes work to no crewed dock" and painted the floor NO FEED. Only a plan with no dock
+   layer at all (an older compile) falls back to the agent view. Shared by the trigger preflight and the sample route. */
+function crewedDocksOnLine(plan, lineId) {
+  if (!plan || typeof plan !== 'object') return [];
+  const want = lineId == null || lineId === '' ? null : String(lineId);
+  if (Pipeline.hasDockLayer(plan)) {
+    const L = Pipeline.dockLayer(plan);
+    return Object.keys(L.reachDock || {}).filter(d => L.reachDock[d] && L.agentOfDock[d] && (want == null || L.lineOfDock[d] === want));
+  }
+  const reach = plan.reach || {}, loa = plan.lineOfAgent || {};
+  return Object.keys(reach).filter(a => reach[a] && (want == null || loa[a] === want));
+}
 
 function makeTriggerRunner(deps) {
   const d = deps || {};
@@ -93,8 +112,7 @@ function makeTriggerRunner(deps) {
     const plan = planOf();
     if (!plan) return 'no work line is armed — the floor has no complete line to run';
     if (!(Array.isArray(plan.lines) ? plan.lines : []).some(l => l && String(l.lineId) === t.lineId)) return 'its line is no longer on the floor (the line changed or was removed) — delete this trigger or re-create it on the line';
-    const reached = Object.keys(plan.reach || {}).filter(a => plan.reach[a] && (plan.lineOfAgent || {})[a] === t.lineId);
-    if (!reached.length) return 'its line routes work to no crewed dock — assign an agent to the first step';
+    if (!crewedDocksOnLine(plan, t.lineId).length) return 'its line routes work to no crewed dock — assign an agent to the first step';
     let cap = null;
     try { cap = dayCap(t.lineId); } catch (e) { cap = null; warn('[triggers] day-cap read failed: ' + ((e && e.message) || e)); }
     if (cap && typeof cap.cap === 'number' && cap.cap > 0 && (cap.spent || 0) >= cap.cap) return 'the line reached its $' + cap.cap.toFixed(2) + ' daily limit — it fires again tomorrow';
@@ -302,7 +320,9 @@ function makeTriggerRunner(deps) {
           mine[f.key] = now();
           if (!saveSeen()) { delete mine[f.key]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); break; }
           const body = await d.watcher.readItem(f.abs, f.name);
-          if (!body.ok) { recordError(t.id, body.error); continue; }
+          // a file that could not be READ (EBUSY / locked by the app still holding it / a sync placeholder) did not
+          // fire: un-mark it so a later scan retries it, instead of recording it as fired and dropping it forever
+          if (!body.ok) { delete mine[f.key]; saveSeen(); recordError(t.id, body.error); continue; }
           const text = T.composeFolderItem({ name: t.name, task: t.config.task, filePath: f.abs, size: f.size,
             mtimeIso: new Date(f.mtimeMs).toISOString(), binary: body.binary, content: body.content, truncated: body.truncated });
           const r = enqueue(t.id, { text, preview: 'FILE ' + f.name, source: f.abs });
@@ -325,4 +345,4 @@ function makeTriggerRunner(deps) {
     haltAll, inflights, seenFor, _internals: { dispatch, live, MAX_PENDING } };
 }
 
-module.exports = { makeTriggerRunner, MAX_PENDING };
+module.exports = { makeTriggerRunner, crewedDocksOnLine, MAX_PENDING };

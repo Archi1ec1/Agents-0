@@ -158,6 +158,12 @@ function harness(extra) {
     A.ok(/function quiesceForProcessFault\(\)[\s\S]*groupSessions\.halt/.test(src), 'fault quiesce halts group sessions');
     A.ok(/function quiesceForProcessFault\(\)[\s\S]*for \(const id of GENERIC_CHANNEL_IDS\) stopGenericChannel\(id\)/.test(src), 'fault quiesce disconnects generic channels');
     A.ok(/function quiesceForProcessFault\(\)[\s\S]*clearInterval\(livePricesRefreshTimer\)/.test(src), 'fault quiesce stops the live-price refresh timer');
+    // LINE TRIGGERS are contained like E-STOP contains them (2026-09-24 security review): poll timer cleared, queues
+    // dropped, trigger-hub runs killed — and the runner's halted() refuses any fire after a fault quiesced the process
+    const q = A.fnBody(src, 'function quiesceForProcessFault()');
+    A.ok(/contain\('triggers', \(\) => \{[\s\S]*clearInterval\(triggerPollTimer\);[\s\S]*triggerRunner\.haltAll\(\);[\s\S]*killAll\(null, \.\.\.triggerRunner\.inflights\(\)\);/.test(q), 'fault quiesce stops the folder poll, drops trigger queues and kills trigger-hub runs');
+    A.ok(/let triggerPollTimer = setInterval\(/.test(src), 'the trigger poll timer is clearable');
+    A.ok(/halted: \(\) => cronHalted === true \|\| processFaultQuiesced === true,/.test(src), 'the trigger runner treats a fault-quiesced process as halted');
     const bump = A.fnBody(src, 'function bumpQueue(agentId, d)');
     A.ok(/queueDepth\.delete\(agentId\)/.test(bump), 'bumpQueue deletes a drained entry (bounded Map)');
     const cap = A.fnBody(src, 'function devCaptureReply(chatId, text)');

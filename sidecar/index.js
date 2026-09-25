@@ -208,7 +208,7 @@ const { makeStepTest } = require('./routing/steptest.js');   // the conveyor STE
 const { lineStats: foldLineStats } = require('./routing/line-stats.js');   // LINE WATCH: per-line runs/shipped/failed/$ + each bay's last outcome (GET /api/routing/lines/stats)
 const { makeLineSpend } = require('./routing/line-spend.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
 const LineTriggers = require('./routing/triggers.js');   // LINE TRIGGERS (2026-09-23): folder/webhook events that start ONE line
-const { makeTriggerRunner } = require('./routing/trigger-runner.js');
+const { makeTriggerRunner, crewedDocksOnLine } = require('./routing/trigger-runner.js');
 const { makeFolderWatcher, makeFolderPolicy } = require('./routing/trigger-folder.js');
 const { makeConnectorManager } = require('./mcp/manager.js');
 const { makeHttpTransport } = require('./mcp/transport.http.js');
@@ -10129,6 +10129,16 @@ function quiesceForProcessFault() {
     const devInflight = (devHub && devHub._internals) ? devHub._internals.inflight : null;
     killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null);
   });
+  // line triggers, as E-STOP does (handleHalt): no further folder poll, every waiting item dropped, every trigger
+  // hub's live run killed. Its own containment — triggerRunner is declared further down this file, and a fault
+  // before it initializes must not abort the kill of every other run above. The runner's halted() also reads
+  // processFaultQuiesced, so a webhook call that still reaches it is refused rather than fired.
+  contain('triggers', () => {
+    if (triggerPollTimer) clearInterval(triggerPollTimer);
+    triggerPollTimer = null;
+    triggerRunner.haltAll();
+    killAll(null, ...triggerRunner.inflights());
+  });
   contain('groups', () => groupSessions && groupSessions.halt && groupSessions.halt());
   contain('subagents', () => subagents && subagents.interruptAll && subagents.interruptAll());
   contain('shell-background', () => shellBg && shellBg.killAll && shellBg.killAll());
@@ -10413,12 +10423,13 @@ async function handleRoutingSample(req, res) {
        line gate on, so the refusal and the line semantics quote ONE artifact. The hub's own resolveAgent call
        below stays the one and only counter-advancing resolution (one-resolver law). */
     /* When the proof is line-scoped, the same reach question is asked OF THAT LINE: a dock counts only
-       when the plan's sources feed it AND it crews the named line (plan.lineOfAgent — the compiled map,
-       same artifact the gate reads). Lines are connected components, so a dock on line B is only ever
-       reachable through line B's own doors — the intersection is exact, still lane-choice-blind, and the
-       refusal still never names a dock. */
-    const reachedDocks = Object.keys((plan && plan.reach) || {})
-      .filter(a => plan.reach[a] && (!line || ((plan.lineOfAgent || {})[a] === line)));
+       when the plan's sources feed it AND it sits on the named line. Asked of the DOCK layer (reachDock +
+       lineOfDock — multi-bay: an agent crewing bays on two lines has one lineOfAgent entry, its entry dock's,
+       so the agent view refused a working second line); a plan with no dock layer falls back to the agent
+       view. Lines are connected components, so a dock on line B is only ever reachable through line B's own
+       doors — the intersection is exact, still lane-choice-blind, and the refusal still never names a dock.
+       ONE helper (trigger-runner.crewedDocksOnLine) answers this for the sample AND every line trigger. */
+    const reachedDocks = crewedDocksOnLine(plan, line || null);
     if (!reachedDocks.length) {
       return json(409, line
         ? { ok: false, error: 'line "' + line + '" routes this job to no dock — crew a bay on that line (bind an agent to it) and try again.' }
@@ -10581,6 +10592,9 @@ function makeTriggerHub(hooks) {
     resolveStation: (agentId, dockId) => router.stationFor(agentId, dockId),
     stageBriefFor: (agentId, dockId) => router.stageBrief(agentId, dockId),
     onResolved: hooks.onResolved, onLineOutcome: hooks.onLineOutcome,
+    // a trigger's work item IS external data (a webhook body, a watched file's contents): the entry run starts
+    // TAINTED, so its sensitive tools stay consent-gated like any run that has read untrusted content
+    entryTaint: 'line trigger payload',
     streamId: () => hooks.streamId()
   });
 }
@@ -10595,7 +10609,8 @@ const triggerRunner = makeTriggerRunner({
     const lim = chainEffectiveLimits(router.lineLimits(lineId), {}, (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null);
     return { cap: lim.maxUsdPerDay, spent: lineSpend.spentToday(lineId) };
   },
-  halted: () => cronHalted === true,
+  // the durable automation E-STOP, OR a process fault that quiesced this torn process (no new fire may start)
+  halted: () => cronHalted === true || processFaultQuiesced === true,
   runsFor: (streamId) => (runStore.list(null, { limit: 50 }) || []).filter(r => r && String(r.streamId || '') === streamId)
     .map(r => ({ runId: r.runId, agentId: r.agentId, reason: r.reason, usd: r.usd, streamId: r.streamId })),
   emit: chanEmit, bumpQueue: bumpQueue, queueCap: QUEUE_CAP,
@@ -10603,7 +10618,7 @@ const triggerRunner = makeTriggerRunner({
   now: () => Date.now(), newId: () => crypto.randomUUID(),
   warn: (m) => console.warn(m)
 });
-const triggerPollTimer = setInterval(() => { triggerRunner.tickFolders().catch(swallow('triggers.folders')); }, triggerPollMs);
+let triggerPollTimer = setInterval(() => { triggerRunner.tickFolders().catch(swallow('triggers.folders')); }, triggerPollMs);
 triggerPollTimer.unref();
 const triggerHookUrl = (id) => 'http://127.0.0.1:' + PORT + '/api/hooks/' + id;
 function triggerView(v) {
