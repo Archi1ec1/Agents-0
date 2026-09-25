@@ -40,7 +40,7 @@
                    ledger?, processTable?, signalProcess?, killVerify? }) ->
        { start({agentId,cmd,cwd,isWin?}), status(agentId,bgId?), read(agentId,bgId,opts?),
          write(agentId,bgId,{input,submit?}), closeStdin(agentId,bgId), wait(agentId,bgId,{timeoutMs?,signal?}),
-         kill(agentId,bgId) -> Promise, killAll(agentId?), count(agentId), touchLedger() } */
+         kill(agentId,bgId) -> Promise, killAll(agentId?), count(agentId), touchLedger(), killBudgetMs } */
 'use strict';
 (function (root, factory) {
   const api = factory();
@@ -52,11 +52,25 @@
   const WIN = (typeof process !== 'undefined' && process.platform) === 'win32';
   const { StringDecoder } = require('node:string_decoder');
   const { note: bgFailNote } = require('./failopen.js');
-  const { ownedTree, confirmGone } = require('./proctree.js');
+  const { ownedTree, confirmGone, DEFAULT_TABLE_TIMEOUT_MS } = require('./proctree.js');
 
   const DEFAULT_WAIT_MS = 30000;
   const MAX_WAIT_MS = 600000;          // same ceiling as a foreground shell.exec
   const START_TOLERANCE_MS = 1000;     // see procledger.js: startedAt is stamped just after spawn returns
+  const DEFAULT_VERIFY_ATTEMPTS = 16, DEFAULT_VERIFY_POLL_MS = 250, DEFAULT_TASKKILL_MS = 10000;
+
+  /* The WORST-CASE wall time of one verified kill (killWin with a pre-kill snapshot, the longer path): snapshot +
+     taskkill + root-exit wait + confirm (one slow table read + its polls) + second-pass taskkill + second confirm.
+     shell.bg.kill sizes its registry timeout from this, so the backstop never cuts off the proof it waits for. */
+  function killBudgetMs(o) {
+    o = o || {};
+    const attempts = Number(o.attempts) > 0 ? Math.floor(Number(o.attempts)) : DEFAULT_VERIFY_ATTEMPTS;
+    const pollMs = o.pollMs != null ? Math.max(0, Number(o.pollMs) || 0) : DEFAULT_VERIFY_POLL_MS;
+    const taskkillMs = Number(o.taskkillMs) > 0 ? Number(o.taskkillMs) : DEFAULT_TASKKILL_MS;
+    const tableMs = Number(o.tableMs) > 0 ? Number(o.tableMs) : (DEFAULT_TABLE_TIMEOUT_MS || 15000);
+    const confirm = tableMs + (attempts - 1) * pollMs;
+    return tableMs + taskkillMs + attempts * pollMs + confirm + taskkillMs + confirm;
+  }
 
   // Launch taskkill and wait — bounded — for its verdict. Never rejects: { ok, code?, error? }.
   function runTaskkill(spawn, args, timeoutMs) {
@@ -125,9 +139,11 @@
     const signalProcess = typeof deps.signalProcess === 'function' ? deps.signalProcess
       : ((pid, sig) => process.kill(pid, sig));
     const KV = deps.killVerify || {};
-    const VERIFY_ATTEMPTS = Number(KV.attempts) > 0 ? Math.floor(Number(KV.attempts)) : 16;
-    const VERIFY_POLL_MS = KV.pollMs != null ? Math.max(0, Number(KV.pollMs) || 0) : 250;
-    const TASKKILL_MS = Number(KV.taskkillMs) > 0 ? Number(KV.taskkillMs) : 10000;
+    const VERIFY_ATTEMPTS = Number(KV.attempts) > 0 ? Math.floor(Number(KV.attempts)) : DEFAULT_VERIFY_ATTEMPTS;
+    const VERIFY_POLL_MS = KV.pollMs != null ? Math.max(0, Number(KV.pollMs) || 0) : DEFAULT_VERIFY_POLL_MS;
+    const TASKKILL_MS = Number(KV.taskkillMs) > 0 ? Number(KV.taskkillMs) : DEFAULT_TASKKILL_MS;
+    // this instance's own worst case (KV.tableMs: the injected process table's per-read bound, if not the default)
+    const KILL_BUDGET_MS = killBudgetMs({ attempts: VERIFY_ATTEMPTS, pollMs: VERIFY_POLL_MS, taskkillMs: TASKKILL_MS, tableMs: KV.tableMs });
     const sleep = typeof KV.sleep === 'function' ? KV.sleep : ((ms) => new Promise(resolve => setTimeout(resolve, ms)));
     const selfPid = (typeof process !== 'undefined' && Number(process.pid)) || 0;
     // a poll step always yields to the EVENT LOOP (a macrotask): the exit it waits for arrives as a process event,
@@ -593,7 +609,7 @@
       try { return ledger.touch(pids) || 0; } catch (e) { bgFailNote('shellbg.ledger.touch', e); return 0; }
     }
 
-    return { start, status, read, write, closeStdin, wait, kill, killAll, count, touchLedger, _internals: { procs, view, own, pruneFinished, exitNoticeText } };
+    return { start, status, read, write, closeStdin, wait, kill, killAll, count, touchLedger, killBudgetMs: KILL_BUDGET_MS, _internals: { procs, view, own, pruneFinished, exitNoticeText } };
   }
 
   /* makeBgExitWaker({ steer, runs, runsMeta, log? }) -> (notice) => { delivered, runId?, status?, reason? }
@@ -630,5 +646,5 @@
     return wake;
   }
 
-  return { makeShellBg, makeBgExitWaker, exitNoticeText, _internals: { runTaskkill, sanitizeLine } };
+  return { makeShellBg, makeBgExitWaker, exitNoticeText, killBudgetMs, _internals: { runTaskkill, sanitizeLine } };
 });

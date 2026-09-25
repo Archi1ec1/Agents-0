@@ -1070,8 +1070,14 @@
       }
     };
 
+    /* The registry's 30s default backstop used to cut off the Windows verify path (snapshot + taskkill + confirm +
+       second pass can legitimately take over a minute), turning a kill that was still gathering proof into a bare
+       timeout. Sized from the bg manager's own worst case (shellbg.killBudgetMs) plus headroom. */
+    const BG_KILL_BUDGET_MS = (bg && Number(bg.killBudgetMs) > 0) ? Number(bg.killBudgetMs)
+      : ((typeof require === 'function') ? require('../../shellbg.js').killBudgetMs() : 76500);
     const bgKillTool = {
       name: 'shell.bg.kill', capability: 'workbench', scope: 'write', requiresConsent: false,
+      timeoutMs: BG_KILL_BUDGET_MS + 10000,
       description: 'Stop one of your background processes by id (from shell.bg.status). Kills the whole process tree and confirms it is gone.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       run: async function (args, ctx) {

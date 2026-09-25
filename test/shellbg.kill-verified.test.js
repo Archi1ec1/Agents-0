@@ -291,5 +291,23 @@ const fast = { attempts: 3, pollMs: 0, sleep: async () => {} };
     A.eq(bg2.killAll(), 0, 'a verified record is never re-killed');
   }
 
+  // ---- 8. shell.bg.kill's registry backstop covers the whole verify budget (the 30s default cut it off) ----
+  {
+    const { killBudgetMs } = require('../sidecar/shellbg.js');
+    const def = killBudgetMs();
+    // snapshot 15s + taskkill 10s + root wait 16x250 + confirm (15s + 15x250) + 2nd taskkill 10s + 2nd confirm
+    A.eq(def, 15000 + 10000 + 4000 + 18750 + 10000 + 18750, 'the default kill budget is the sum of its bounded steps');
+    A.ok(def > 30000, 'and it is longer than the registry\'s 30s default tool timeout');
+    const w = makeWorld(); w.nextPid = 1000;
+    const bgDefault = makeShellBg({ spawn: w.spawn, isWin: true, processTable: w.table });
+    A.eq(bgDefault.killBudgetMs, def, 'a manager with production settings reports the default budget');
+    const fsx = { mkdirSync() {}, existsSync() { return true; } };
+    const tools = makeShellTool({ spawn: w.spawn, fs: fsx, pathMod: path, root: path.join('root'), bg: bgDefault, platform: 'win32' });
+    A.ok(tools.bgKillTool.timeoutMs > def, 'shell.bg.kill declares a timeoutMs above the verify budget (' + tools.bgKillTool.timeoutMs + ')');
+    const bgSlow = makeShellBg({ spawn: w.spawn, isWin: true, processTable: w.table, killVerify: { attempts: 40, pollMs: 500, taskkillMs: 20000, tableMs: 30000 } });
+    const t2 = makeShellTool({ spawn: w.spawn, fs: fsx, pathMod: path, root: path.join('root'), bg: bgSlow, platform: 'win32' });
+    A.ok(t2.bgKillTool.timeoutMs > bgSlow.killBudgetMs && bgSlow.killBudgetMs > def, 'a slower configured manager widens the tool timeout with it');
+  }
+
   A.report('shellbg.kill-verified.test');
 })().catch(e => { console.log('FAIL: shellbg.kill-verified.test threw — ' + (e && e.stack || e)); process.exit(1); });
