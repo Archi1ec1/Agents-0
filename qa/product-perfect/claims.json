@@ -18,8 +18,8 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "18c5ca6b91aaadb02afbc5cccb7449c5cbcbb37f",
-    "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
+    "sourceCommit": "9edd75d6694ae53c27470c7326484cd24cb6e8a3",
+    "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
         "path": "INSTALL.md",
@@ -118,8 +118,8 @@
       },
       {
         "path": "frontend/agent-demo/review-world.js",
-        "bytes": 743660,
-        "sha256": "9cd058c5973542080c70195eaa0751c855adb79b77f7c81d0115f66e6876a1c6"
+        "bytes": 743588,
+        "sha256": "8a207caf785d44e99f8daa05d776240a2729aec7d860f711a82bb5f34c2f38dc"
       },
       {
         "path": "frontend/agent-demo/sprites.js",
@@ -153,18 +153,23 @@
       },
       {
         "path": "frontend/agent-station-demo.html",
-        "bytes": 86237,
-        "sha256": "39f0c7d48de9241b929c78875c10bbe93315b7591b151c88365159216f6b84f8"
+        "bytes": 86406,
+        "sha256": "deee00c17e80c6e2a5226d282f7119da5e02b0045deafc2c8582758c645f3b2d"
       },
       {
         "path": "frontend/app/agentid.js",
-        "bytes": 3323,
-        "sha256": "45ef6b2267bac6f158205a5756c2d05ee210d2387116b57d020c9120dd23998f"
+        "bytes": 4109,
+        "sha256": "cbcba353eb014e9cfcfc5730b02e909d4a1a23542e6b2ec594f063aeb23759d2"
       },
       {
         "path": "frontend/app/agentportraits.js",
         "bytes": 12480,
         "sha256": "74a9edbc208f6dbfe63fb3c96c4ed9958da42c00cfbf31a9c941e98403aac8d0"
+      },
+      {
+        "path": "frontend/app/apiticket.js",
+        "bytes": 9601,
+        "sha256": "c0d884be2c2d817ce2c5fdf12332a252c9edc51a82f3701fc0aca686c428e861"
       },
       {
         "path": "frontend/app/app.js",
@@ -323,8 +328,8 @@
       },
       {
         "path": "frontend/app/chat.js",
-        "bytes": 668304,
-        "sha256": "652fa784e30a0b5f257f03409d27790b3bdfd9984df6d89d8bbe3002a0bd69b0"
+        "bytes": 668614,
+        "sha256": "9e40be536620d2545e3fdb0489eb48dc5e9198991e749812dd9e666260d7ac03"
       },
       {
         "path": "frontend/app/chatresize.js",
@@ -343,8 +348,8 @@
       },
       {
         "path": "frontend/app/cloudsave.js",
-        "bytes": 28243,
-        "sha256": "b013c908d464c49f1220775cfb547a5855d6040ee74c3b1a588fddd1ba6e0088"
+        "bytes": 28236,
+        "sha256": "87ab0948b270e3b6c606f21f542812c3b6a1ad253aee8a43607a18ea96e2e791"
       },
       {
         "path": "frontend/app/cloudsavecore.js",
@@ -403,8 +408,8 @@
       },
       {
         "path": "frontend/app/deliverables.js",
-        "bytes": 33357,
-        "sha256": "1a402c9d3c0aaf5bc3a9b2b5e04c9e1117c7ffb26bf35933b6dc12751d8c7f45"
+        "bytes": 33712,
+        "sha256": "b976c298d91b4ee5d8bc1a3aebc07fd70384aa59469e134cc15b482ed4ce4c75"
       },
       {
         "path": "frontend/app/diagnostics.js",
@@ -1288,8 +1293,8 @@
       },
       {
         "path": "frontend/app/workshopstore.js",
-        "bytes": 39833,
-        "sha256": "e22090de5ccc8aee1eeb69cec5a1c0f5cbf98aeba80428523fc3bc91ca710f16"
+        "bytes": 39234,
+        "sha256": "b4e657b77fa24eee3ce2dea68a91d1fced90e3eb53b370d4c5a8af76b616ace2"
       },
       {
         "path": "frontend/app/worksignal.js",
@@ -1313,8 +1318,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 804115,
-        "sha256": "d566380791989ec9642a57868670f53bfec2692cf59c4306ab817b639806bab1"
+        "bytes": 804043,
+        "sha256": "e2921b8898ea1b6e57056746822d80776fdb30145975c2200e721046c5a19df6"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1613,8 +1618,8 @@
       },
       {
         "path": "frontend/index.html",
-        "bytes": 87350,
-        "sha256": "179abc41306ad754600816f79afe5ee422c02e8076cc675d26b1d43eea7b5605"
+        "bytes": 87519,
+        "sha256": "193209f36485e09d7906e54e81dac35690b36b3419f61946bc9b039ceba9768e"
       },
       {
         "path": "frontend/js/arcade.js",
