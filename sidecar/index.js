@@ -197,7 +197,7 @@ const { makeChannelStore } = require('./channels/store.js');
 const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
-const { hostPowerWithheldFor } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
+const { hostPowerWithheldFor, entryUntrusted } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
 const { makePromptRegistry } = require('./channels/prompts.js');   // C6: the bounded token→meaning map behind inline keyboards
 const { makeOpenAiCompat } = require('./openai-compat.js');   // /v1/* OpenAI-compatible surface (external harness ingress)
 const { makeChannelRegistry, wireChannel } = require('./channels/registry.js');   // H6.2: channel descriptors + generic wire-up
@@ -5502,7 +5502,11 @@ const cronDriver = makeCronDriver({
           // GRANTS NEVER FLOW DOWN A LINE (2026-08-04): every runAgent call here is a DOWNSTREAM hop (stage one
           // ran in the driver, with the job's own grants). Whatever the caller passes, a hop runs ungranted —
           // an unattended approval names ONE agent and a belt must not silently extend it to another.
-          initialTaint: o.initialTaint, unattendedGrants: []
+          // EVERY HOP AFTER THE FIRST STARTS TAINTED (sec-taint2 09-25): a hop is handed the upstream stage's OUTPUT,
+          // which may carry text that stage read from the web or a connector — the same 'upstream agent output'
+          // entry the channel hub and the step test give every later hop. The routine's own contextFrom flag only
+          // described stage one's input and let a routine line hop run untainted on another agent's words.
+          initialTaint: 'upstream agent output', unattendedGrants: []
         });
       } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
       finally { runsMeta.delete(hopRunId); }
@@ -13328,7 +13332,8 @@ async function handleCronRun(req, res) {
                 // on them) — flagged 2026-08-04 as a widening risk to revisit, same note as cron-driver.js.
                 preloadSkills: Array.isArray(job.skills) ? job.skills.slice() : [], requiredPreloads: true, workdir: job.workdir || null,
                 enabledToolsets: Array.isArray(job.enabledToolsets) ? job.enabledToolsets.slice() : null,
-                initialTaint: !!(job.contextFrom && job.contextFrom.length)
+                // a Run-Now hop is handed upstream OUTPUT exactly like the scheduled seam above: it starts tainted
+                initialTaint: 'upstream agent output'
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
             finally { runsMeta.delete(hopRunId); }
@@ -16267,6 +16272,9 @@ async function runOnceCore(o) {
      Every other origin (the app, routines/loops/cron, triggers, dev/sample hubs) is unchanged: DECISIONS.md
      "FULL POWER MEANS THE WHOLE LOCAL COMPUTER" and the tested "Full Access follows the agent to its routine". */
   const hostPowerWithheld = hostPowerWithheldFor(o);
+  // a run STARTED by third-party content (trigger payload / forwarded / attachment entry, and its hops + workers):
+  // Full Access no longer lifts its taint lock (run-origin.js entryUntrusted, taint.js postTaintBoundary)
+  const untrustedEntryRun = entryUntrusted(o);
   const agentFullAccessNow = () => !hostPowerWithheld && ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
   const stationBypassNow = () => !hostPowerWithheld && (FULL_ACCESS || masterBypassOn());
   // One central, host-minted meaning for "Full Power": station-wide env/master bypass or this agent's
@@ -17302,6 +17310,7 @@ async function runOnceCore(o) {
       fullAccess: () => !signal?.aborted && unrestrictedHostNow(),
       // host-minted, never tool-supplied: a worker delegated from a non-owner channel run stays below Full Power
       withholdHostPower: hostPowerWithheld,
+      untrustedEntry: untrustedEntryRun,   // host-minted: a worker of a payload-started run keeps the taint lock under Full Access
       taintedBy: () => execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null)
     },
     // HOOKS reach the tool boundary through the dispatch ctx. registry.js consults them AFTER the authority,
@@ -17757,14 +17766,14 @@ async function runOnceCore(o) {
       && typeof o.connectorAuthority?.fullAccess === 'function' && o.connectorAuthority.fullAccess() === true;
     let postTaint = revokedByTaint.boundary(liveTool, {
       taintedBy: taintSource, surface: effectSurface, hasPrompt: typeof effectPrompt === 'function',
-      fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
+      fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess, untrustedEntry: untrustedEntryRun
     });
     if (postTaint.needsConfirmation) {
       let decision = 'deny';
       try { decision = await effectPrompt(c, liveTool); } catch (_) {}
       postTaint = revokedByTaint.boundary(liveTool, {
         taintedBy: taintSource, surface: effectSurface, hasPrompt: true, decision,
-        fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
+        fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess, untrustedEntry: untrustedEntryRun
       });
     }
     const postTaintConfirmed = postTaint.oneShot;
