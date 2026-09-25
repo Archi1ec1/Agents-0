@@ -852,6 +852,7 @@ const processFault = makeProcessFaultHandler({
   keepAlive: UNCAUGHT_KEEP_SERVING,
   breaker: CRASH_LOOP_BREAKER ? crashLedger : null,   // crash-loop circuit breaker: the 3rd fault exit in 10m holds the process alive DEGRADED
   log: msg => console.error('[process-fault] ' + msg),
+  redact: redact,   // /api/health (unauthenticated), the crash ledger and the log all carry the fault text
   // Immediate containment is separate from release: a held crash loop must KEEP the workspace-owner claim so a
   // second writer cannot enter, while every producer in this torn process is stopped and all live runs abort.
   quiesce: () => quiesceForProcessFault(),
