@@ -69,7 +69,7 @@ function makeTriggerRunner(deps) {
 
   function stateOf(id) {
     let s = live.get(id);
-    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false }; live.set(id, s); }
+    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false, queuedKeys: new Set() }; live.set(id, s); }
     return s;
   }
   const get = id => records.find(t => t.id === id) || null;
@@ -152,7 +152,9 @@ function makeTriggerRunner(deps) {
     const a = T.admit(t, nowMs);
     if (!patch(id, () => ({ recent: a.recent }))) return { ok: false, code: 'persist', error: 'the fire could not be recorded durably — refused' };
     const s = stateOf(id);
-    s.queue.push({ text: String(item.text || ''), preview: String(item.preview || '').slice(0, 40), source: String(item.source || '').slice(0, 200), at: nowMs });
+    const seenKey = item.seenKey ? String(item.seenKey) : null;   // a folder file: marked fired only when it dispatches
+    s.queue.push({ text: String(item.text || ''), preview: String(item.preview || '').slice(0, 40), source: String(item.source || '').slice(0, 200), at: nowMs, seenKey });
+    if (seenKey) s.queuedKeys.add(seenKey);
     const position = s.queue.length + (s.busy ? 1 : 0);
     pump(id);
     return { ok: true, queued: position };
@@ -183,7 +185,8 @@ function makeTriggerRunner(deps) {
       pump(id);
     });
   }
-  function dropQueue(s) { s.queue.length = 0; }
+  // drop every WAITING item; a folder file among them was never marked fired, so it simply fires on a later scan
+  function dropQueue(s) { for (const it of s.queue) if (it && it.seenKey) s.queuedKeys.delete(it.seenKey); const n = s.queue.length; s.queue.length = 0; return n; }
 
   /* ---- the hub: one per trigger, built lazily, bound to hooks that read THIS trigger's live record ---- */
   function hubFor(id, s) {
@@ -207,6 +210,14 @@ function makeTriggerRunner(deps) {
   async function dispatch(t, item, s) {
     const startedAt = now();
     const streamId = 'trigger-' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+    if (item.seenKey) {
+      // the folder file is recorded as FIRED now, as its run begins (durably, before any spend): a restart after this
+      // point never refires it. A record that cannot be written refuses the fire rather than risk running it twice.
+      s.queuedKeys.delete(item.seenKey);
+      const mine = seen[t.id] || (seen[t.id] = {});
+      mine[item.seenKey] = startedAt;
+      if (!saveSeen()) { delete mine[item.seenKey]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); return null; }
+    }
     s.current = { streamId, routed: null, resolved: null, lineOutcome: null, replies: [], turns: {} };
     patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt }));
     const hub = hubFor(t.id, s);
@@ -303,7 +314,7 @@ function makeTriggerRunner(deps) {
     if (fields.enabled === true || fields.config || fields.lineId) { changes.lastError = null; changes.lastErrorAt = null; }
     const nx = patch(id, () => changes);
     if (!nx) return { ok: false, error: 'the trigger could not be saved' };
-    if (fields.enabled === false) stateOf(id).queue.length = 0;   // a disabled trigger drops what was waiting
+    if (fields.enabled === false) dropQueue(stateOf(id));   // a disabled trigger drops what was waiting (files stay unfired)
     return { ok: true, trigger: view(id) };
   }
 
@@ -350,16 +361,18 @@ function makeTriggerRunner(deps) {
         for (const f of ready) {
           const c = canAccept(t.id);
           if (!c.ok) { if (c.code === 'refused' || c.code === 'rate') recordError(t.id, c.error); break; }   // the file waits in the folder
-          mine[f.key] = now();
-          if (!saveSeen()) { delete mine[f.key]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); break; }
+          if (s.queuedKeys.has(f.key)) continue;   // already admitted, waiting its turn (marked fired when it dispatches)
           const body = await d.watcher.readItem(f.abs, f.name);
           // a file that could not be READ (EBUSY / locked by the app still holding it / a sync placeholder) did not
-          // fire: un-mark it so a later scan retries it, instead of recording it as fired and dropping it forever
-          if (!body.ok) { delete mine[f.key]; saveSeen(); recordError(t.id, body.error); continue; }
+          // fire: it stays unmarked so a later scan retries it, instead of recording it as fired and dropping it forever
+          if (!body.ok) { recordError(t.id, body.error); continue; }
           const text = T.composeFolderItem({ name: t.name, task: t.config.task, filePath: f.abs, size: f.size,
             mtimeIso: new Date(f.mtimeMs).toISOString(), binary: body.binary, content: body.content, truncated: body.truncated });
-          const r = enqueue(t.id, { text, preview: 'FILE ' + f.name, source: f.abs });
-          if (!r.ok) { delete mine[f.key]; saveSeen(); break; }
+          /* ADMITTED IS NOT FIRED (sweep 2026-09-25): the waiting queue is in memory, so a file is recorded as fired
+             only when its item DISPATCHES (dispatch marks `seenKey`). A restart, an E-STOP or a pause that drops the
+             waiting item leaves the file unmarked in the folder — it fires on a later scan, never silently lost. */
+          const r = enqueue(t.id, { text, preview: 'FILE ' + f.name, source: f.abs, seenKey: f.key });
+          if (!r.ok) break;
           admitted++;
         }
       } catch (e) {
@@ -370,7 +383,7 @@ function makeTriggerRunner(deps) {
   }
 
   /* E-STOP: drop every waiting item; the host kills the in-flight runs through the hubs' inflight maps. */
-  function haltAll() { let n = 0; for (const s of live.values()) { n += s.queue.length; s.queue.length = 0; } return n; }
+  function haltAll() { let n = 0; for (const s of live.values()) n += dropQueue(s); return n; }
   function inflights() { const out = []; for (const s of live.values()) if (s.hub && s.hub._internals && s.hub._internals.inflight) out.push(s.hub._internals.inflight); return out; }
   function seenFor(id) { return Object.assign({}, seen[id] || {}); }
 

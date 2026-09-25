@@ -13,7 +13,7 @@ const tick = (ms) => new Promise(r => setTimeout(r, ms || 10));
    exactly like the real channel hub's record (what halt.js killAll aborts) */
 function harness(opts) {
   opts = opts || {};
-  let clock = 1e12, n = 0;
+  let clock = Date.now(), n = 0;   // the folder watcher compares against REAL file mtimes
   const disk = { triggers: { triggers: [] }, seen: {} };
   const plan = opts.plan || { lines: [{ lineId: 'L1' }], reach: { 'agent-a': true }, lineOfAgent: { 'agent-a': 'L1' } };
   const parked = [];
@@ -104,6 +104,50 @@ function harness(opts) {
     A.eq(H.parked.length, 2, 'a waiting item does not run once its line left the floor');
     A.ok(/dropped before running: its line is no longer on the floor/.test(H.R.view(id).lastError || ''), 'with that reason');
     H.plan.lines = lines;
+  }
+
+  /* ---- 5. ADMITTED IS NOT FIRED: a waiting folder file dropped by E-STOP / pause / restart fires later ---- */
+  {
+    const fs = require('fs'), fsp = require('fs/promises'), os = require('os'), path = require('path');
+    const { makeFolderWatcher } = require('../sidecar/routing/trigger-folder.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-trg-sweep5-'));
+    const H = harness({ watcher: makeFolderWatcher({ fsp, pathMod: path, settleMs: 0 }) });
+    const c = H.R.create({ kind: 'folder', lineId: 'L1', maxPerHour: 50, config: { path: root } }, { baselineKeys: [] });
+    const id = c.trigger.id;
+    const back = Date.now() - 60000;
+    for (const n of ['a.txt', 'b.txt']) { fs.writeFileSync(path.join(root, n), 'job ' + n); fs.utimesSync(path.join(root, n), back / 1000, back / 1000); }
+    await H.R.tickFolders(); await H.R.tickFolders();
+    await tick();
+    A.eq(H.parked.length, 1, 'a.txt runs, b.txt waits behind it');
+    const seenNow = H.disk.seen[id] || {};
+    A.eq(Object.keys(seenNow).length, 1, 'only the DISPATCHED file is recorded as fired (the waiting one is not)');
+    await H.R.tickFolders(); await H.R.tickFolders();
+    A.eq(H.R.view(id).queued, 1, 'a later scan does not admit the waiting file twice');
+    A.eq(H.R.haltAll(), 1, 'E-STOP drops the waiting item');
+    H.parked[0]();
+    await tick(20);
+    A.eq(Object.keys(H.disk.seen[id] || {}).length, 1, 'the dropped file is still unfired on disk');
+    await H.R.tickFolders(); await H.R.tickFolders();
+    await tick();
+    A.eq(H.parked.length, 2, 'after the stop, a later scan fires the dropped file — it was never silently lost');
+    // restart with an item waiting: the new runner over the same disk fires it
+    fs.writeFileSync(path.join(root, 'c.txt'), 'job c'); fs.utimesSync(path.join(root, 'c.txt'), back / 1000, back / 1000);
+    await H.R.tickFolders(); await H.R.tickFolders();
+    A.eq(H.R.view(id).queued, 1, 'c.txt waits behind b.txt');
+    const disk = JSON.parse(JSON.stringify(H.disk));
+    const R2 = require('../sidecar/routing/trigger-runner.js').makeTriggerRunner({
+      load: () => disk.triggers, save: () => {}, seen: { load: () => disk.seen, save: () => {} },
+      makeHub: (hooks) => ({ onInbound: (m) => { hooks.onRouted({ agentId: 'agent-a', dockId: 'b1' }); hooks.onResolved({ agentId: 'agent-a', lineId: 'L1', dockId: 'b1' }); fired2.push(m.text); return Promise.resolve(); }, close() {} }),
+      plan: () => H.plan, now: () => H.now() + 5000, newId: () => 'restart0123456789abcdef',
+      watcher: makeFolderWatcher({ fsp, pathMod: path, settleMs: 0 }) });
+    const fired2 = [];
+    await R2.tickFolders(); await R2.tickFolders();
+    await tick(20);
+    A.ok(fired2.length === 1 && /c\.txt/.test(fired2[0]), 'after a restart the file that was only WAITING fires (and nothing already run refires): ' + fired2.length);
+    // a pause drops the waiting item without marking it
+    H.parked[1]();
+    await tick(20);
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }
 
   /* ---- 3. a folder inside a line's working folder is refused (create AND every fire) ---- */

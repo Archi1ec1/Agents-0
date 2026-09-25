@@ -10754,7 +10754,10 @@ function triggerHookKey(req) {
 }
 /* POST /api/hooks/:id — the WEBHOOK ingress. Matched before the /api launch-token gate (the caller has none) and
    ONLY for this exact path shape; everything else still meets the gate. 401 for an unknown id OR a wrong key
-   (existence is never revealed); 202 once the item is durably admitted to the line's queue. */
+   (existence is never revealed); 202 once the item is ADMITTED to the line's queue. Honest scope (sweep 2026-09-25):
+   what is durable at that point is the admission (the rate window on the record), not the item — the waiting queue
+   lives in memory, so a restart, an E-STOP or a pause before the item runs drops it (the trigger's fires/lastError
+   say what ran). The body says so: `queued` is its place in line, `durable:false` that it is not yet on disk. */
 async function serveTriggerHook(req, res, id) {
   const ticket = updatePreparation.beginRequest(req.method, req.url);
   try {
@@ -10768,7 +10771,7 @@ async function serveTriggerHook(req, res, id) {
     const wb = LineTriggers.webhookBody(raw, req.headers['content-type']);
     const text = LineTriggers.composeWebhookItem({ name: t.name, task: t.config.task, contentType: wb.contentType, bytes: wb.bytes, body: wb.body, truncated: wb.truncated });
     const r = triggerRunner.enqueue(id, { text, preview: 'HOOK ' + (t.name || 'webhook'), source: 'webhook · ' + wb.bytes + ' bytes' });
-    if (r.ok) return triggerJson(res, 202, { ok: true, accepted: true, queued: r.queued });
+    if (r.ok) return triggerJson(res, 202, { ok: true, accepted: true, queued: r.queued, durable: false });
     if (r.code === 'rate' || r.code === 'busy') return triggerJson(res, 429, { ok: false, error: r.error }, r.retryAfterMs ? { 'Retry-After': String(Math.ceil(r.retryAfterMs / 1000)) } : null);
     if (r.code === 'persist') return triggerJson(res, 503, { ok: false, error: r.error });
     return triggerJson(res, 409, { ok: false, error: r.error });

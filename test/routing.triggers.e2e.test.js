@@ -208,6 +208,7 @@ function twoStagePlan() {
     A.eq((await api('/api/routing/triggers')).j.triggers.find(t => t.id === wid).fires, 0, 'refused calls never fired');
     const okHook = await hook(wid, { 'X-StarNet-Hook-Key': key });
     A.eq(okHook.status, 202, 'the right key -> 202 accepted: ' + JSON.stringify(okHook.j));
+    A.ok(okHook.j && okHook.j.accepted === true && okHook.j.durable === false, 'the 202 says honestly that the waiting item is not on disk yet (a restart before it runs drops it)');
     const wdone = await waitFor(async () => { const t = (await list()).find(x => x.id === wid); return t && t.lastOutcome ? t : null; }, 30000, 'the webhook fire to finish');
     A.ok(wdone && wdone.lastOutcome.ok === true && wdone.lastOutcome.runs === 2, 'the webhook ran BOTH docks to the OUTBOX: ' + JSON.stringify(wdone && wdone.lastOutcome) + ' err=' + (wdone && wdone.lastError));
     A.ok(mock.requests.some(rq => JSON.stringify(rq).indexOf('blue widget') >= 0), 'the webhook body reached the entry dock');
