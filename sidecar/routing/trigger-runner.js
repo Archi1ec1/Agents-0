@@ -23,6 +23,7 @@
      deps.runsFor(streamId) -> [{runId, agentId, reason, usd}]
      deps.emit(name, payload), deps.bumpQueue(agentId, d) -> depth, deps.queueCap
      deps.watcher (trigger-folder makeFolderWatcher), deps.now(), deps.newId(), deps.warn(msg)
+     deps.label(agentId) -> display name|null     for the sentences the owner reads (lastError)
      deps.folderConflict(path) -> reason|null  a watched folder inside a line's working folder (checked every fire) */
 'use strict';
 const T = require('./triggers.js');
@@ -62,6 +63,8 @@ function makeTriggerRunner(deps) {
   const runsFor = typeof d.runsFor === 'function' ? d.runsFor : function () { return []; };
   const shipsToOutbox = typeof d.shipsToOutbox === 'function' ? d.shipsToOutbox : function () { return false; };
   const planOf = typeof d.plan === 'function' ? d.plan : function () { return null; };
+  // the owner reads an agent's display name in lastError, never its raw id (sweep 2026-09-25)
+  const nameOf = id => { let n = null; try { n = typeof d.label === 'function' ? d.label(id) : null; } catch (e) { warn('[triggers] label: ' + ((e && e.message) || e)); } return n ? String(n) : String(id); };
   const seenStore = d.seen || { load: function () { return {}; }, save: function () {} };
 
   let records = T.normalizeAll(d.load()).triggers;
@@ -259,7 +262,7 @@ function makeTriggerRunner(deps) {
       else if (!info || !info.agentId || !s.current.routed || s.current.routed.agentId !== info.agentId) err = firstReply || 'the line routed this work to no dock';
       else if (!onLine) err = 'the work did not enter through this trigger\'s line';
       else if (!runs.length) err = firstReply || 'no run was recorded for this work';
-      else if (!allDone) { const bad = runs.find(r => r.reason !== 'done'); err = 'a stage (' + (bad.agentId || '?') + ') ended "' + (bad.reason || 'unknown') + '"' + (firstReply ? ': ' + firstReply : ''); }
+      else if (!allDone) { const bad = runs.find(r => r.reason !== 'done'); err = 'a stage (' + (bad.agentId ? nameOf(bad.agentId) : '?') + ') ended "' + (bad.reason || 'unknown') + '"' + (firstReply ? ': ' + firstReply : ''); }
       else if (lo && lo.stopped) err = 'the line stopped early: ' + lo.stopped;
       else err = 'the line did not reach its OUTBOX';
     }

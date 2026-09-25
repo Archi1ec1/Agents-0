@@ -10652,6 +10652,7 @@ const triggerRunner = makeTriggerRunner({
     .map(r => ({ runId: r.runId, agentId: r.agentId, reason: r.reason, usd: r.usd, streamId: r.streamId })),
   emit: chanEmit, bumpQueue: bumpQueue, queueCap: QUEUE_CAP,
   watcher: triggerWatcher,
+  label: (agentId) => stepTestLabel(agentId),
   folderConflict: (p) => { const root = triggerLineRoots().find(r => p && triggerFolderPolicy.inside(p, r)); return root ? lineOutputError(root) : null; },
   now: () => Date.now(), newId: () => crypto.randomUUID(),
   warn: (m) => console.warn(m)

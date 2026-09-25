@@ -170,6 +170,20 @@ function harness(opts) {
     H.parked[1](); await tick(20);
   }
 
+  /* ---- 11. lastError names a failed stage by its display name (live: "a stage (agent) ended error") ---- */
+  {
+    const R = require('../sidecar/routing/trigger-runner.js').makeTriggerRunner({
+      load: () => ({ triggers: [] }), save: () => {}, plan: () => ({ lines: [{ lineId: 'L1' }], reach: { 'agent-a': true }, lineOfAgent: { 'agent-a': 'L1' } }),
+      makeHub: (hooks) => ({ onInbound: (m) => { const r = hooks.onRouted({ agentId: 'agent-a', dockId: 'b1' }); hooks.onResolved({ agentId: r.agentId, lineId: 'L1', dockId: 'b1' }); runs[hooks.streamId()] = [{ runId: 'x', agentId: 'agent-a', reason: 'error', streamId: hooks.streamId() }]; hooks.onLineOutcome({ agentId: 'agent-a', dockId: 'b1' }); return Promise.resolve(); }, close() {} }),
+      runsFor: sid => runs[sid] || [], shipsToOutbox: () => true, label: id => id === 'agent-a' ? 'NOVA' : null,
+      now: () => 1e12, newId: () => 'lbl0123456789abcdef0000' });
+    const runs = {};
+    const c = R.create({ kind: 'webhook', lineId: 'L1' }, { secretHash: T.hashSecret('k') });
+    R.enqueue(c.trigger.id, { text: 'x' });
+    await tick(20);
+    A.ok(/a stage \(NOVA\) ended "error"/.test(R.view(c.trigger.id).lastError || ''), 'the failed stage is named NOVA, not agent-a: ' + R.view(c.trigger.id).lastError);
+  }
+
   /* ---- 10. an UNREADABLE file backs off instead of churning every poll ---- */
   {
     let reads = 0, fail = true;
