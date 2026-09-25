@@ -10148,6 +10148,9 @@ function quiesceForProcessFault() {
     triggerRunner.haltAll();
     killAll(null, ...triggerRunner.inflights());
   });
+  // the whole-line SAMPLE hub's run (POST /api/routing/sample) is real spend too — its own containment for the same
+  // reason as the triggers above (sampleHub is declared further down this file)
+  contain('sample', () => { killAll(null, (sampleHub && sampleHub._internals) ? sampleHub._internals.inflight : null); });
   contain('groups', () => groupSessions && groupSessions.halt && groupSessions.halt());
   contain('subagents', () => subagents && subagents.interruptAll && subagents.interruptAll());
   contain('shell-background', () => shellBg && shellBg.killAll && shellBg.killAll());
@@ -19991,7 +19994,9 @@ function handleHalt(req, res) {
   // line triggers: every trigger hub's live runs die too, and whatever was waiting in their queues is dropped
   let triggerInflights = [];
   try { triggerRunner.haltAll(); triggerInflights = triggerRunner.inflights(); } catch (e) { failNote('triggers.halt', e); }
-  const halted = killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null, ...triggerInflights);   // browser runs + ALL channel hub runs, in one kill (see sidecar/halt.js)
+  // the whole-line SAMPLE hub (POST /api/routing/sample): its entry run AND every stage it chains live in its inflight record
+  const sampleInflight = (sampleHub && sampleHub._internals) ? sampleHub._internals.inflight : null;
+  const halted = killAll(runs, tgInflight, dcInflight, ...genericInflights, ...tgBotInflights, devInflight, stepTest ? stepTest.inflight : null, ...triggerInflights, sampleInflight);   // browser runs + ALL channel hub runs, in one kill (see sidecar/halt.js)
   let cronAborted = 0;
   try { cronAborted = cronDriver.abortAllLeases(); } catch (_) {}   // Phase 0: E-STOP also aborts in-flight cron runs (unattended spend)
   let beatAborted = 0;
