@@ -1945,7 +1945,7 @@ fn sidecar_command(state: &AppState, entry: &Path, node: &Path) -> Command {
             set_sidecar_branded_env(&mut cmd, &env_name, pool.join(","));
         }
     }
-    // Channel bot tokens (Telegram/Discord) inject the same way — keychain -> env -> sidecar runtime layer.
+    // Channel credentials (Telegram/Discord/Slack/Matrix) inject the same way — keychain -> env -> sidecar runtime layer.
     for (channel, env_name) in SIDECAR_CHANNEL_TOKEN_ENVS {
         if let Some(token) = read_channel_token(channel) {
             set_sidecar_branded_env(&mut cmd, env_name, token);

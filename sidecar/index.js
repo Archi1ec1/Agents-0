@@ -156,6 +156,7 @@ const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } =
 const { makeEmitter } = require('../shared/emitter.js');
 const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const { setStationSecretSource } = require('./child-env.js');   // station-secret-free env for every helper process
 const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
 const { makeConnectorOauthFetch } = require('./mcp/oauth-fetch.js');   // DNS-pinned fetch for every connector-OAuth leg
 const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
@@ -197,7 +198,7 @@ const { makeChannelStore } = require('./channels/store.js');
 const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
 const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
-const { hostPowerWithheldFor } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
+const { hostPowerWithheldFor, entryUntrusted } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
 const { makePromptRegistry } = require('./channels/prompts.js');   // C6: the bounded token→meaning map behind inline keyboards
 const { makeOpenAiCompat } = require('./openai-compat.js');   // /v1/* OpenAI-compatible surface (external harness ingress)
 const { makeChannelRegistry, wireChannel } = require('./channels/registry.js');   // H6.2: channel descriptors + generic wire-up
@@ -341,7 +342,11 @@ const { makeRoutineTools } = require('./tools/builtin/routines.js'); // ROUTINES
 const { makeLoopTools } = require('./tools/builtin/loops.js');       // LOOPS: model-facing durable standing-objective controls
 const { makeCommsTools } = require('./tools/builtin/comms.js');      // COMMS: outbound reach — an agent messages a connected chat
 const cronGuard = require('./cron-guard.js');                        // routine prompt-injection tripwire (pure, see file header)
-const { execFile, spawn: childSpawn } = require('node:child_process');   // shadow-git runner + shell subprocess — ambient, here only
+// Every child this file spawns gets the station-secret-free env by default (child-env.js, audit 2026-09-25 #13):
+// git in user repos, shell hooks, loop checks, the folder picker, fs.search's rg. An explicit `env` (the agent
+// shell's sanitizeChildEnv) is passed through untouched.
+const stationChildProcess = require('./child-env.js').guardChildProcess(require('node:child_process'));
+const { execFile, spawn: childSpawn } = stationChildProcess;   // shadow-git runner + shell subprocess — ambient, here only
 let lspManager = null;   // initialized beside procLedger so abrupt desktop-sidecar death is recoverable on next boot
 const loopbackListenerProbe = makeLoopbackListenerProbe({ execFile, platform: process.platform, env: process.env });
 const { makeSubagentManager } = require('./subagents.js');          // durable background worker registry
@@ -1373,6 +1378,19 @@ const RUN_JOURNAL_DIR = path.join(WORKSPACES, '.run-journal');
 const runJournal = makeRunJournal({ dir: RUN_JOURNAL_DIR, fs, path, clock: { now: () => Date.now() }, redact });
 // sec-taint 09-25: a continuation / resumed conversation starts tainted when what it replays was (taint-replay.js)
 const replayedTaint = require('./taint-replay.js').makeReplayedTaint({ journal: runJournal, transcript: transcriptStore });
+// Was the run a recovery continuation resumes STARTED by third-party content? Read from the source's journal; an
+// unreadable journal answers true when the run IS a continuation (narrowing is the only safe failure).
+function recoverySourceEntryUntrusted(o) {
+  const sourceRunId = o && o.recovery && o.recovery.sourceRunId ? String(o.recovery.sourceRunId) : '';
+  if (!sourceRunId) return false;
+  try {
+    const st = runJournal.inspect(sourceRunId);
+    return !!(st && st.meta && st.meta.untrustedEntry === true);
+  } catch (e) {
+    console.warn('[taint] recovery source journal unreadable; treating its entry as untrusted:', (e && e.message) || e);
+    return true;
+  }
+}
 // Recovery is intentionally lazy. Thousands of unresolved/failed journals are audit evidence and
 // must not be discarded, but parsing all of them synchronously before server.listen made startup
 // proportional to lifetime failures. GET /api/run-recoveries pages through the durable files.
@@ -4623,7 +4641,7 @@ applyServiceKeysEnv();          // boot: persisted keys are live for the first r
    exact values the sidecar holds RIGHT NOW (read live, so a rotated/added key is covered on the next call).
    The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
    URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
-setKnownSecretSource(() => collectSecretValues([
+function stationSecretValues() { return collectSecretValues([
   { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
   { values: Object.values(runtimeKeys) },
   { values: Object.values(runtimeKeyPools) },
@@ -4634,7 +4652,10 @@ setKnownSecretSource(() => collectSecretValues([
   { keyed: connectorOauth },
   { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
   { keyed: serviceKeys }
-]));
+]); }
+setKnownSecretSource(stationSecretValues);
+// Helper processes: strip the same held values, plus every name the sidecar itself exported (service keys).
+setStationSecretSource({ names: () => Object.keys(serviceKeysOwnedEnv || {}), values: stationSecretValues });
 // Verified persist (secret-durability law): ok ONLY when a read-back proves the write reached disk. On
 // ok:false the in-memory list stays live but the route reports the failure — never a false "saved".
 function saveServiceKeys() {
@@ -5502,7 +5523,11 @@ const cronDriver = makeCronDriver({
           // GRANTS NEVER FLOW DOWN A LINE (2026-08-04): every runAgent call here is a DOWNSTREAM hop (stage one
           // ran in the driver, with the job's own grants). Whatever the caller passes, a hop runs ungranted —
           // an unattended approval names ONE agent and a belt must not silently extend it to another.
-          initialTaint: o.initialTaint, unattendedGrants: []
+          // EVERY HOP AFTER THE FIRST STARTS TAINTED (sec-taint2 09-25): a hop is handed the upstream stage's OUTPUT,
+          // which may carry text that stage read from the web or a connector — the same 'upstream agent output'
+          // entry the channel hub and the step test give every later hop. The routine's own contextFrom flag only
+          // described stage one's input and let a routine line hop run untainted on another agent's words.
+          initialTaint: 'upstream agent output', unattendedGrants: []
         });
       } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
       finally { runsMeta.delete(hopRunId); }
@@ -12254,7 +12279,8 @@ async function handleConnectorOauthStart(req, res) {
     const verifier = mcpOauth.makeVerifier(crypto.randomBytes(48));
     const state = crypto.randomBytes(16).toString('hex');
     // This URL is opened in the user's browser rather than fetched by the sidecar, so validate it explicitly too.
-    // Catalog entries retain their established behavior; the new untrusted custom-server boundary is fail-closed.
+    // Every discovered endpoint already passed mcpOauth's https/public-host/no-credentials check (catalog too); the
+    // untrusted custom-server boundary additionally resolves DNS and fails closed on a private answer.
     if (target.custom) await connectorOauthPublicUrl(disc.authorizationEndpoint);
     connectorOauthPending.set(state, { id: entry.id, attemptId, label: entry.name, custom: target.custom === true, verifier: verifier, clientId: clientId,
       clientSecret: clientSecret, tokenEndpointAuthMethod: tokenEndpointAuthMethod,
@@ -13328,7 +13354,8 @@ async function handleCronRun(req, res) {
                 // on them) — flagged 2026-08-04 as a widening risk to revisit, same note as cron-driver.js.
                 preloadSkills: Array.isArray(job.skills) ? job.skills.slice() : [], requiredPreloads: true, workdir: job.workdir || null,
                 enabledToolsets: Array.isArray(job.enabledToolsets) ? job.enabledToolsets.slice() : null,
-                initialTaint: !!(job.contextFrom && job.contextFrom.length)
+                // a Run-Now hop is handed upstream OUTPUT exactly like the scheduled seam above: it starts tainted
+                initialTaint: 'upstream agent output'
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
             finally { runsMeta.delete(hopRunId); }
@@ -16267,6 +16294,11 @@ async function runOnceCore(o) {
      Every other origin (the app, routines/loops/cron, triggers, dev/sample hubs) is unchanged: DECISIONS.md
      "FULL POWER MEANS THE WHOLE LOCAL COMPUTER" and the tested "Full Access follows the agent to its routine". */
   const hostPowerWithheld = hostPowerWithheldFor(o);
+  // a run STARTED by third-party content (trigger payload / forwarded / attachment entry, and its hops + workers):
+  // Full Access no longer lifts its taint lock (run-origin.js entryUntrusted, taint.js postTaintBoundary)
+  // A recovery continuation replays its SOURCE run's context, so it inherits the source's untrusted entry from the
+  // journal (begin meta untrustedEntry) — a crash + resume must never hand a trigger payload Full Access again.
+  const untrustedEntryRun = entryUntrusted(o) || recoverySourceEntryUntrusted(o);
   const agentFullAccessNow = () => !hostPowerWithheld && ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
   const stationBypassNow = () => !hostPowerWithheld && (FULL_ACCESS || masterBypassOn());
   // One central, host-minted meaning for "Full Power": station-wide env/master bypass or this agent's
@@ -17302,6 +17334,7 @@ async function runOnceCore(o) {
       fullAccess: () => !signal?.aborted && unrestrictedHostNow(),
       // host-minted, never tool-supplied: a worker delegated from a non-owner channel run stays below Full Power
       withholdHostPower: hostPowerWithheld,
+      untrustedEntry: untrustedEntryRun,   // host-minted: a worker of a payload-started run keeps the taint lock under Full Access
       taintedBy: () => execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null)
     },
     // HOOKS reach the tool boundary through the dispatch ctx. registry.js consults them AFTER the authority,
@@ -17757,14 +17790,14 @@ async function runOnceCore(o) {
       && typeof o.connectorAuthority?.fullAccess === 'function' && o.connectorAuthority.fullAccess() === true;
     let postTaint = revokedByTaint.boundary(liveTool, {
       taintedBy: taintSource, surface: effectSurface, hasPrompt: typeof effectPrompt === 'function',
-      fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
+      fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess, untrustedEntry: untrustedEntryRun
     });
     if (postTaint.needsConfirmation) {
       let decision = 'deny';
       try { decision = await effectPrompt(c, liveTool); } catch (_) {}
       postTaint = revokedByTaint.boundary(liveTool, {
         taintedBy: taintSource, surface: effectSurface, hasPrompt: true, decision,
-        fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
+        fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess, untrustedEntry: untrustedEntryRun
       });
     }
     const postTaintConfirmed = postTaint.oneShot;
@@ -18530,7 +18563,8 @@ async function runOnceCore(o) {
         userTitle: o.syntheticTrigger ? '' : latestUserText(msgs), startedAt: Date.now(),
         cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '',
         cronJobName: trigger === 'schedule' ? String(o.cronJobName || '').slice(0, 200) : '',
-        initialTaint: execution.taintedBy() || ''   // additive: a continuation of this run restores it (replayedTaint)
+        initialTaint: execution.taintedBy() || '',   // additive: a continuation of this run restores it (replayedTaint)
+        untrustedEntry: untrustedEntryRun === true   // additive: a continuation keeps Full Access off (recoverySourceEntryUntrusted)
       });
       runJournal.checkpoint(runId, { phase: 'initial', turn: 0, messages: msgs });
       execution.startJournal();
@@ -19326,7 +19360,8 @@ async function handlePickPath(req, res) {
    two routes do only the filesystem work. Token-gated like every /api route (main route table). ---- */
 
 // stat helper: is `abs` an existing directory? (never throws)
-async function isHarnessDir(abs) { try { const st = await fsp.stat(abs); return st.isDirectory(); } catch (_) { return false; } }
+// A network/device path is never "an existing directory" here: even the stat would be an SMB touch (audit #19).
+async function isHarnessDir(abs) { if (harnessImport.nonLocalPathReason(abs)) return false; try { const st = await fsp.stat(abs); return st.isDirectory(); } catch (_) { return false; } }
 
 // read at most `maxBytes` (default 128KB) of a REGULAR file as utf-8; anything else — missing, unreadable, a
 // directory, or a SYMLINK/JUNCTION — yields null (the scanner treats null as "file absent"). lstat first (does NOT
@@ -19357,7 +19392,8 @@ async function harnessReadClamped(abs, maxBytes, realBase) {
 }
 
 // realpath a directory the harness routes will read under; null when it can't resolve (caller skips it).
-async function harnessRealDir(abs) { try { return await fsp.realpath(abs); } catch (_) { return null; } }
+// A local link that resolves onto a network share is skipped like any other unreadable base (audit #19).
+async function harnessRealDir(abs) { try { const real = await fsp.realpath(abs); return harnessImport.nonLocalPathReason(real) ? null : real; } catch (_) { return null; } }
 
 // never read these off an imported home, even if a future whitelist entry named one (defense in depth — the current
 // filesWanted list is all persona/memory markdown + one config, none of which match).
@@ -19407,6 +19443,8 @@ async function handleHarnessScan(req, res) {
   const harness = body.harness === 'hermes' ? 'hermes' : (body.harness === 'openclaw' ? 'openclaw' : null);
   const root = typeof body.root === 'string' ? body.root : '';
   if (!harness) return json(400, { ok: false, reason: 'harness must be "openclaw" or "hermes"' });
+  const nonLocal = root ? harnessImport.nonLocalPathReason(root) : '';
+  if (nonLocal) return json(400, { ok: false, reason: 'root refused: ' + nonLocal });
   if (!root || !path.isAbsolute(root)) return json(400, { ok: false, reason: 'root must be an absolute path' });
   if (!(await isHarnessDir(root))) return json(400, { ok: false, reason: 'root is not an existing directory' });
 
@@ -19861,7 +19899,7 @@ function computeVersionSurface() {
   if (envHarness) { out.harness = envHarness; out.harnessSource = 'env'; }
   else {
     try {
-      const { execSync } = require('node:child_process');
+      const { execSync } = stationChildProcess;
       const desc = String(execSync('git describe --always --dirty --tags', {
         cwd: path.resolve(__dirname, '..'), stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000
       }) || '').trim();
@@ -19877,7 +19915,7 @@ function computeVersionSurface() {
   if (envBuildDirty === '0' || envBuildDirty === '1') out.buildDirty = envBuildDirty === '1';
   if (!out.buildSha && out.harnessSource === 'git') {
     try {
-      const { execSync } = require('node:child_process');
+      const { execSync } = stationChildProcess;
       const sha = String(execSync('git rev-parse HEAD', {
         cwd: path.resolve(__dirname, '..'), stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000
       }) || '').trim();

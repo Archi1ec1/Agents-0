@@ -1657,6 +1657,10 @@
         try { mediaIngest = await ingestMedia(agentId, allMedia); }
         catch (e) { mediaIngest = { attachments: [], notes: ['[media ingest failed: ' + ((e && e.message) || e) + ']'] }; }
       }
+      // UNTRUSTED ENTRY (run-origin.js entryUntrusted): the same three provenances that start the entry run tainted —
+      // a trigger payload (entryTaint), a chat attachment, a forwarded/quoted third-party message. Decided ONCE per
+      // message so the entry run and every hop of its line carry one verdict.
+      const lineEntryUntrusted = !!(entryTaint || mediaIngest.attachments.length || carriesThirdPartyText(msg));
       // The quoted preamble goes ABOVE the member's own words — it is the context their sentence refers back to.
       // It is built from msg.replyTo only, never from msg.text, so routing/classification/commands (which all ran
       // on the RAW text above) are untouched by it.
@@ -1796,6 +1800,9 @@
             emit: sink, signal: ac.signal, runId, lineId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
             initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null)),
+            // RUN ORIGIN (run-origin.js entryUntrusted): the job itself is third-party content, so Full Access does not
+            // lift this run's taint lock. Every hop of its line inherits the same verdict (lineEntryUntrusted below).
+            untrustedEntry: lineEntryUntrusted || undefined,
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
             // RUN ORIGIN (sidecar/run-origin.js): a chat sender started this run. Full Power (per-agent Full Access /
@@ -1899,6 +1906,7 @@
                 agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 streamId: canonicalStreamId || undefined,   // the whole line shares one canonical transcript
                 initialTaint: 'upstream agent output',
+                untrustedEntry: lineEntryUntrusted || undefined,   // a hop of a payload-started line stays under the taint lock
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
                 channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
                 // the hop's OWN dock room (multi-bay: never the union of the agent's bays)

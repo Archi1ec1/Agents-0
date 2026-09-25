@@ -10,6 +10,8 @@ test/sidecar.http.test.js
 test/channels.replay.e2e.test.js
 test/config-permissions-import.e2e.test.js
 test/secret-redaction.e2e.test.js
+test/harness-scan-local.e2e.test.js
+test/child-env.e2e.test.js
 test/connector-security.e2e.test.js
 test/connector-oauth-refresh-race.e2e.test.js
 test/github-device.http.test.js
@@ -42,6 +44,7 @@ test/e2e.summon.test.js
 test/e2e.dispatch-session.test.js
 test/e2e.worker-access.test.js
 test/taint-lineage.e2e.test.js
+test/e2e.trigger-fullaccess-taint.test.js
 test/e2e.pathtrust.test.js
 test/e2e.subagent-background.test.js
 test/google-signin.e2e.test.js
@@ -84,6 +87,7 @@ test/cron.session-transcript.e2e.test.js
 test/channels.telegram.e2e.test.js
 test/channels.telegram.connect-pairing.e2e.test.js
 test/channels.telegram.multibot.e2e.test.js
+test/channels.keychain-all.e2e.test.js
 test/channels.telegram.botchain.e2e.test.js
 test/channels.telegram.buttons.e2e.test.js
 test/webhook-replay.e2e.test.js
