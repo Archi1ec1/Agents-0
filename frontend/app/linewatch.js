@@ -194,7 +194,7 @@
                agentId/dockId/lineId/reason to the product + slag crates it ships)
      ctx     — { run: LineWatch run record | null, row: the server's run row (GET /api/runs?runId=) | null,
                  nowMs, agentName(aid), dockName(dockId), lineName(lineId), usd(n) }
-   -> { kind, title, rows: [[label, value]...], state, actions: { transcript: {agentId, runId}|null, workflow: {lineId, dockId, sessionId}|null } } */
+   -> { kind, title, rows: [[label, value]...], state, runBy: agentId|null, actions: { transcript: {agentId, runId}|null, workflow: {lineId, dockId, sessionId}|null } } */
   function crateCard(payload, ctx) {
     const p = payload || {}, c = ctx || {};
     const agentName = typeof c.agentName === 'function' ? c.agentName : (a => str(a).toUpperCase());
@@ -248,7 +248,10 @@
     const transcript = (rid && aid) ? { agentId: aid, runId: rid } : null;
     const sess = p.steptest || (run && run.steptest) || null;
     const workflow = (lineId || sess) ? { lineId: lineId || null, dockId: dockId || null, sessionId: sess } : null;
-    return { kind, title, rows, state, actions: { transcript, workflow: sess ? workflow : null } };
+    // runBy: the agent the RUN row names — only once a run is proven (started or recorded), so the card's skin thumb
+    // shows who WORKED it, never who a queued crate is merely addressed to
+    const runBy = (rid || ended) && aid ? aid : null;
+    return { kind, title, rows, state, runBy, actions: { transcript, workflow: sess ? workflow : null } };
   }
 
   /* ---------- the per-line numbers, as text ---------- */

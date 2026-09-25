@@ -107,7 +107,12 @@
 .wf-node:disabled { opacity: .6; cursor: default; }
 .wf-node .k { display: flex; justify-content: space-between; align-items: center; font-size: 12px; letter-spacing: 1.6px; color: var(--ph-dim); }
 .wf-node .t { font-size: 18px; color: var(--ph-bright); letter-spacing: .6px; }
-.wf-node .a { font-size: 14px; color: var(--text); overflow-wrap: anywhere; }
+.wf-node .a { font-size: 14px; color: var(--text); overflow-wrap: anywhere; display: flex; align-items: center; gap: 5px; min-width: 0; }
+.wf-node .a .an { min-width: 0; }
+/* the strip's crew: a small skin well per bay (same glass well as the agent picker) */
+.wf-node .wf-nthumb { border-radius: 4px; background: var(--wf-well); box-shadow: inset 0 0 0 1px var(--wf-edge), var(--wf-well-shadow); }
+/* inline skin (trigger rows, starting-agent chips, the run log, a working line): the figure alone, sat on the text line */
+.wf-panel .wf-ithumb { margin: -3px 4px -3px 0; }
 .wf-node .a.none { color: var(--gold); }
 .wf-node .s { font-size: 13px; color: var(--ph-dim); line-height: 1.15; max-height: 2.3em; overflow: hidden; }
 .wf-node .s i { font-style: normal; color: var(--gold); }
@@ -172,20 +177,22 @@
 
 /* the agent picker: every agent, with an honest status — glass cards, the chosen one lit with a rail */
 .wf-agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
-.wf-agent { display: grid; grid-template-columns: 26px 1fr; gap: 0 7px; align-items: center; text-align: left; font: inherit;
+.wf-agent { display: grid; grid-template-columns: 34px 1fr; gap: 0 7px; align-items: center; text-align: left; font: inherit;
   background: var(--refit-glass, var(--wf-plate)); border: 1px solid var(--wf-edge); border-radius: 7px; padding: 5px 7px; color: var(--text); cursor: pointer; box-shadow: var(--wf-light);
   transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft); }
 .wf-agent:hover:not(:disabled) { border-color: rgba(var(--ph-rgb),.45); background: var(--wf-hover); }
 .wf-agent.on { border-color: var(--ph); background: var(--wf-on); box-shadow: inset 2px 0 0 var(--ph), var(--wf-light); }
 .wf-agent:disabled { opacity: .5; cursor: not-allowed; }
-.wf-agent .av { grid-row: 1/3; width: 26px; height: 26px; border-radius: 5px; display: grid; place-items: center; font-size: 17px; color: var(--ink);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), inset 0 -1px 0 rgba(0,0,0,.25), 0 0 0 1px rgba(0,0,0,.45); }
+/* the agent's SKIN in a recessed glass well (the panel's own --wf-well material; matte, no glow) — the same body the
+   floor draws, never a letter. A disabled card dims it with the card (opacity). */
+.wf-agent .av { grid-row: 1/3; width: 34px; height: 42px; border-radius: 5px; background: var(--wf-well); box-shadow: inset 0 0 0 1px var(--wf-edge), var(--wf-well-shadow); }
+.wf-agent.on .av:not(.agt-wait) { box-shadow: inset 0 0 0 1px rgba(var(--ph-rgb),.45), var(--wf-well-shadow); }
 .wf-agent .nm { font-size: 16px; color: var(--ph-bright); letter-spacing: .6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-agent .st { font-size: 12px; color: var(--ph-dim); line-height: 1.1; }
 .wf-agent .st.free { color: var(--ok); }
 .wf-agent.recruit { border-style: dashed; border-color: rgba(var(--ph-rgb),.3); background: transparent; box-shadow: none; }
 .wf-agent.recruit:hover:not(:disabled) { border-color: rgba(var(--ph-rgb),.55); background: var(--wf-hover); }
-.wf-agent.recruit .av { background: transparent; border: 1px dashed rgba(var(--ph-rgb),.4); color: var(--ph); box-shadow: none; }
+.wf-agent.recruit .av { display: grid; place-items: center; font-size: 22px; background: transparent; border: 1px dashed rgba(var(--ph-rgb),.4); color: var(--ph); box-shadow: none; }
 .wf-compute { display: grid; gap: 6px; justify-items: start; }
 
 /* the contract: GETS → DOES → HANDS OFF → TO — one recessed form, labels on a quiet plate column */

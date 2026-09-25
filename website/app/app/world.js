@@ -9066,6 +9066,7 @@ const World = (() => {
     CrateCard.open({
       clientX: ev ? ev.clientX : 0, clientY: ev ? ev.clientY : 0,
       payload, api: apiUrl,
+      agentOf: aid => bodyForAgent(aid),   // the RUN row's skin thumb draws this body's own skin
       // the card re-resolves on every refresh: the run record grows (start, cost, end) while the card is open
       resolve: row => { const c = crateCtx(payload); c.row = row || null; return LineWatch.crateCard(payload, c); },
       runIdOf: () => { const c = crateCtx(payload); return (c.run && c.run.runId) || payload.runId || null; },

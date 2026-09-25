@@ -63,6 +63,11 @@ const WorkflowPanel = (() => {
   }
   const prop = id => (id && H.station().propById(id)) || null;
   const nameOf = aid => H.agentLabel(aid);
+  /* an agent is shown by its SKIN — the same body the floor draws (AgentPortraits.thumbHTML: crisp, cached per skin
+     + size + device scale, a neutral silhouette while a skin loads). An id the roster does not know gets the
+     silhouette, never a guessed skin. */
+  const agentOf = aid => (aid && (H.agents() || []).find(a => a && a.id === aid)) || null;
+  const thumb = (aid, w, h, cls) => (typeof AgentPortraits !== 'undefined' && AgentPortraits.thumbHTML) ? AgentPortraits.thumbHTML(agentOf(aid), w, h, cls) : '';
   const lineName = () => { const c = comp(); return c ? H.lineNameOf(c) : null; };
   function dockLabel(f, pid) {
     const d = f && f.docks[pid]; if (!d) { const p = prop(pid); return p ? (p.role || 'BAY') : 'BAY'; }
@@ -342,7 +347,7 @@ const WorkflowPanel = (() => {
       const ok = !!(d.agentId && H.hasCompute(d.agentId));
       return '<button type="button" class="wf-node dock' + sel(d.propId) + '" data-node="' + esc(d.propId) + '">'
         + '<span class="k">BAY ' + i + dot(ok) + '</span><span class="t">' + esc(d.role || 'STEP') + '</span>'
-        + '<span class="a' + (d.agentId ? '' : ' none') + '">' + esc(d.agentId ? nameOf(d.agentId) : 'no agent yet') + '</span>'
+        + '<span class="a' + (d.agentId ? '' : ' none') + '">' + (d.agentId ? thumb(d.agentId, 22, 28, 'wf-nthumb') : '') + '<span class="an">' + esc(d.agentId ? nameOf(d.agentId) : 'no agent yet') + '</span></span>'
         + '<span class="s">' + (p.brief ? esc(String(p.brief).slice(0, 90)) : '<i>no instructions yet</i>') + '</span>'
         + (d.agentId && !d.routed ? '<span class="warn">not routed yet</span>' : '')
         + (t ? '<span class="badge">✓ TESTED</span>' : '') + '</button>';
@@ -494,7 +499,7 @@ const WorkflowPanel = (() => {
     const rows = agents.map(a => {
       const st = a.id === cur ? { busy: false, txt: 'works this bay' } : agentStatus(a.id, p.id);
       return '<button type="button" class="wf-agent' + (a.id === cur ? ' on' : '') + (st.also ? ' also' : '') + '" data-aid="' + esc(a.id) + '" aria-pressed="' + (a.id === cur) + '">'
-        + '<span class="av" style="background:' + esc(a.color || 'var(--ph)') + '">' + esc(String(a.name || a.id)[0] || '?').toUpperCase() + '</span>'
+        + thumb(a.id, 34, 42, 'av')
         + '<span class="nm">' + esc(String(a.name || a.id).toUpperCase()) + '</span><span class="st' + (st.txt === 'free' ? ' free' : '') + '">' + esc(st.txt) + '</span></button>';
     }).join('') + (canSummon ? '<button type="button" class="wf-agent recruit" id="wf-recruit"><span class="av">+</span><span class="nm">RECRUIT</span><span class="st">a new ' + esc(p.role.toLowerCase()) + '</span></button>' : '');
     const pos = H.stepPositionOf(cur, p.id);   // THIS bay's position (multi-bay: the agent may crew another)
@@ -580,7 +585,7 @@ const WorkflowPanel = (() => {
     else inputHtml = '<p class="wf-help">This step\'s input is ' + esc(dockLabel(f, nb.prev[0])) + '\'s output. <b>Test that step first</b>, then its result flows in here.</p>'
       + '<div class="wf-row"><button type="button" class="bb sm" data-go="' + esc(nb.prev[0]) + '">◂ Go to ' + esc(dockLabel(f, nb.prev[0])) + '</button></div>';
     let outHtml = '';
-    if (pending) outHtml = '<div class="wf-log"><span class="wf-spin"></span>' + esc(nameOf(p.agentId)) + ' is working… (a real run)</div>';
+    if (pending) outHtml = '<div class="wf-log"><span class="wf-spin"></span>' + thumb(p.agentId, 16, 20, 'wf-ithumb') + esc(nameOf(p.agentId)) + ' is working… (a real run)</div>';
     else if (err) outHtml = '<div class="wf-warnline">✕ ' + esc(err) + '</div>';
     else if (t) {
       const v = /VERDICT:\s*(approved|revise)/i.exec(t.output || '');
@@ -652,7 +657,7 @@ const WorkflowPanel = (() => {
       : routines.map(r => {
         const said = H.human(r.display);
         return '<div class="trg-row"><span class="trg-state' + (r.enabled && armed ? ' on' : '') + '">' + (r.enabled ? (armed ? '●' : '◍') : '○') + '</span> <b>' + esc(r.name) + '</b>'
-          + '<div class="trg-row-meta"><span' + (said !== r.display ? ' data-tip="' + esc(r.display) + '"' : '') + '>' + esc(said) + '</span> · fires at ' + esc(nameOf(r.agentId))
+          + '<div class="trg-row-meta"><span' + (said !== r.display ? ' data-tip="' + esc(r.display) + '"' : '') + '>' + esc(said) + '</span> · fires at ' + thumb(r.agentId, 16, 20, 'wf-ithumb') + esc(nameOf(r.agentId))
           + (r.startsLine ? (armed ? ' · <b class="wf-okc">runs the whole line</b>' : ' · <span class="trg-warn">saved — scheduler OFF</span>')
             : r.runsLine ? ' · <span class="trg-warn">runs from a mid-line step</span>' : ' · <span class="dim">runs only that agent</span>')
           + (r.enabled ? '' : ' · paused') + '</div></div>';
@@ -665,7 +670,7 @@ const WorkflowPanel = (() => {
         + (r.connected ? '' : ' · <span class="trg-warn">not connected</span>') + '</div></div>').join('');
     const feed = H.feedState();
     const feedTxt = !feed.known ? 'Checking what feeds this floor…' : feed.fed ? '✓ FED — a channel, an armed routine, a watched folder or a webhook is wired to drop work on this floor.' : 'NO FEED — nothing is wired to drop work on this floor yet.';
-    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
+    const dockChip = d => '<button type="button" class="bb sm trg-dock' + (d.propId === S.trgDock ? ' active' : '') + '" data-dock="' + esc(d.propId) + '" data-aid="' + esc(d.agentId) + '">' + thumb(d.agentId, 16, 20, 'wf-ithumb') + esc((d.role ? d.role + ' · ' : '') + nameOf(d.agentId)) + '</button>';
     const dockHint = pid => { const order = docks.map(d => d.propId), i = order.indexOf(pid); if (i <= 0) return 'starts at the first step — the whole line runs, ' + docks.length + ' step' + (docks.length === 1 ? '' : 's');
       return 'skips ' + order.slice(0, i).map(x => nameOf(docks[order.indexOf(x)].agentId)).join(' and ') + ' — the line runs from ' + nameOf(docks[i].agentId) + ' on (' + (docks.length - i) + ' of ' + docks.length + ' steps)'; };
     const LD = (typeof Pipeline !== 'undefined' && Pipeline.LINE_LIMIT_DEFAULTS) || { maxHops: 6, maxUsdPerMessage: 2, maxUsdPerDay: null };
@@ -686,7 +691,7 @@ const WorkflowPanel = (() => {
         + (typeof SchedPicker !== 'undefined' ? SchedPicker.html({ inputId: 'trg-sched' }) : '<input id="trg-sched" class="refit-input" type="text" maxlength="80" placeholder="schedule — every 30m · 0 9 * * * · in 2h" />')
         + '</div><div class="trg-preview" id="trg-preview"></div>'
         + (docks.length > 1 ? '<details class="wf-more"><summary>Starting agent · ' + esc(nameOf(trgAgent())) + '</summary><p class="wf-help">Usually, start with the first step. Choosing a later step skips the steps before it.</p><div class="wf-chips" id="trg-docks">' + docks.map(dockChip).join('') + '</div><div class="wf-help trg-dock-hint" id="trg-dock-hint">' + esc(dockHint(S.trgDock)) + '</div></details>'
-          : docks.length === 1 ? '<div class="wf-help">fires at <b>' + esc((docks[0].role ? docks[0].role + ' · ' : '') + nameOf(docks[0].agentId)) + '</b> — this line’s first step</div>'
+          : docks.length === 1 ? '<div class="wf-help">fires at ' + thumb(docks[0].agentId, 16, 20, 'wf-ithumb') + '<b>' + esc((docks[0].role ? docks[0].role + ' · ' : '') + nameOf(docks[0].agentId)) + '</b> — this line’s first step</div>'
           : '<div class="wf-warnline">Assign an agent to a connected BAY first. A schedule needs an agent to start the work.</div>')
         + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="trg-create"' + (docks.length ? '' : ' disabled') + '>▸ SAVE SCHEDULE</button><button type="button" class="bb sm" id="trg-cancel">CANCEL</button></div>'
         + '</div><div class="wf-help trg-msg' + (S.trgMsg && S.trgMsg.bad ? ' bad' : '') + '" id="trg-msg"' + (S.trgMsg ? '' : ' hidden') + '>' + esc(S.trgMsg ? S.trgMsg.t : '') + '</div>'
@@ -1173,7 +1178,7 @@ const WorkflowPanel = (() => {
     const live = s && W.isLive(s);
     const budget = s && s.limits ? '<div class="wf-budget"><span>$' + (+s.totalUsd || 0).toFixed(3) + '</span><span class="meter"><i style="width:' + Math.min(100, ((+s.totalUsd || 0) / (+s.limits.maxUsdPerMessage || 2)) * 100) + '%"></i></span><span class="dim">of $' + (+s.limits.maxUsdPerMessage || 2).toFixed(2) + ' line cap' + (+s.droppedUsd > 0 ? ' · includes $' + (+s.droppedUsd).toFixed(3) + ' from rewound steps' : '') + '</span></div>' : '';
     const log = s && s.hops && s.hops.length ? '<div class="wf-runlog" aria-label="Run log"><span class="lbl">RUN LOG</span>' + s.hops.map((h, i) => (i ? '<span class="arr">▸</span>' : '')
-      + '<button type="button" class="wf-hop' + (S.hop === i ? ' sel' : '') + (h.edited ? ' edited' : '') + (h.verdict === 'revise' ? ' revise' : '') + '" data-hop="' + i + '">' + esc(W.hopLabel(h, nameOf)) + '</button>').join('') + '</div>' : '';
+      + '<button type="button" class="wf-hop' + (S.hop === i ? ' sel' : '') + (h.edited ? ' edited' : '') + (h.verdict === 'revise' ? ' revise' : '') + '" data-hop="' + i + '">' + thumb(h.agentId, 16, 20, 'wf-ithumb') + esc(W.hopLabel(h, nameOf)) + '</button>').join('') + '</div>' : '';
     const err = S.sessionErr ? '<div class="wf-warnline">✕ ' + esc(S.sessionErr) + '</div>' : '';
     let main = '';
     if (S.hop != null && s && s.hops[S.hop]) main = hopDetailHTML(s, S.hop);
@@ -1194,7 +1199,7 @@ const WorkflowPanel = (() => {
         + '<div class="wf-row"><button type="button" class="bb sm refit-primary" id="wf-st-go"' + (S.busy ? ' disabled' : '') + '>▶ START STEP TEST</button></div></section>';
     } else if (s.state === 'running') {
       const who = s.running ? nameOf(s.running.agentId) : 'the line';
-      main = '<section class="wf-sec"><h3><span class="wf-spin"></span>' + esc(who) + ' is working…</h3><p class="wf-help">A real run. It pauses when this step hands off.</p>'
+      main = '<section class="wf-sec"><h3><span class="wf-spin"></span>' + (s.running ? thumb(s.running.agentId, 16, 20, 'wf-ithumb') : '') + esc(who) + ' is working…</h3><p class="wf-help">A real run. It pauses when this step hands off.</p>'
         + '<div class="wf-row"><button type="button" class="bb sm" id="wf-st-stop">■ STOP</button></div></section>';
     } else if (s.state === 'paused') main = pausedHTML(s, f);
     body.innerHTML = '<section class="wf-sec wf-sthead"><h3><span class="n">STEP TEST</span>' + esc(lineName() || 'This line') + '</h3>' + budget + '</section>' + err + log + main;
