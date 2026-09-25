@@ -124,13 +124,31 @@ async function expectReject(p, pattern, label) {
     A.eq(parentAbortedNested, true, 'parent cancellation also aborts the in-flight nested dispatch');
   }
 
-  // Public shape: this is a computer-granted READ composition tool, never a disguised shell.
+  // Public shape + SECURITY STOPGAP (2026-09-23 audit): the vm child is not a proven isolation boundary,
+  // so code.run is gated exactly like shell.exec until the worker is rebuilt on a primitive-only bridge.
   {
     const t = Code.makeCodeTools({}).codeTool;
     A.eq(t.name, 'code.run', 'stable public name');
-    A.eq(t.scope, 'read', 'v1 carries read scope');
-    A.eq(t.requiresConsent, false, 'the primitive itself has no side effect to consent to');
+    A.eq(t.scope, 'execute', 'code.run carries execute scope (autonomous exec lockout applies)');
+    A.eq(t.requiresConsent, true, 'code.run asks the Commander before running model code');
     A.ok(/currently granted READ tools/.test(t.description), 'wire description states the authority boundary');
+
+    const Taint = require('../sidecar/taint.js');
+    const InputPolicy = require('../sidecar/inputpolicy.js');
+    A.eq(InputPolicy.impactOfTool(t), 'workspace-process', 'code.run is classified as host process execution');
+    A.eq(Taint.allowedWhenTainted(t), false, 'untrusted content (web/connector/attachment) revokes code.run for the rest of the run');
+
+    const src = require('node:fs').readFileSync(require.resolve('../sidecar/capability/registry.js'), 'utf8');
+    A.ok(/tool: 'code\.run', scope: 'execute', requiresConsent: true/.test(src), 'capability registry row agrees with the tool def');
+
+    const { makeConsentBroker } = require('../sidecar/permissions.js');
+    const call = { id: 'c1', name: 'code.run', args: { code: 'return 1' } };
+    const unattended = makeConsentBroker({ surface: 'autonomous' })(call, t);
+    A.eq(!!(unattended && unattended.allow), false, 'an autonomous run cannot execute code.run (no read-only auto-allow)');
+    let asked = 0;
+    const interactive = await makeConsentBroker({ surface: 'interactive', prompt: () => { asked++; return 'deny'; } })(call, t);
+    A.eq(asked, 1, 'an interactive run asks the Commander before code.run');
+    A.eq(!!(interactive && interactive.allow), false, 'a denied prompt blocks code.run');
   }
 
   A.report('code-mode.test');

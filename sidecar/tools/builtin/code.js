@@ -55,7 +55,11 @@ function makeCodeTools(deps) {
       type: 'object', additionalProperties: false, required: ['code'],
       properties: { code: { type: 'string', minLength: 1, maxLength: limits.maxCodeBytes } }
     },
-    scope: 'read', capability: 'code', impact: 'none', requiresConsent: false, timeoutMs: limits.timeoutMs + 2000,
+    // SECURITY STOPGAP (2026-09-23 audit): the node:vm child is NOT a proven isolation boundary, so model
+    // code must be treated as host code execution until the worker is re-built on a primitive-only bridge.
+    // Classified like shell.exec: execute scope (autonomous exec lockout), consent on interactive surfaces,
+    // and workspace-process impact so an untrusted-content taint revokes it for the rest of the run.
+    scope: 'execute', capability: 'code', impact: 'workspace-process', requiresConsent: true, timeoutMs: limits.timeoutMs + 2000,
     async run(args, ctx) {
       if (!ctx || typeof ctx.composeDispatch !== 'function') throw new Error('code-mode parent dispatcher unavailable');
       const source = String(args && args.code || '');

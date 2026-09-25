@@ -1658,10 +1658,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // NAME — read-only with a ✎ rename affordance, or an inline editor while agEdit['__name'] is set (wired in wireHead).
       (agEdit['__name']
         ? '<div class="ag-name-edit">' +
-            '<input id="ag-rename-in" class="ag-name-input" type="text" maxlength="18" spellcheck="false" autocomplete="off" value="' + esc(a.name) + '" aria-label="Rename agent" style="color:' + a.color + '">' +
+            '<input id="ag-rename-in" class="ag-name-input" type="text" maxlength="18" spellcheck="false" autocomplete="off" value="' + esc(a.name) + '" aria-label="Rename agent" style="color:' + esc(a.color) + '">' +
             '<button class="ag-name-ok" id="ag-rename-save" title="save name" aria-label="Save name">✓</button>' +
             '<button class="ag-name-x" id="ag-rename-cancel" title="cancel" aria-label="Cancel rename">✕</button></div>'
-        : '<div class="ag-name" style="color:' + a.color + '">' + esc(a.name) +
+        : '<div class="ag-name" style="color:' + esc(a.color) + '">' + esc(a.name) +
             (duplicateAgentName(a) ? '<span class="ag-name-id">[' + esc(duplicateAgentName(a)) + ']</span>' : '') +
             '<button class="ag-rename" id="ag-rename-btn" title="rename this agent" aria-label="Rename agent">✎</button>' +
             (lv ? '<span class="ag-lv">Lv ' + lv + '</span>' : '') + '</div>') +
@@ -3063,7 +3063,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         top.innerHTML =
           '<div class="ag-list" role="listbox" aria-label="Agents on station">' +
           present.map((x, i) => '<div class="ag-item ' + (i === sel ? 'sel' : '') + '" data-i="' + i + '" role="option" aria-selected="' + (i === sel ? 'true' : 'false') + '" tabindex="0" style="--ci:' + i + '">' +
-            '<span class="ag-item-dot" style="color:' + x.color + '">●</span>' +
+            '<span class="ag-item-dot" style="color:' + esc(x.color) + '">●</span>' +
             '<span class="ag-item-nm">' + esc(x.name) + '</span>' + hint(x) + '</div>').join('') +
           '</div>';
         const pick = (it) => { sel = +it.dataset.i; delete agEdit['__name']; sfx('click'); rerender('agents'); };

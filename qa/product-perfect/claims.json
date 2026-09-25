@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "7890bb663a2643a9f96c84bbc56c684644dfa306",
+    "sourceCommit": "8ff73e6611e7d1b0c3ece07f9af895b261e21d30",
     "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
@@ -168,8 +168,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 386338,
-        "sha256": "87164703a4b814242ea74c122834e955a8fa4a16a2f8bef657896481f3649c6f"
+        "bytes": 386632,
+        "sha256": "345cac22d7c04b22b43f58306d096ecb0d776d69da36c36c1c09579badfe6df0"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -1068,8 +1068,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 737519,
-        "sha256": "9065a3cc639436acf2dfa7b385e7ce1035cbbd31cc48f81f465b51c0044ce681"
+        "bytes": 737534,
+        "sha256": "5c7244f2a7e3081f6ddc6cef7d135ba6d39432037e77e56a5d81349644c66fdd"
       },
       {
         "path": "frontend/app/study.js",
@@ -1233,8 +1233,8 @@
       },
       {
         "path": "frontend/app/windows/messaging.js",
-        "bytes": 57585,
-        "sha256": "94a7d7efe8e53f377dc259d8f9d7da755f7351d08c34bd0290381df550cb8b08"
+        "bytes": 61575,
+        "sha256": "26177af036c557a3a8fc9357f5bbb5a5b67a30e026f38e527fb9677668856bf5"
       },
       {
         "path": "frontend/app/windows/outbox.js",
@@ -1313,8 +1313,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 804110,
-        "sha256": "b63a153e615188b42dc8e0e05525caf95da4aa913b08fff004a0a925d6974d4e"
+        "bytes": 804115,
+        "sha256": "d566380791989ec9642a57868670f53bfec2692cf59c4306ab817b639806bab1"
       },
       {
         "path": "frontend/app/worldlab.js",
