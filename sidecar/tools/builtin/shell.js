@@ -962,10 +962,12 @@
           const source = environment && typeof environment.statusBackground === 'function' ? environment : null;
           if (!source && !bg) return { content: 'Background processes are not available in this build.', summary: 'unavailable' };
           const t0 = now();
-          const step = 1000, rounds = Math.max(1, Math.ceil(timeoutMs / step));
+          // timeoutMs 0 = check once, never sleep; the last step is trimmed so the wait never overshoots its budget
+          const step = 1000, rounds = Math.ceil(timeoutMs / step);
           let v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           for (let i = 0; v && v.running && i < rounds && !(ctx.signal && ctx.signal.aborted); i++) {
-            await new Promise(function (res) { setTimeout(res, step); });
+            const ms = Math.min(step, timeoutMs - i * step);
+            await new Promise(function (res) { setTimeout(res, ms); });
             v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           }
           r = v ? Object.assign({ ok: true, state: v.running ? ((ctx.signal && ctx.signal.aborted) ? 'cancelled' : 'running') : 'exited', waitedMs: Math.max(0, now() - t0) }, v) : { ok: false, error: 'no such background process' };
