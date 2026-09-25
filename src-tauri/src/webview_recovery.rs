@@ -12,6 +12,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// What the host does for one `COREWEBVIEW2_PROCESS_FAILED_KIND`.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecoveryAction {
     /// The page's renderer died: the webview itself is alive, so reload the document.
@@ -24,9 +25,12 @@ pub(crate) enum RecoveryAction {
 }
 
 // Values of COREWEBVIEW2_PROCESS_FAILED_KIND (WebView2 SDK; stable ABI constants).
+#[cfg_attr(not(windows), allow(dead_code))]
 const KIND_BROWSER_PROCESS_EXITED: i32 = 0;
+#[cfg_attr(not(windows), allow(dead_code))]
 const KIND_RENDER_PROCESS_EXITED: i32 = 1;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn action_for_kind(kind: i32) -> RecoveryAction {
     match kind {
         KIND_BROWSER_PROCESS_EXITED => RecoveryAction::Rebuild,
@@ -35,6 +39,7 @@ pub(crate) fn action_for_kind(kind: i32) -> RecoveryAction {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn kind_name(kind: i32) -> &'static str {
     match kind {
         0 => "browser-process-exited",
@@ -82,6 +87,7 @@ pub(crate) fn second_launch_action(
 /// Bounded retries: under sustained memory starvation a rebuilt webview can die again at once.
 /// Recovering forever would thrash the machine; after the budget is spent the window stays as it
 /// is and the startup log says why, so a restart is the user's call.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct RecoveryBudget {
     max_attempts: usize,
     window: Duration,
@@ -97,6 +103,7 @@ impl RecoveryBudget {
         }
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     /// Records an attempt at `now` and returns whether it is allowed.
     pub(crate) fn try_spend(&self, now: Instant) -> bool {
         let mut attempts = match self.attempts.lock() {
