@@ -154,8 +154,11 @@ const oauthDevice = require('./providers/oauth-device.js');
 const oauthTokenStore = require('./providers/oauth-token-store.js');
 const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } = require('./spend.js');
 const { makeEmitter } = require('../shared/emitter.js');
-const { redact, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
+const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
+const { makeConnectorOauthFetch } = require('./mcp/oauth-fetch.js');   // DNS-pinned fetch for every connector-OAuth leg
+const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
 const { runRouteFailure } = require('./runroute.js');   // a failure escaping handleRun must never read as an empty 200
 const { json: respondJson, readJsonBody, isAgentId } = require('./respond.js');   // canonical json()/body/agent-id helpers — adopt incrementally, don't mass-migrate
 const { readBody, readBodyBuffer } = require('./http-body.js');
@@ -855,6 +858,7 @@ const processFault = makeProcessFaultHandler({
   keepAlive: UNCAUGHT_KEEP_SERVING,
   breaker: CRASH_LOOP_BREAKER ? crashLedger : null,   // crash-loop circuit breaker: the 3rd fault exit in 10m holds the process alive DEGRADED
   log: msg => console.error('[process-fault] ' + msg),
+  redact: redact,   // /api/health (unauthenticated), the crash ledger and the log all carry the fault text
   // Immediate containment is separate from release: a held crash loop must KEEP the workspace-owner claim so a
   // second writer cannot enter, while every producer in this torn process is stopped and all live runs abort.
   quiesce: () => quiesceForProcessFault(),
@@ -3741,17 +3745,17 @@ function saveCodexTokens(obj) {
   console.error('[codex] token persist UNVERIFIED after retry (' + codexPersistError + ') — tokens kept in memory for this session; a restart may require re-signing in to ChatGPT.');
   return false;
 }
-// Logout must sanitize BOTH resilient copies before live state is cleared; otherwise a failed unlink can return
-// success now and resurrect the refresh token on restart. Once both copies read back credential-free, removing
-// the null files is only cleanup — a failed unlink cannot recover a secret.
+// Logout must sanitize BOTH resilient copies before live state is cleared; otherwise a failed write can return
+// success now and resurrect the refresh token on restart. The copies are KEPT as a signed-out TOMBSTONE rather than
+// unlinked: an ABSENT current file lets boot migrate a legacy workspace's codex/tokens.json back in
+// (loadCodexTokensWithMigration), which silently signed the Commander back in after an explicit logout.
 function clearCodexTokens() {
-  const ok = saveCredentialRemovalVerified(CODEX_TOKENS_FILE, null, raw => raw === null, 'codex');
+  const ok = saveCredentialRemovalVerified(CODEX_TOKENS_FILE, codexTokenStore.SIGNED_OUT,
+    raw => codexTokenStore.isSignedOutTombstone(raw), 'codex');
   if (!ok) {
     codexPersistError = 'logout could not be persisted to disk';
     return false;
   }
-  try { fs.unlinkSync(CODEX_TOKENS_FILE); } catch (_) {}
-  try { fs.unlinkSync(CODEX_TOKENS_FILE + '.bak'); } catch (_) {}
   codexPersistError = ''; codexAuthDead = null;
   return true;
 }
@@ -4612,6 +4616,25 @@ let serviceKeys = loadServiceKeys();
 let serviceKeysOwnedEnv = {};   // env vars WE set (the applyEnv clobber guard) — rebuilt on every apply
 function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(serviceKeys, process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
 applyServiceKeysEnv();          // boot: persisted keys are live for the first run without any UI touch
+/* KNOWN-VALUE REDACTION (security audit 2026-09-25). redact() only knew vendor SHAPES, so a shapeless secret —
+   a service key the model was promised it would never see, a custom connector token, a Mistral key, a rotated
+   OAuth refresh token — went verbatim into tool results, transcripts, the bus and diagnostics the moment anything
+   printed it (`echo $MY_KEY`, a server echoing the key in an error body). Every redact() call now also scrubs the
+   exact values the sidecar holds RIGHT NOW (read live, so a rotated/added key is covered on the next call).
+   The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
+   URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
+setKnownSecretSource(() => collectSecretValues([
+  { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
+  { values: Object.values(runtimeKeys) },
+  { values: Object.values(runtimeKeyPools) },
+  { values: Object.values(channelTokenRuntime) },
+  { keyed: channelSecrets },
+  { keyed: codexTokens },
+  { keyed: Object.values(oauthProviders).map(p => p && p.tokens) },
+  { keyed: connectorOauth },
+  { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
+  { keyed: serviceKeys }
+]));
 // Verified persist (secret-durability law): ok ONLY when a read-back proves the write reached disk. On
 // ok:false the in-memory list stays live but the route reports the failure — never a false "saved".
 function saveServiceKeys() {
@@ -4701,10 +4724,16 @@ async function connectorOauthPublicUrl(raw) {
   await skillWebInternals.assertResolvedSafe(u, host => dns.promises.lookup(host, { all: true }));
   return u;
 }
-async function connectorOauthFetch(raw, options) {
-  const u = await connectorOauthPublicUrl(raw);
-  return globalThis.fetch(u.href, Object.assign({}, options || {}, { redirect: 'manual' }));
-}
+// Every leg's socket is PINNED to the address that passed the check (sidecar/mcp/oauth-fetch.js): resolving once to
+// validate and again to connect let a DNS-rebinding authorization server aim DCR/token POSTs at a private address.
+const connectorOauthFetcher = makeConnectorOauthFetch({
+  assertSafeUrl: skillWebInternals.assertSafeUrl,
+  assertResolvedSafe: skillWebInternals.assertResolvedSafe,
+  lookup: host => dns.promises.lookup(host, { all: true }),
+  agentFactory: options => new (require('undici').Agent)(options),
+  onCloseError: e => failNote('connector.oauth.dispatcher-close', e)
+});
+async function connectorOauthFetch(raw, options) { return connectorOauthFetcher.connectorOauthFetch(raw, options); }
 // drop the cached dynamically-registered client for an authorization server (when the AS reports it invalid), so the
 // next sign-in RE-REGISTERS a fresh one instead of wedging forever on a pruned/rotated client id.
 function forgetOauthClient(authServer) {
@@ -15007,6 +15036,7 @@ async function handleAgentDelete(req, res) {
   const agentId = String(body.agentId || body.agent || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });   // same id regex as roster/fs-jail surfaces
   if (agentId === 'agent') return json(400, { error: 'cannot delete the hero agent' });   // the founder is undeletable (resume depends on it)
+  if (WorkspaceReserved.isReservedWorkspaceId(agentId)) return json(400, { error: 'reserved station directory' });   // codex/, channels/ … never archived
 
   const deletion = await agentLifecycle.beginDelete(agentId, 'delete-' + crypto.randomUUID());
   if (!deletion.ok) {
