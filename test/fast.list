@@ -48,6 +48,7 @@ test/workspace-lineage.test.js
 test/agent-lifecycle.test.js
 test/durable-store.test.js
 test/durable-write.mode.test.js
+test/child-env.test.js
 test/domain-store.test.js
 test/provider-runtime.test.js
 test/run-execution-state.test.js

@@ -156,6 +156,7 @@ const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } =
 const { makeEmitter } = require('../shared/emitter.js');
 const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const { setStationSecretSource } = require('./child-env.js');   // station-secret-free env for every helper process
 const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
 const { makeConnectorOauthFetch } = require('./mcp/oauth-fetch.js');   // DNS-pinned fetch for every connector-OAuth leg
 const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
@@ -341,7 +342,11 @@ const { makeRoutineTools } = require('./tools/builtin/routines.js'); // ROUTINES
 const { makeLoopTools } = require('./tools/builtin/loops.js');       // LOOPS: model-facing durable standing-objective controls
 const { makeCommsTools } = require('./tools/builtin/comms.js');      // COMMS: outbound reach — an agent messages a connected chat
 const cronGuard = require('./cron-guard.js');                        // routine prompt-injection tripwire (pure, see file header)
-const { execFile, spawn: childSpawn } = require('node:child_process');   // shadow-git runner + shell subprocess — ambient, here only
+// Every child this file spawns gets the station-secret-free env by default (child-env.js, audit 2026-09-25 #13):
+// git in user repos, shell hooks, loop checks, the folder picker, fs.search's rg. An explicit `env` (the agent
+// shell's sanitizeChildEnv) is passed through untouched.
+const stationChildProcess = require('./child-env.js').guardChildProcess(require('node:child_process'));
+const { execFile, spawn: childSpawn } = stationChildProcess;   // shadow-git runner + shell subprocess — ambient, here only
 let lspManager = null;   // initialized beside procLedger so abrupt desktop-sidecar death is recoverable on next boot
 const loopbackListenerProbe = makeLoopbackListenerProbe({ execFile, platform: process.platform, env: process.env });
 const { makeSubagentManager } = require('./subagents.js');          // durable background worker registry
@@ -4623,7 +4628,7 @@ applyServiceKeysEnv();          // boot: persisted keys are live for the first r
    exact values the sidecar holds RIGHT NOW (read live, so a rotated/added key is covered on the next call).
    The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
    URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
-setKnownSecretSource(() => collectSecretValues([
+function stationSecretValues() { return collectSecretValues([
   { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
   { values: Object.values(runtimeKeys) },
   { values: Object.values(runtimeKeyPools) },
@@ -4634,7 +4639,10 @@ setKnownSecretSource(() => collectSecretValues([
   { keyed: connectorOauth },
   { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
   { keyed: serviceKeys }
-]));
+]); }
+setKnownSecretSource(stationSecretValues);
+// Helper processes: strip the same held values, plus every name the sidecar itself exported (service keys).
+setStationSecretSource({ names: () => Object.keys(serviceKeysOwnedEnv || {}), values: stationSecretValues });
 // Verified persist (secret-durability law): ok ONLY when a read-back proves the write reached disk. On
 // ok:false the in-memory list stays live but the route reports the failure — never a false "saved".
 function saveServiceKeys() {
@@ -19861,7 +19869,7 @@ function computeVersionSurface() {
   if (envHarness) { out.harness = envHarness; out.harnessSource = 'env'; }
   else {
     try {
-      const { execSync } = require('node:child_process');
+      const { execSync } = stationChildProcess;
       const desc = String(execSync('git describe --always --dirty --tags', {
         cwd: path.resolve(__dirname, '..'), stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000
       }) || '').trim();
@@ -19877,7 +19885,7 @@ function computeVersionSurface() {
   if (envBuildDirty === '0' || envBuildDirty === '1') out.buildDirty = envBuildDirty === '1';
   if (!out.buildSha && out.harnessSource === 'git') {
     try {
-      const { execSync } = require('node:child_process');
+      const { execSync } = stationChildProcess;
       const sha = String(execSync('git rev-parse HEAD', {
         cwd: path.resolve(__dirname, '..'), stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000
       }) || '').trim();
