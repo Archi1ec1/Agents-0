@@ -231,24 +231,9 @@ a:hover{ color:var(--amber); }
 .bezel img{ width:100%; height:auto; display:block; image-rendering:auto; }
 .bezel canvas{ width:100%; height:auto; display:block; }
 .bezel figcaption{ padding:9px 4px 2px; font-size:14px; letter-spacing:1px; color:rgba(236,224,207,.35); }
-/* the live preview IS the app (website/app, a verbatim frontend copy booted from a seeded
-   save) — an iframe with a dedicated 960x660 camera viewport, clipped to the station-camera panel
-   and scaled to the column. live-preview.js measures the current panel rectangle. */
-/* The section forms a stacking context: lift it, not just its figure, above
-   the global page glass so the real renderer is not darkened a second time. */
-#station{ z-index:63; }
+/* every page's nav rides above the CRT glass (z 60-62) and above the homepage's lifted #station (63,
+   home.css). Doubled class so it outranks the later .topbar z-index rules below. Deliberately SHARED. */
 .topbar.topbar{ z-index:70; }
-.bezel.live{ position:relative; border:1px solid var(--line); background:#080b0d; padding:0; box-shadow:0 16px 60px rgba(0,0,0,.3); }
-.bezel.live figcaption{ padding:18px 20px; border-top:1px solid var(--line); background:#100e0b; color:var(--ink-d); letter-spacing:0; line-height:1.5; }
-.bezel.live figcaption strong{ display:block; color:var(--amber-b); font-weight:400; letter-spacing:2px; margin-bottom:6px; }
-.bezel.live figcaption span{ display:block; font-family:Arial,sans-serif; font-size:13px; }
-.app-clip{ position:relative; overflow:hidden; width:100%; aspect-ratio:var(--app-aspect,960 / 660); }
-.app-clip iframe{
-  position:absolute; left:0; top:0; width:960px; height:660px; border:0;
-  pointer-events:none;                       /* a preview, not a control surface */
-  transform-origin:0 0;
-  transform:scale(var(--appk,1)) translate(var(--appx,0px),var(--appy,0px));
-}
 
 /* feature cards */
 .cards{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }

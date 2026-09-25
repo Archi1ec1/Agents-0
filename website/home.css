@@ -59,6 +59,24 @@
 /* ---------- 01 the station ---------- */
 .big-lead{ max-width:900px; margin:0 0 clamp(34px,6vh,60px);
   font:400 clamp(20px,2.3vw,28px)/1.45 system-ui,sans-serif; letter-spacing:-.01em; color:#e9e0d0; }
+/* moved from styles.css (homepage-only rules live here): the live station preview */
+/* the live preview IS the app (website/app, a verbatim frontend copy booted from a seeded
+   save) — an iframe with a dedicated 960x660 camera viewport, clipped to the station-camera panel
+   and scaled to the column. live-preview.js measures the current panel rectangle. */
+/* The section forms a stacking context: lift it, not just its figure, above
+   the global page glass so the real renderer is not darkened a second time. */
+#station{ z-index:63; }
+.bezel.live{ position:relative; border:1px solid var(--line); background:#080b0d; padding:0; box-shadow:0 16px 60px rgba(0,0,0,.3); }
+.bezel.live figcaption{ padding:18px 20px; border-top:1px solid var(--line); background:#100e0b; color:var(--ink-d); letter-spacing:0; line-height:1.5; }
+.bezel.live figcaption strong{ display:block; color:var(--amber-b); font-weight:400; letter-spacing:2px; margin-bottom:6px; }
+.bezel.live figcaption span{ display:block; font-family:Arial,sans-serif; font-size:13px; }
+.app-clip{ position:relative; overflow:hidden; width:100%; aspect-ratio:var(--app-aspect,960 / 660); }
+.app-clip iframe{
+  position:absolute; left:0; top:0; width:960px; height:660px; border:0;
+  pointer-events:none;                       /* a preview, not a control surface */
+  transform-origin:0 0;
+  transform:scale(var(--appk,1)) translate(var(--appx,0px),var(--appy,0px));
+}
 .monitor-stage{ perspective:1500px; perspective-origin:50% 20%; }
 .monitor{
   --tilt:0deg; --mscale:1; --mlift:0px;
