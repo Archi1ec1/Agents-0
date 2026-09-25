@@ -37,7 +37,7 @@ function isReservedWorkspaceId(id) {
 
 // Throws with a message that still matches the existing /bad agentId/ handlers (e.g. /api/file answers 403).
 function assertWorkspaceId(id) {
-  if (isReservedWorkspaceId(id)) throw new Error('bad agentId: "' + id + '" is a reserved station directory and cannot be an agent workspace');
+  if (isReservedWorkspaceId(id)) throw new Error('bad agentId: "' + id + '" is a reserved station directory and cannot be an agent workspace — this agent was named before that rule existed; delete it and recruit it again (it gets a safe id like "' + String(id).toLowerCase() + '-2")');
   return id;
 }
 

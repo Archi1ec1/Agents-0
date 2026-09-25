@@ -15036,7 +15036,9 @@ async function handleAgentDelete(req, res) {
   const agentId = String(body.agentId || body.agent || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });   // same id regex as roster/fs-jail surfaces
   if (agentId === 'agent') return json(400, { error: 'cannot delete the hero agent' });   // the founder is undeletable (resume depends on it)
-  if (WorkspaceReserved.isReservedWorkspaceId(agentId)) return json(400, { error: 'reserved station directory' });   // codex/, channels/ … never archived
+  // An agent whose id collides with a station directory (codex/, channels/ …) CAN be deleted — that is how the
+  // Commander recovers it (re-recruit it and it gets a safe id) — but WORKSPACES/<id> is the station's, never moved.
+  const reservedId = WorkspaceReserved.isReservedWorkspaceId(agentId);
 
   const deletion = await agentLifecycle.beginDelete(agentId, 'delete-' + crypto.randomUUID());
   if (!deletion.ok) {
@@ -15078,7 +15080,7 @@ async function handleAgentDelete(req, res) {
     }
     // the agent's fs workspace dir (WORKSPACES/<aid>/ — the deliverables/artifacts jail). Archived whole so the
     // Commander can still recover a deleted agent's work off disk; it never touches another agent's jail.
-    move(path.join(WORKSPACES, agentId), agentId);
+    if (!reservedId) move(path.join(WORKSPACES, agentId), agentId);
   } catch (e) {
     console.warn('[agent.delete] archive failed:', (e && e.message) || e);
     // fall through — still drop the roster entry so the delete is honoured; the stores stay put (safe: retained).

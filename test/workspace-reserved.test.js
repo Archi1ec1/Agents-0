@@ -74,11 +74,18 @@ async function rejects(promise, msg, re) {
   A.eq(Array.from(AgentId.RESERVED).sort(), Array.from(Reserved.RESERVED).sort(), 'frontend RESERVED mirrors sidecar/workspace-reserved.js');
   for (const id of AgentId.RESERVED) A.ok(AgentId.RE.test(id) || /^_/.test(id), 'reserved id is expressible in the id grammar: ' + id);
 
-  // ---- agent delete archives WORKSPACES/<id>: it must refuse a reserved id before any archive move ----
+  // ---- agent delete archives WORKSPACES/<id>: a reserved id is still deletable (the recovery path for an agent
+  // named before the rule), but the station directory is NEVER moved into the archive ----
   {
     const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
-    const body = src.slice(src.indexOf('async function handleAgentDelete'), src.indexOf('agentLifecycle.beginDelete', src.indexOf('async function handleAgentDelete')));
-    A.ok(/WorkspaceReserved\.isReservedWorkspaceId\(agentId\)\) return json\(400/.test(body), 'agent delete refuses a reserved id before reserving the lifecycle or archiving');
+    const start = src.indexOf('async function handleAgentDelete');
+    const body = src.slice(start, src.indexOf('ORPHANED-AUTOMATION CLEANUP', start));
+    A.ok(/const reservedId = WorkspaceReserved\.isReservedWorkspaceId\(agentId\);/.test(body), 'agent delete classifies a reserved id');
+    A.ok(/if \(!reservedId\) move\(path\.join\(WORKSPACES, agentId\), agentId\);/.test(body), 'a reserved id never archives WORKSPACES/<id> (the station directory stays put)');
+    A.eq((body.match(/move\(path\.join\(WORKSPACES, agentId\), agentId\)/g) || []).length, 1, 'there is exactly one workspace-dir archive move, and it is guarded');
+    let msg = '';
+    try { Reserved.assertWorkspaceId('Grok'); } catch (e) { msg = String(e.message); }
+    A.ok(/bad agentId/.test(msg) && /delete it and recruit it again/.test(msg) && /grok-2/.test(msg), 'the refusal tells the Commander how to recover the agent');
   }
 
   fs.rmSync(ROOT, { recursive: true, force: true });
