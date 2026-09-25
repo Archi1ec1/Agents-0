@@ -18,7 +18,8 @@ const os = require('os');
 const http = require('http');
 const crypto = require('crypto');
 const edge = require('../sidecar/edgetts.js');   // V-EDGE: exported WS codec + secMsGec for offline unit + loopback tests
-const { bootToken } = require('./_httpToken.js');
+const { bootToken, sseQuery, fileQuery } = require('./_httpToken.js');
+const Tickets = require('../sidecar/apitickets.js');
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -744,14 +745,22 @@ function boot(port, workspaces, attemptsLeft, extraEnv) {
     A.ok(/const ttl = 2 \* PROC_DIAG_WINDOW_MS/.test(surfaceSrc), '#6 _procDiagSeen uses a 2x-window TTL');
     A.ok(!/_procDiagSeen\.size > 64/.test(surfaceSrc), '#6 eviction is no longer gated behind size > 64 (runs every insert)');
 
-    // ---- SSE telemetry requires the ?token= query (EventSource cannot send a header) ----
+    // ---- SSE telemetry: header (Node clients) or a SINGLE-USE ticket (EventSource) — never the master token in the URL ----
     const sseNoTok = await fetch(B + '/api/channels/events');
-    A.eq(sseNoTok.status, 403, 'GET /api/channels/events WITHOUT ?token -> 403');
-    const sseBadTok = await fetch(B + '/api/channels/events?token=nope');
-    A.eq(sseBadTok.status, 403, 'GET /api/channels/events with a WRONG ?token -> 403');
-    const sseWithTok = await fetch(B + '/api/channels/events?token=' + encodeURIComponent(apiToken), { headers: { Origin: B } });
-    A.eq(sseWithTok.status, 200, 'GET /api/channels/events with the token query -> 200');
+    A.eq(sseNoTok.status, 403, 'GET /api/channels/events WITHOUT a credential -> 403');
+    const sseBadTok = await fetch(B + '/api/channels/events?ticket=nope');
+    A.eq(sseBadTok.status, 403, 'GET /api/channels/events with a WRONG ?ticket -> 403');
+    const sseMaster = await fetch(B + '/api/channels/events?token=' + encodeURIComponent(apiToken), { headers: { Origin: B } });
+    A.eq(sseMaster.status, 403, 'GET /api/channels/events with the MASTER token in the query -> 403 (URLs leak)');
+    const sseQ = sseQuery(apiToken);
+    const sseWithTok = await fetch(B + '/api/channels/events?' + sseQ, { headers: { Origin: B } });
+    A.eq(sseWithTok.status, 200, 'GET /api/channels/events with an SSE ticket -> 200');
     try { if (sseWithTok.body && sseWithTok.body.cancel) await sseWithTok.body.cancel(); } catch (_) {}
+    const sseReplay = await fetch(B + '/api/channels/events?' + sseQ, { headers: { Origin: B } });
+    A.eq(sseReplay.status, 403, 'the same SSE ticket presented again -> 403 (single-use)');
+    const sseHeader = await fetch(B + '/api/channels/events', { headers: { Origin: B, 'x-starnet-token': apiToken } });
+    A.eq(sseHeader.status, 200, 'GET /api/channels/events with the header token -> 200 (MCP bridge / Node clients)');
+    try { if (sseHeader.body && sseHeader.body.cancel) await sseHeader.body.cancel(); } catch (_) {}
 
     // ---- slash command catalog + dispatch seam ----
     const slashCat = await j('GET', '/api/slash/catalog');
@@ -922,10 +931,22 @@ function boot(port, workspaces, attemptsLeft, extraEnv) {
     A.eq(head.headers.get('content-length'), String(N), 'HEAD reports the size with no body');
     A.eq((await head.arrayBuffer()).byteLength, 0, 'HEAD carries no body');
 
-    const nativeUrl = fileUrl + '&token=' + encodeURIComponent(apiToken);
+    const masterInUrl = await fetch(fileUrl + '&token=' + encodeURIComponent(apiToken), { headers: { Range: 'bytes=0-9' } });
+    A.eq(masterInUrl.status, 403, 'GET /api/file with the MASTER token in ?token -> 403 (refused: URLs leak)');
+    const nativeUrl = fileUrl + '&' + fileQuery(apiToken, 'agent', 'clips/clip.webm');
     const nativeMedia = await fetch(nativeUrl, { headers: { Range: 'bytes=0-9' } });
-    A.eq(nativeMedia.status, 206, 'GET /api/file with ?token supports native media loads');
-    A.eq(nativeMedia.headers.get('content-range'), 'bytes 0-9/' + N, 'query-token media load still supports Range');
+    A.eq(nativeMedia.status, 206, 'GET /api/file with a file ticket supports native media/link loads');
+    A.eq(nativeMedia.headers.get('content-range'), 'bytes 0-9/' + N, 'ticketed media load still supports Range');
+    A.eq(nativeMedia.headers.get('referrer-policy'), 'no-referrer', 'an opened file never leaks its ticketed URL as a Referer');
+    const nativeAgain = await fetch(nativeUrl, { headers: { Range: 'bytes=10-19' } });
+    A.eq(nativeAgain.status, 206, 'a file ticket is reusable within its life (a <video> seek re-reads the same URL)');
+    const wrongFile = await fetch(B + '/api/file?agent=agent&path=' + encodeURIComponent('clips/other.webm') + '&' + fileQuery(apiToken, 'agent', 'clips/clip.webm'));
+    A.eq(wrongFile.status, 403, 'a file ticket for clip.webm does NOT open another file');
+    const ticketElsewhere = await fetch(B + '/api/budget/status?' + fileQuery(apiToken, 'agent', 'clips/clip.webm'));
+    A.eq(ticketElsewhere.status, 403, 'a file ticket grants nothing on any other route');
+    const expiredT = Tickets.mint(apiToken, 'file', Tickets.scopeFile('agent', 'clips/clip.webm'), { now: Date.now() - Tickets.KINDS.file.maxTtlMs - 1000 });
+    const expired = await fetch(fileUrl + '&ticket=' + encodeURIComponent(expiredT));
+    A.eq(expired.status, 403, 'an EXPIRED file ticket -> 403');
 
     const escape = await fetch(B + '/api/file?agent=agent&path=' + encodeURIComponent('../../etc/passwd'), { headers: tok });
     A.ok(escape.status === 403 || escape.status === 404, 'a jail-escape path is refused (403/404), never served');
@@ -939,7 +960,7 @@ function boot(port, workspaces, attemptsLeft, extraEnv) {
     for (const f of ['page.html', 'app.js', 'vector.svg']) {
       const activeNoTok = await fetch(B + '/api/file?agent=agent&path=' + encodeURIComponent('active/' + f));
       A.eq(activeNoTok.status, 403, f + ' active deliverable without token is blocked');
-      const active = await fetch(B + '/api/file?agent=agent&path=' + encodeURIComponent('active/' + f) + '&token=' + encodeURIComponent(apiToken));
+      const active = await fetch(B + '/api/file?agent=agent&path=' + encodeURIComponent('active/' + f) + '&' + fileQuery(apiToken, 'agent', 'active/' + f));
       A.eq(active.status, 200, f + ' served for download');
       A.eq(active.headers.get('content-type'), 'application/octet-stream', f + ' loses executable content-type');
       A.ok(/^attachment\b/.test(active.headers.get('content-disposition') || ''), f + ' is an attachment, not inline');

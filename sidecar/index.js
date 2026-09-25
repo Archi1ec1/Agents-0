@@ -370,9 +370,12 @@ const DEV_MODE = /^(1|true|yes|on)$/i.test(String(ENV('DEV') || '').trim());
 const DESKTOP_SHELL = /^(1|true|yes|on)$/i.test(String(ENV('DESKTOP_SHELL') || '').trim());
 // API auth/guard DECISIONS live in the unit-tested ./apiauth.js (full threat model documented there);
 // index.js keeps only the thin res-writing wrappers below. Hardened posture: EVERY /api/* route now requires
-// the per-launch token (GET data routes included) except a small header-less set. Native media/file loads
-// can pass the same token as ?token= on /api/file only; all other fetch-driven calls use the custom header.
+// the per-launch token (GET data routes included) except a small header-less set. Surfaces that cannot attach
+// the header (link/tab opens of /api/file + /workshop-run/, the SSE EventSource, the unload save beacon) present a
+// SCOPED, SHORT-LIVED ticket (./apitickets.js) — the master token in a URL is refused everywhere (2026-09-25).
 const apiauth = require('./apiauth.js');
+const apitickets = require('./apitickets.js');
+const TICKET_GUARD = apitickets.replayGuard(4096);   // single-use registry for the once-only ticket kinds (sse, save)
 const { isAllowedApiOrigin, isAllowedHost, requiresApiToken, TAURI_ORIGINS } = apiauth;
 function applyApiCors(req, res) {
   const origin = String(req.headers.origin || '');
@@ -392,11 +395,11 @@ function rejectApi(req, res) {
 function rejectBadApiToken(req, res) {
   if (!requiresApiToken(req)) return false;
   if (apiauth.apiTokenOk(req, API_TOKEN)) return false;
-  // Some browser surfaces provably cannot attach custom headers: native media/link loads (GET/HEAD /api/file)
-  // and the unload save beacon (POST /api/save — navigator.sendBeacon, the last debounced save on close).
-  // Those exact routes accept the SAME per-launch token in the query string; the matrix lives in apiauth so
-  // it stays a tested, deliberately tiny escape hatch.
-  if (apiauth.queryTokenRoute(req) && apiauth.queryTokenOk(req, API_TOKEN)) return false;
+  // Some browser surfaces provably cannot attach custom headers: link/tab opens (GET/HEAD /api/file), the SSE
+  // EventSource (GET /api/channels/events) and the unload save beacon (POST /api/save — navigator.sendBeacon).
+  // Those exact request shapes accept a ?ticket= minted for exactly that resource (apiauth.ticketOk); the MASTER
+  // token is never accepted from a query string (it leaked into browser history, Referer and copied links).
+  if (apiauth.ticketOk(req, API_TOKEN, Date.now(), TICKET_GUARD)) return false;
   res.writeHead(403); res.end('forbidden token'); return true;
 }
 // Desktop build: live BYOK keys are seeded from the OS keychain via env at spawn, and updated
@@ -9360,7 +9363,7 @@ function attachmentFailPolicy(res, e) { try { if (!res.headersSent) { res.writeH
    - exactly ONE match key, preserving each route's exact query-string semantics (a live bug class —
      do NOT "normalize" a route onto a different matcher):
        exact:   req.url === path                      (query string makes it MISS — intentional)
-       qsplit:  req.url.split('?')[0] === path        (path match; the url may carry ?token= etc.)
+       qsplit:  req.url.split('?')[0] === path        (path match; the url may carry ?ticket= etc.)
        prefix:  segment-safe prefix on req.url        (exact, query, or /child; no sibling alias)
        qprefix: segment-safe prefix on the query-stripped path
        rx:      req.url.match(rx) — the match array is passed to h as its 3rd arg
@@ -9637,7 +9640,7 @@ const ROUTES = [
   { m: 'POST', rx: GENERIC_CHANNEL_RX.disconnect, h: (req, res, gm) => handleGenericChannelDisconnect(req, res, gm[1]) },
   { m: 'GET', rx: GENERIC_CHANNEL_RX.status, h: (req, res, gm) => handleGenericChannelStatus(req, res, gm[1]) },
   { m: 'POST', rx: GENERIC_CHANNEL_RX.ownerPair, h: (req, res, gm) => handleChannelOwnerPair(req, res, gm[1]) },
-  { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries a ?token= query now
+  { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries ?cursor= + a ?ticket= (header-less EventSource)
   { m: 'POST', exact: '/api/routing', h: handleRouting },
   { m: 'GET', qsplit: '/api/routing/chain', h: handleRoutingChain },   // qsplit, not exact: `exact` compares the FULL url and this route always carries a query
   // PROOF (guided workflow Phase 4): GET is the inert feature probe; POST runs ONE real, labeled sample
@@ -9795,8 +9798,9 @@ const ROUTES = [
   //   POST /api/workshop/open — shell-open a REAL jailed file with the OS default app (interactive user-click only).
   { m: 'POST', exact: '/api/workshop/open', h: handleWorkshopOpen },
   //   GET/HEAD /workshop-run/<agentId>/<runId>/<path...> — jailed, read-only static serving so a built web tool
-  //   actually RUNS in a browser tab (correct content-types, no dir listing, ?token= like /api/file, no-store).
-  //   This is NOT under /api/ so it never touches the /api CORS/token gate above — the handler enforces its own token.
+  //   actually RUNS in a browser tab (correct content-types, no dir listing, no-store). Tab opens use the ticketed
+  //   form /workshop-run/~t/<ticket>/<agentId>/<runId>/<path...> (a run-scoped capability, never the master token).
+  //   This is NOT under /api/ so it never touches the /api CORS/token gate above — the handler enforces its own auth.
   { m: ['GET', 'HEAD'], qprefix: '/workshop-run/', h: serveWorkshopRun },
   // ADDITIVE (Lane B / ux-run-truth): read-only stat of a user-chosen KEEP destination folder, so the return
   // card can validate the typed path inline instead of failing silently on Keep. Strictly less powerful than
@@ -9864,7 +9868,7 @@ const ROUTES = [
   { m: 'GET', prefix: '/api/notebook', h: serveNotebook },
   { m: 'POST', exact: '/api/save/recovery-ack', h: handleSaveRecoveryAck },
   { m: 'GET', prefix: '/api/save', h: serveSaveLoad },
-  { m: 'POST', qsplit: '/api/save', h: handleSaveWrite },   // qsplit, not exact: the unload beacon carries ?token= (apiauth.queryTokenRoute)
+  { m: 'POST', qsplit: '/api/save', h: handleSaveWrite },   // qsplit, not exact: the unload beacon carries ?ticket= (apiauth.ticketOk)
   { m: 'GET', prefix: '/api/insights', h: serveInsights },
   // The recovery reader owns bounded pagination (?limit=&offset=). Match the query-stripped path so COMMS can
   // request its explicit ceiling instead of receiving a misleading static 404 before the handler is reached.
@@ -10265,8 +10269,8 @@ if (require.main === module) {
 
 /* ---- SSE bridge: forward validated channel/work-item telemetry to the live station HUD ---- */
 function handleChannelEvents(req, res) {
-  // SSE can't carry a custom header (EventSource), so the live HUD passes the token as ?token=… instead.
-  if (!apiauth.queryTokenOk(req, API_TOKEN)) { res.writeHead(403); return res.end('forbidden token'); }
+  // Auth is the central /api gate (rejectBadApiToken): the header (Node/MCP clients) or a single-use SSE ticket
+  // (EventSource can't set a header). The master token in ?token= is refused there like on every other route.
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -14546,16 +14550,19 @@ const WORKSHOP_RUN_PREFIX = '/workshop-run/';
 // built web tool RUNS in a browser tab (an .html loads and executes, unlike /api/file which serves active
 // deliverables as octet-stream+sandbox CSP precisely to STOP them running). Same jail proof /api/file uses
 // (fsJail.resolveInside — the '..'/absolute/symlink escape all throw); correct Content-Type by extension; NO
-// directory listing (a dir 404s); Cache-Control no-store. Browser navigation can't send a header, so the per-launch
-// token rides ?token= on GET/HEAD exactly like /api/file (this route is NOT under /api/, so we enforce it here).
+// directory listing (a dir 404s); Cache-Control no-store. Browser navigation can't send a header, so a tab open uses
+// /workshop-run/~t/<ticket>/<agentId>/<runId>/<path...>: a RUN-SCOPED, short-lived ticket in the PATH, so the page's
+// relative assets inherit it and a '../' out of the run dir fails the MAC. A fetch with the header also works. The
+// master token in ?token= is refused (this route is NOT under /api/, so we enforce auth here).
 // EVERY response carries `Content-Security-Policy: sandbox allow-scripts` (opaque origin, scripts allowed but NO
 // same-origin) so a running deliverable can't read the app token or drive the API — see the headers block below.
 async function serveWorkshopRun(req, res) {
-  // token gate: same per-launch secret as every API route, accepted as ?token= (a tab navigation has no header seam).
-  if (!apiauth.queryTokenOk(req, API_TOKEN)) { res.writeHead(403); return res.end('forbidden token'); }
+  const reqPath = String(req.url || '').split('?')[0];
+  const ticketed = apitickets.splitRunTicket(reqPath);                 // { ticket, rest } | null
+  if (!ticketed && !apiauth.apiTokenOk(req, API_TOKEN)) { res.writeHead(403); return res.end('forbidden token'); }
   let abs;
   try {
-    const rawPath = decodeURIComponent(String(req.url || '').split('?')[0]);
+    const rawPath = decodeURIComponent(ticketed ? WORKSHOP_RUN_PREFIX + ticketed.rest : reqPath);
     const tail = rawPath.slice(WORKSHOP_RUN_PREFIX.length);            // <agentId>/<runId>/<path...>
     const slash = tail.indexOf('/');
     if (slash <= 0) { res.writeHead(404); return res.end('not found'); }
@@ -14563,6 +14570,13 @@ async function serveWorkshopRun(req, res) {
     const rel = tail.slice(slash + 1);                                 // <runId>/<path...>
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) { res.writeHead(403); return res.end('forbidden'); }
     if (!rel || rel.slice(-1) === '/') { res.writeHead(404); return res.end('not found'); }   // no dir/trailing-slash
+    if (rel.indexOf('/') <= 0) { res.writeHead(404); return res.end('not found'); }   // must name <runId>/<file>
+    if (ticketed) {
+      // the ticket is bound to (agentId, runId) — the VERIFIER derives both from the path, never from the ticket
+      const runId = rel.slice(0, rel.indexOf('/'));
+      const v = apitickets.verify(API_TOKEN, ticketed.ticket, 'run', apitickets.scopeRun(agentId, runId), { now: Date.now() });
+      if (!v.ok) { res.writeHead(403); return res.end('forbidden ticket'); }
+    }
     ({ abs } = await fsJail.resolveInside(agentId, 'workshop/' + rel));  // throws on '..'/absolute/symlink/bad agentId
   } catch (e) {
     const msg = (e && e.message) || '';
@@ -14583,7 +14597,8 @@ async function serveWorkshopRun(req, res) {
     // cross-origin + uncredentialed — so an agent-built deliverable can't exfiltrate the launch token or drive the
     // API (self-approve consent, write files, dump config). /api/file sandboxes the SAME bytes with script-src 'none'
     // to STOP them running; here scripts must run, so we sandbox the ORIGIN instead of killing the scripts.
-    'Content-Security-Policy': 'sandbox allow-scripts'
+    'Content-Security-Policy': 'sandbox allow-scripts',
+    'Referrer-Policy': 'no-referrer'   // the ticketed URL must not ride a Referer to anything the tool links/loads
   };
   if (req.method === 'HEAD') { headers['Content-Length'] = st.size; res.writeHead(200, headers); return res.end(); }
   res.writeHead(200, headers);
@@ -21091,7 +21106,8 @@ async function serveWorkspaceFile(req, res) {
     'Cache-Control': 'no-store',
     'Content-Disposition': (active ? 'attachment' : 'inline') + '; filename="' + safeDownloadName(abs) + '"',
     'X-Content-Type-Options': 'nosniff',
-    'Accept-Ranges': 'bytes'   // advertise range support so the browser asks for byte ranges when seeking
+    'Accept-Ranges': 'bytes',   // advertise range support so the browser asks for byte ranges when seeking
+    'Referrer-Policy': 'no-referrer'   // a ticketed open URL must never ride a Referer out of the opened document
   };
   if (active) headers['Content-Security-Policy'] = "sandbox; default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'";
 

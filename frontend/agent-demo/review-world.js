@@ -8059,7 +8059,7 @@ const World = (() => {
   // origin) so it resolves in the desktop build, where the page origin is the Tauri asset host, NOT the sidecar.
   // Bare /api/* fetches (routing POST, connectors poll) skipped that prefix and would hit the wrong origin there.
   // apiUrl() is the single source of truth so all three use the same base. (Auth token is attached by harness.js's
-  // window.fetch monkey-patch for /api/ URLs; the SSE path can't send a header so it appends ?token= separately.)
+  // window.fetch monkey-patch for /api/ URLs; the SSE path can't send a header so it presents a single-use ApiTicket.sseUrl ticket.)
   function apiBase() { return (typeof window !== 'undefined' && window.__STARNET_API__) ? window.__STARNET_API__ : ''; }
   function apiUrl(path) { return apiBase() + path; }
   let chanES = null, connPollTimer = null, connPollFn = null, connOpenFn = null, bridgePaused = false;
@@ -9379,10 +9379,10 @@ const World = (() => {
       if (retryTimer) { try { clearTimeout(retryTimer); } catch (_) {} retryTimer = null; }
       if (chanES) return;
       try {
-        // EventSource can't send the custom auth header, so pass the per-launch token as ?token=… and
-        // prefix the sidecar base in the desktop build (where the page origin isn't the loopback http origin).
-        const _tok = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) ? encodeURIComponent(String(window.__STARNET_API_TOKEN__)) : '';
-        chanES = new EventSource(apiUrl('/api/channels/events') + '?cursor=' + encodeURIComponent(bridgeCursor) + (_tok ? ('&token=' + _tok) : ''));
+        // EventSource can't send the custom auth header, so it presents a SINGLE-USE, 2-minute SSE ticket
+        // (ApiTicket.sseUrl — never the master token in a URL). Every (re)connect goes through open(), so each
+        // attempt mints a fresh ticket; the absolute sidecar base is prefixed on desktop (Tauri origin).
+        chanES = new EventSource(ApiTicket.sseUrl('cursor=' + encodeURIComponent(bridgeCursor)));
       } catch (_) { return; }
       const source = chanES;
       bridgeRecovering = true;
