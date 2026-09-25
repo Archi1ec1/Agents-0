@@ -1470,6 +1470,47 @@ fn free_port() -> u16 {
         .expect("could not reserve a local port for the sidecar")
 }
 
+/// The CSP source for the sidecar in tauri.conf.json. The port is picked at runtime, so the
+/// config can only say "any 127.0.0.1 port"; `pin_csp_to_sidecar_port` narrows it to the one
+/// port this launch's sidecar owns before the app is built (Tauri 2 reads the CSP from the
+/// runtime `Config` on every asset response, so `Context::config_mut` is honoured).
+const CSP_ANY_LOOPBACK_PORT: &str = "http://127.0.0.1:*";
+
+/// Replace every `http://127.0.0.1:*` source with `http://127.0.0.1:<port>` — connect-src (the
+/// fetch bridge + SSE), script-src (BootGuard loads specialties.js from the sidecar), img-src
+/// and media-src. Any other local service stays unreachable from the webview.
+fn pin_csp_to_sidecar_port(csp: &str, port: u16) -> String {
+    csp.replace(CSP_ANY_LOOPBACK_PORT, &format!("http://127.0.0.1:{port}"))
+}
+
+/// Apply `pin_csp_to_sidecar_port` to whichever CSP form the config carries.
+fn pin_config_csp(csp: &mut Option<tauri::utils::config::Csp>, port: u16) {
+    use tauri::utils::config::{Csp, CspDirectiveSources};
+    match csp {
+        Some(Csp::Policy(policy)) => *policy = pin_csp_to_sidecar_port(policy, port),
+        Some(Csp::DirectiveMap(map)) => {
+            for sources in map.values_mut() {
+                match sources {
+                    CspDirectiveSources::Inline(s) => *s = pin_csp_to_sidecar_port(s, port),
+                    CspDirectiveSources::List(list) => {
+                        for s in list.iter_mut() {
+                            *s = pin_csp_to_sidecar_port(s, port);
+                        }
+                    }
+                }
+            }
+        }
+        None => {}
+    }
+}
+
+/// A URL handed to the OS browser must never carry the per-launch master API token: the OS
+/// browser keeps it in history, sync and crash reports. The frontend opens files and workshop
+/// tools with short-lived scoped tickets (app/apiticket.js); this is the host-side floor.
+fn url_carries_api_token(url: &str, api_token: &str) -> bool {
+    !api_token.is_empty() && url.contains(api_token)
+}
+
 /// Node.js can't use a Windows `\\?\` verbatim path as its main module or cwd, so
 /// normalize it back to a plain `C:\...` path.
 fn strip_verbatim(p: &Path) -> PathBuf {
@@ -3902,12 +3943,92 @@ mod navigation_guard_tests {
     }
 }
 
+#[cfg(test)]
+mod csp_pin_tests {
+    use super::{pin_config_csp, pin_csp_to_sidecar_port, url_carries_api_token};
+    use tauri::utils::config::{Csp, CspDirectiveSources};
+
+    fn shipped_csp() -> String {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+        conf["app"]["security"]["csp"]
+            .as_str()
+            .expect("csp is a policy string")
+            .to_string()
+    }
+
+    fn directive<'a>(csp: &'a str, name: &str) -> &'a str {
+        csp.split(';')
+            .find(|d| d.trim().starts_with(name))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn shipped_csp_is_pinned_to_the_one_sidecar_port() {
+        let pinned = pin_csp_to_sidecar_port(&shipped_csp(), 51234);
+        assert!(!pinned.contains("127.0.0.1:*"), "{pinned}");
+        let connect = directive(&pinned, "connect-src");
+        assert!(connect.contains("http://127.0.0.1:51234"), "{connect}");
+        let script = directive(&pinned, "script-src");
+        assert!(script.contains("http://127.0.0.1:51234"), "{script}");
+        assert!(!script.contains("'unsafe-inline'"), "{script}");
+    }
+
+    #[test]
+    fn both_csp_forms_are_pinned() {
+        let mut policy = Some(Csp::Policy("connect-src 'self' http://127.0.0.1:*".into()));
+        pin_config_csp(&mut policy, 7);
+        match policy {
+            Some(Csp::Policy(p)) => assert_eq!(p, "connect-src 'self' http://127.0.0.1:7"),
+            _ => panic!("policy form lost"),
+        }
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "connect-src".to_string(),
+            CspDirectiveSources::List(vec!["'self'".into(), "http://127.0.0.1:*".into()]),
+        );
+        map.insert(
+            "img-src".to_string(),
+            CspDirectiveSources::Inline("'self' http://127.0.0.1:*".into()),
+        );
+        let mut directive_map = Some(Csp::DirectiveMap(map));
+        pin_config_csp(&mut directive_map, 9);
+        let rendered = directive_map.unwrap().to_string();
+        assert!(!rendered.contains(":*"), "{rendered}");
+        assert!(rendered.contains("http://127.0.0.1:9"), "{rendered}");
+        let mut none: Option<Csp> = None;
+        pin_config_csp(&mut none, 1);
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn os_browser_never_receives_the_master_token() {
+        let tok = "0b7c1f5e-9d1a-4c52-a0a0-2f0f3c9a7e11";
+        assert!(url_carries_api_token(
+            &format!("http://127.0.0.1:8787/api/file?agent=a&path=x.md&token={tok}"),
+            tok
+        ));
+        assert!(url_carries_api_token(
+            &format!("http://127.0.0.1:8787/workshop-run/~t/{tok}/a/r/index.html"),
+            tok
+        ));
+        assert!(!url_carries_api_token(
+            "http://127.0.0.1:8787/api/file?agent=a&path=x.md&ticket=st1.abc.0123456789abcdef.x",
+            tok
+        ));
+        assert!(!url_carries_api_token("https://example.com/", ""));
+    }
+}
+
 /// Open an OAuth/device-auth URL in the user's default system browser.
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(state: State<AppState>, url: String) -> Result<(), String> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
         return Err("Only http(s) URLs can be opened externally".to_string());
+    }
+    if url_carries_api_token(trimmed, &state.api_token) {
+        return Err("Refusing to hand the station's API token to the system browser".to_string());
     }
 
     #[cfg(windows)]
@@ -4448,6 +4569,11 @@ fn starnet_set_close_to_tray(
 fn main() {
     let mut context = tauri::generate_context!();
     context.assets = Box::new(desktop_assets::DesktopAssets::new(context.assets));
+    // Pick the sidecar port BEFORE the app is built so the webview CSP can name exactly that
+    // port (tauri.conf.json can only say 127.0.0.1:*). A second instance also reaches this line
+    // but exits through the single-instance plugin before any sidecar is spawned.
+    let sidecar_port = free_port();
+    pin_config_csp(&mut context.config_mut().app.security.csp, sidecar_port);
     tauri::Builder::default()
         // A second launch should focus the running window, not spin up a 2nd sidecar. Registered FIRST per
         // Tauri guidance (n1): single-instance must run before other plugins so a second process bails early.
@@ -4535,9 +4661,9 @@ fn main() {
             starnet_set_start_minimized,
             starnet_set_close_to_tray
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let root = project_root(app.handle());
-            let port = free_port();
+            let port = sidecar_port; // the port the CSP was pinned to in main()
             let ipc_token = uuid::Uuid::new_v4().to_string();
             // per-launch API token: shared with the sidecar via env (it reads SKYNET_API_TOKEN) AND injected
             // into the bundled webview below, so the desktop UI never has to fetch the token over an open route.
