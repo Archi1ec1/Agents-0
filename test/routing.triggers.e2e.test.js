@@ -165,7 +165,7 @@ function twoStagePlan() {
     const g0 = await api('/api/routing/triggers');
     A.ok(g0.j.ok && g0.j.email && g0.j.email.available === false && g0.j.kinds.indexOf('email') < 0, 'the listing says email is not available (and offers folder + webhook only)');
 
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     /* ---- 2. FOLDER ---- */
     const cf = await api('/api/routing/triggers', 'POST', { kind: 'folder', lineId, name: 'Invoices', config: { path: drops, task: 'Summarize the invoice.' } });

@@ -32,14 +32,15 @@
     const rows = csvRows(raw, maxRows, maxCols);
     return '<table class="deliverable-csv"><tbody>' + rows.map((r, ri) => '<tr>' + r.map(c => '<' + (ri ? 'td' : 'th') + '>' + esc(c) + '</' + (ri ? 'td' : 'th') + '>').join('') + '</tr>').join('') + '</tbody></table>';
   }
-  function openUrl(url, token) { return String(url || '') + (String(url || '').indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(String(token || '')); }
+  // A server-built open URL -> a TICKETED one (a file- or run-scoped, minutes-long capability; ApiTicket.sign). The
+  // master token never rides an href: these URLs reach OS-browser history, Referer and copied links.
+  function openUrl(url) { return (typeof ApiTicket !== 'undefined' && ApiTicket.sign) ? ApiTicket.sign(url) : String(url || ''); }
   const fmtSize = n => n == null ? 'size unknown' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
-  const token = () => typeof window !== 'undefined' ? String(window.__STARNET_API_TOKEN__ || '') : '';
   const apiBase = () => typeof window !== 'undefined' ? String(window.__STARNET_API__ || '') : '';
   const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; });
 
   function fileHref(f) {
-    const href = openUrl(f && f.openUrl, token());
+    const href = openUrl(f && f.openUrl);
     const base = apiBase();
     return base && href.charAt(0) === '/' ? base + href : href;
   }
@@ -74,7 +75,8 @@
     } catch (err) {
       // Cancel at the host confirmation is an answer. Falling through would bypass the user's refusal.
       if (/declined at the host/i.test(String(err || ''))) return true;
-      try { await core.invoke('open_external_url', { url: href }); }
+      // re-mint: the host confirmation above may have outlasted the first ticket's few-minute life
+      try { await core.invoke('open_external_url', { url: fileHref(f) }); }
       catch (_) { if (say) say('Could not open that file — use its session or workspace folder to find it on disk.', true); }
     }
     return true;
@@ -135,8 +137,9 @@
     if (!r || !f || !f.openUrl) return false;
 
     const core = tauriCore();
-    // A browser-only non-preview is already a real href; let the anchor perform its native navigation.
-    if ((!core || !core.invoke) && (!f.preview || f.sandboxed)) return false;
+    // A browser-only non-preview is already a real href; let the anchor perform its native navigation — with a
+    // FRESH ticket (the rendered one may be past its few-minute life; a click handler runs before the navigation).
+    if ((!core || !core.invoke) && (!f.preview || f.sandboxed)) { try { link.href = fileHref(f); } catch (_) {} return false; }
     ev.preventDefault();
     ev.stopPropagation();
     if (core && core.invoke) return openDesktop(r, f, fileHref(f), say);
