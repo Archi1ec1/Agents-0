@@ -12477,7 +12477,9 @@ function cronStateSnapshot(now) {
   });
   return { jobs: jobs, enabled: cronArmed, halted: cronHalted, tickMs: CRON_TICK_MS, health: health,
     degraded: cronDegraded ? { quarantinePath: cronDegraded.quarantinePath, since: cronDegraded.since } : null,
-    maxConsecutiveFailures: CRON_MAX_CONSECUTIVE_FAILURES };
+    maxConsecutiveFailures: CRON_MAX_CONSECUTIVE_FAILURES,
+    // the delivery backlog ceiling the driver defers new runs at (cron-store) — the panel quotes it, never a copy
+    maxPendingDeliveries: cronStore.MAX_PENDING_DELIVERIES };
 }
 
 function handleCronList(req, res) {
