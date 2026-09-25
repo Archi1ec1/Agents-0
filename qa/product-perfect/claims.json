@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "8ff73e6611e7d1b0c3ece07f9af895b261e21d30",
+    "sourceCommit": "2ea9ed25e35813a20a00873c8dd15fd5e2532d49",
     "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
@@ -158,8 +158,8 @@
       },
       {
         "path": "frontend/app/agentid.js",
-        "bytes": 3323,
-        "sha256": "45ef6b2267bac6f158205a5756c2d05ee210d2387116b57d020c9120dd23998f"
+        "bytes": 4109,
+        "sha256": "cbcba353eb014e9cfcfc5730b02e909d4a1a23542e6b2ec594f063aeb23759d2"
       },
       {
         "path": "frontend/app/agentportraits.js",
