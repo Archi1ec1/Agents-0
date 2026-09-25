@@ -3736,17 +3736,17 @@ function saveCodexTokens(obj) {
   console.error('[codex] token persist UNVERIFIED after retry (' + codexPersistError + ') — tokens kept in memory for this session; a restart may require re-signing in to ChatGPT.');
   return false;
 }
-// Logout must sanitize BOTH resilient copies before live state is cleared; otherwise a failed unlink can return
-// success now and resurrect the refresh token on restart. Once both copies read back credential-free, removing
-// the null files is only cleanup — a failed unlink cannot recover a secret.
+// Logout must sanitize BOTH resilient copies before live state is cleared; otherwise a failed write can return
+// success now and resurrect the refresh token on restart. The copies are KEPT as a signed-out TOMBSTONE rather than
+// unlinked: an ABSENT current file lets boot migrate a legacy workspace's codex/tokens.json back in
+// (loadCodexTokensWithMigration), which silently signed the Commander back in after an explicit logout.
 function clearCodexTokens() {
-  const ok = saveCredentialRemovalVerified(CODEX_TOKENS_FILE, null, raw => raw === null, 'codex');
+  const ok = saveCredentialRemovalVerified(CODEX_TOKENS_FILE, codexTokenStore.SIGNED_OUT,
+    raw => codexTokenStore.isSignedOutTombstone(raw), 'codex');
   if (!ok) {
     codexPersistError = 'logout could not be persisted to disk';
     return false;
   }
-  try { fs.unlinkSync(CODEX_TOKENS_FILE); } catch (_) {}
-  try { fs.unlinkSync(CODEX_TOKENS_FILE + '.bak'); } catch (_) {}
   codexPersistError = ''; codexAuthDead = null;
   return true;
 }
