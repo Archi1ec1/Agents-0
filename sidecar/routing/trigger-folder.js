@@ -99,8 +99,11 @@ function makeFolderWatcher(deps) {
      • it must sit inside the owner's HOME folder or inside a project folder they already added (the blessed
        roots) — the same two places the station treats as the owner's own ground. Home itself is too broad.
    deps: { fsp, pathMod, hardlineReason(raw, resolved)->reason|null, homeRoots()->[abs], blessedRoots()->[abs],
-           forbiddenRoots()->[abs], systemRoots()->[abs], winish:bool }
+           forbiddenRoots()->[abs], systemRoots()->[abs], lineRoots()->[abs] (every line's working folder), winish:bool }
+   A folder equal to or inside a LINE's working folder (its trusted project — where that line's stages write) is
+   refused too: the line would feed on its own output. The runner re-asks this at every fire (lineOutputError).
    check(raw) -> Promise<{ ok:true, path:<realpath> } | { ok:false, code, error }> — never throws. */
+const lineOutputError = (root) => 'that folder is inside ' + root + ', the working folder a line\'s stages write to — the line would feed on its own output. Choose a folder outside it.';
 function makeFolderPolicy(deps) {
   const d = deps || {};
   const fsp = d.fsp, P = d.pathMod;
@@ -139,6 +142,11 @@ function makeFolderPolicy(deps) {
     if (!sysRoots || !forbidden) return { ok: false, code: 'policy', error: 'the station could not read its protected-folder list — refused (try again)' };
     for (const sys of sysRoots) if (sys && inside(real, sys)) return { ok: false, code: 'system', error: 'system folders cannot be watched: ' + real };
     for (const f of forbidden) if (f && inside(real, f)) return { ok: false, code: 'station', error: 'the station\'s own data folder cannot be watched (agents write there): ' + real };
+    // A LINE'S OWN OUTPUT (sweep 2026-09-25): a folder equal to or inside the working folder a line's stages write to
+    // (its trusted project) would feed that line its own results — a loop that spends on every file it writes.
+    const lineRoots = list(d.lineRoots);
+    if (!lineRoots) return { ok: false, code: 'policy', error: 'the station could not read its lines\' working folders — refused (try again)' };
+    for (const lr of lineRoots) if (lr && inside(real, lr)) return { ok: false, code: 'lineoutput', error: lineOutputError(lr) };
     const homes = (list(d.homeRoots) || []).filter(Boolean);
     for (const h of homes) if (norm(real) === norm(h)) return { ok: false, code: 'broad', error: 'your whole home folder is too broad — choose a specific folder inside it' };
     const blessed = (list(d.blessedRoots) || []).filter(Boolean);
@@ -149,4 +157,4 @@ function makeFolderPolicy(deps) {
   return { check, inside };
 }
 
-module.exports = { makeFolderWatcher, makeFolderPolicy };
+module.exports = { makeFolderWatcher, makeFolderPolicy, lineOutputError };

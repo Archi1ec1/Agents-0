@@ -209,7 +209,7 @@ const { lineStats: foldLineStats } = require('./routing/line-stats.js');   // LI
 const { makeLineSpend } = require('./routing/line-spend.js');   // per-line DAY spend ledger (LINE BUDGET maxUsdPerDay) — durable sibling of routing.plan.json
 const LineTriggers = require('./routing/triggers.js');   // LINE TRIGGERS (2026-09-23): folder/webhook events that start ONE line
 const { makeTriggerRunner, crewedDocksOnLine } = require('./routing/trigger-runner.js');
-const { makeFolderWatcher, makeFolderPolicy } = require('./routing/trigger-folder.js');
+const { makeFolderWatcher, makeFolderPolicy, lineOutputError } = require('./routing/trigger-folder.js');
 const { makeConnectorManager } = require('./mcp/manager.js');
 const { makeHttpTransport } = require('./mcp/transport.http.js');
 const googleApiTransport = require('./mcp/transport.google.js');
@@ -10580,8 +10580,22 @@ const triggerPollMs = (() => { const n = parseInt(ENV('TRIGGER_POLL_MS'), 10); r
 const triggerWatcher = makeFolderWatcher({ fsp, pathMod: path, settleMs: triggerSettleMs });
 // the folder jail: pathtrust's hardlines + realpath, never a drive root / system dir / the station's own data,
 // and only inside HOME or a project folder the owner already added (the blessed roots)
+/* every armed line's working folder (its trusted project, where its stages write — runOnceCore's workdir), as spelled
+   and as realpath: a watched folder inside one would feed that line its own output */
+function triggerLineRoots() {
+  const plan = router.getPlan();
+  const out = [];
+  for (const l of ((plan && Array.isArray(plan.lines)) ? plan.lines : [])) {
+    const r = l && typeof l.projectRoot === 'string' ? l.projectRoot.trim() : '';
+    if (!r) continue;
+    out.push(r);
+    if (fs.existsSync(r)) { try { out.push(fs.realpathSync(r)); } catch (e) { failNote('triggers.lineRoot.realpath', e); } }
+  }
+  return out;
+}
 const triggerFolderPolicy = makeFolderPolicy({
   fsp, pathMod: path, winish: path.sep === '\\',
+  lineRoots: triggerLineRoots,
   hardlineReason: pathTrustCore._internals.hardlineReason,
   homeRoots: () => { const h = os.homedir(); let r = h; try { r = fs.realpathSync(h); } catch (_) { r = h; } return [h, r]; },
   blessedRoots: () => blessedRoots(),
@@ -10638,6 +10652,7 @@ const triggerRunner = makeTriggerRunner({
     .map(r => ({ runId: r.runId, agentId: r.agentId, reason: r.reason, usd: r.usd, streamId: r.streamId })),
   emit: chanEmit, bumpQueue: bumpQueue, queueCap: QUEUE_CAP,
   watcher: triggerWatcher,
+  folderConflict: (p) => { const root = triggerLineRoots().find(r => p && triggerFolderPolicy.inside(p, r)); return root ? lineOutputError(root) : null; },
   now: () => Date.now(), newId: () => crypto.randomUUID(),
   warn: (m) => console.warn(m)
 });

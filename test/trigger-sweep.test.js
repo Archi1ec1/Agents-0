@@ -77,5 +77,40 @@ function harness(opts) {
     A.eq(H.R.inflights().length, 0, 'an idle deleted trigger leaves nothing behind');
   }
 
+  /* ---- 3. a folder inside a line's working folder is refused (create AND every fire) ---- */
+  {
+    const fs = require('fs'), fsp = require('fs/promises'), os = require('os'), path = require('path');
+    const { makeFolderPolicy, lineOutputError } = require('../sidecar/routing/trigger-folder.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-trg-sweep-'));
+    const home = path.join(root, 'home');
+    const project = path.join(home, 'proj'); fs.mkdirSync(path.join(project, 'drops'), { recursive: true });
+    const elsewhere = path.join(home, 'inbox'); fs.mkdirSync(elsewhere, { recursive: true });
+    let lineRoots = [project];
+    const policy = makeFolderPolicy({ fsp, pathMod: path, winish: path.sep === '\\', homeRoots: () => [home], blessedRoots: () => [project],
+      forbiddenRoots: () => [], systemRoots: () => [], lineRoots: () => lineRoots });
+    const inProj = await policy.check(project);
+    A.ok(!inProj.ok && inProj.code === 'lineoutput', 'the line\'s own working folder is refused: ' + JSON.stringify(inProj));
+    const sub = await policy.check(path.join(project, 'drops'));
+    A.ok(!sub.ok && sub.code === 'lineoutput' && /feed on its own output/.test(sub.error), 'a folder INSIDE it is refused with the reason');
+    A.ok((await policy.check(elsewhere)).ok, 'a folder outside every line\'s working folder is allowed');
+    lineRoots = null;
+    const pol2 = makeFolderPolicy({ fsp, pathMod: path, homeRoots: () => [home], forbiddenRoots: () => [], systemRoots: () => [], lineRoots: () => { throw new Error('plan unreadable'); } });
+    A.ok(!(await pol2.check(elsewhere)).ok, 'an unreadable line list fails CLOSED');
+
+    // the runner re-asks at every fire: a line whose project later moves over the folder blocks the trigger
+    let conflict = null;
+    const H = harness();
+    const H2 = { R: require('../sidecar/routing/trigger-runner.js').makeTriggerRunner({
+      load: () => ({ triggers: [] }), save: () => {}, makeHub: () => ({ onInbound: () => Promise.resolve(), close() {} }),
+      plan: () => H.plan, now: () => 1e12, newId: () => 'fixed0123456789abcdef', folderConflict: () => conflict }) };
+    const cf = H2.R.create({ kind: 'folder', lineId: 'L1', config: { path: elsewhere } }, { baselineKeys: [] });
+    A.ok(cf.ok && cf.trigger.blockedBy === null, 'a folder trigger with no conflict is not blocked');
+    conflict = lineOutputError(elsewhere);
+    A.ok(/feed on its own output/.test(H2.R.view(cf.trigger.id).blockedBy || ''), 'once a line works in that folder the trigger shows blockedBy');
+    const e = H2.R.enqueue(cf.trigger.id, { text: 'x' });
+    A.ok(!e.ok && e.code === 'refused', 'and a file landing there is refused, not fired');
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
+  }
+
   A.report('trigger-sweep.test');
 })().catch(e => { console.log('FAIL: trigger-sweep.test threw - ' + (e && e.stack || e)); process.exit(1); });
