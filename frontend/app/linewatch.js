@@ -276,6 +276,8 @@
     if (!s || typeof s !== 'object') return null;
     return [
       ['RUNS', String(s.runs | 0)], ['SHIPPED', String(s.shipped | 0)], ['FAILED', String(s.failed | 0)],
+      // step tests are counted APART (they are not jobs) — shown only when there were some, since their $ is in $ TODAY
+      ...((s.tests | 0) > 0 ? [['TESTS', String(s.tests | 0)]] : []),
       [utcDay(s) ? '$ TODAY (UTC)' : '$ TODAY', fmtUsd(s.usdToday) + (s.capUsdPerDay != null ? ' / ' + fmtUsd(s.capUsdPerDay) : ' · no cap')],
       ['MEDIAN', s.medianMs != null ? fmtDur(s.medianMs) + '/run' : '—']
     ];

@@ -49,8 +49,8 @@ A.eq(L('L1').failed, 1, 'L1: the error run is failed');
 A.eq(L('L1').medianMs, 1000, 'L1: median of 900/3000/1000');
 A.eq(L('L1').usdToday, 0.0125, 'L1: $ today from the ledger reader');
 A.eq(L('L1').capUsdPerDay, 5, 'L1: the daily cap from the limits reader');
-A.eq(L('L2'), { lineId: 'L2', runs: 1, shipped: 0, failed: 1, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'L2: a refusal with no timing -> median null, no cap');
-A.eq(L('L3'), { lineId: 'L3', runs: 0, shipped: 0, failed: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'L3: a line with no runs answers zeros');
+A.eq(L('L2'), { lineId: 'L2', runs: 1, shipped: 0, failed: 1, tests: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'L2: a refusal with no timing -> median null, no cap');
+A.eq(L('L3'), { lineId: 'L3', runs: 0, shipped: 0, failed: 0, tests: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'L3: a line with no runs answers zeros');
 A.ok(!out.lines.some(l => l.lineId === 'GONE'), 'a line no longer on the floor gets no plate');
 // SHIPPED = JOBS that reached the OUTBOX (2026-09-24): a 3-stage line finishing one job is 3 done runs but ONE shipment
 {
@@ -74,8 +74,31 @@ A.ok(!('undefined' in out.docks), 'rows without a dock never key a bay');
 
 // ---- readers that throw degrade to "cannot prove", never to a crash ----
 const safe = lineStats({ rows: [], lines: [{ lineId: 'L1' }], since: 0, spentToday: () => { throw new Error('x'); }, capOf: () => { throw new Error('y'); } });
-A.eq(safe.lines[0], { lineId: 'L1', runs: 0, shipped: 0, failed: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'throwing readers -> zero $ and no cap');
+A.eq(safe.lines[0], { lineId: 'L1', runs: 0, shipped: 0, failed: 0, tests: 0, medianMs: null, usdToday: 0, capUsdPerDay: null, spendDay: 'utc' }, 'throwing readers -> zero $ and no cap');
 A.eq(lineStats(null).lines, [], 'no input -> no lines');
+
+// ---- STEP TESTS ARE COUNTED APART (conveyor sweep 2026-09-25) ----
+// Try-this-step and step-test hops are real runs at real bays (their $ is in the ledger), but they are not JOBS:
+// a floor plate that said "10 RUNS · 0 SHIPPED" after ten test clicks claimed work the line never did.
+{
+  const trows = [
+    { runId: 't3', agentId: 'mira', lineId: 'L1', dockId: 'bB', reason: 'done', toolsOk: 2, durationMs: 50, ts: 9500, stepTest: true },
+    { runId: 't2', agentId: 'ada', lineId: 'L1', dockId: 'bC', reason: 'error', durationMs: 60, ts: 9400, stepTest: true },
+    { runId: 'j1', agentId: 'mira', lineId: 'L1', dockId: 'bB', reason: 'done', toolsOk: 1, durationMs: 4000, ts: 9300 }
+  ];
+  const t = lineStats({ rows: trows, lines: [{ lineId: 'L1' }], since: SINCE, shipsToOutbox: (a, d) => d === 'bB' || d === 'bC' }).lines[0];
+  A.eq([t.runs, t.shipped, t.failed, t.tests], [1, 1, 0, 2], 'test hops count as TESTS, never as runs / shipped / failed: ' + JSON.stringify(t));
+  A.eq(t.medianMs, 4000, 'the median is the real jobs\' time only');
+  const LW = require('../frontend/app/linewatch.js');
+  A.ok(LW.statsRow(t).some(c => c[0] === 'TESTS' && c[1] === '2'), 'the Workflow panel TODAY row names the tests');
+  A.ok(!LW.statsRow(Object.assign({}, t, { tests: 0 })).some(c => c[0] === 'TESTS'), 'and shows no TESTS cell when there were none');
+  const st = require('../sidecar/runstore.js').makeRunStore({ io: { readAll: () => [], append: () => {} }, clock: { now: () => 1 } });
+  A.eq(st.record({ runId: 's1', reason: 'done', stepTest: true }).stepTest, true, 'the run row records a step-test hop');
+  A.ok(!('stepTest' in st.record({ runId: 's2', reason: 'done' })), 'every other row keeps its old shape');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  A.ok(/stepTest: true\s+\/\/ the run row says it was a TEST hop/.test(src), 'the step-test host stamps its runs stepTest');
+  A.ok(/stepTest: o\.stepTest === true, lineId: o\.lineId/.test(src), 'runOnce passes the stamp to the run row');
+}
 
 // ---- the run-row stamp (runstore): present only when well-formed ----
 const { makeRunStore } = require('../sidecar/runstore.js');
