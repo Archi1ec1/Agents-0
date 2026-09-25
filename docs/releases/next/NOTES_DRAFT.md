@@ -56,6 +56,12 @@ overwrites `RELEASE_NOTES.md` with a scaffold — paste the final text from here
 - An agent can no longer be named into a station credential folder, secrets the engine holds are redacted from
   logs and streams, credential files are private to your user on macOS/Linux, and signing out of ChatGPT survives a
   restart. Document imports and connector sign-ins got size caps and DNS-rebinding protection.
+- Slack and Matrix bot tokens are kept in the OS keychain on desktop, like Telegram and Discord.
+- Webhook, watched-folder, forwarded and attached content never gets an agent's Full Access (also after a crash
+  and resume). Connector tool descriptions are shown to the model as the server's words, not instructions.
+- Commands and helpers StarNet starts no longer inherit its stored keys and tokens.
+- **Heads-up:** installed plugins ask for approval once more, because approval now covers every file in the
+  plugin's folder and is re-checked while it runs.
 - Discord, Slack, Matrix and Signal bots need the same one-time owner pairing code as Telegram before they take
   orders. Owners already paired keep working.
 - Forwarded Telegram messages, webhook payloads and watched-folder files start runs as untrusted text.
@@ -68,7 +74,6 @@ overwrites `RELEASE_NOTES.md` with a scaffold — paste the final text from here
 ## Before the cut — owed
 
 - Polish pass (d5b9a6288), security audit (62f53ce31) and security hardening (04dcb93fd) are merged and folded in
-  above. Still open: Slack/Matrix bot tokens are plaintext on desktop, MCP tool descriptions are not treated as
-  untrusted, helper processes inherit the engine's environment. Verify in an INSTALLED build: code.run's isolated
-  worker starts from the bundled resources path, and the pinned CSP inside real WebView2.
+  above, as are the follow-ups (a4d4734c7). Verify in an INSTALLED build: code.run's isolated worker starts from
+  the bundled resources path, the pinned CSP inside real WebView2, and the Slack/Matrix keychain migration.
 - Verify this list against the exact cut head (`git merge-base --is-ancestor <sha> <tag>` for each item).
