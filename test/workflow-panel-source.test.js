@@ -93,6 +93,10 @@ A.ok(/afterFlush\(\(\) => sessionCall\('pause', \{ pause: 'none' \}\)/.test(pane
 A.ok(/afterFlush\(\(\) => sessionCall\('rewind', \{ hop: i \}\)\)/.test(panel), 'REWIND flushes the plan first');
 A.ok(/if \(s && s\.state === 'paused'\) refreshPaused\(\);/.test(panel), 'returning to a paused test re-reads its preview after posting the floor');
 
+// (sweep 2026-09-25) a belted-but-uncrewed line never tells the owner to lay a belt that exists
+A.ok(/f\.outbox\.reachedOnceCrewed \? 'connected · waiting on agents' : 'not connected yet'/.test(panel), 'the OUTBOX node says "waiting on agents" when only crew is missing');
+A.ok(/else if \(f\.probeNext && f\.probeNext\[p\.id\]\) to = 'nowhere yet — ' \+ f\.probeNext\[p\.id\]\.map\(pid => dockLabel\(f, pid\)\)\.join\(' or '\) \+ ' needs an agent';/.test(panel), 'a crewed bay before an uncrewed one names the bay that needs an agent');
+
 // (sweep 2026-09-25) a closed panel stops polling a try-this-step run (it used to poll ~14 min after close)
 {
   const i = panel.indexOf('function waitDone(sess)'), body = panel.slice(i, panel.indexOf('\n  }\n', i));

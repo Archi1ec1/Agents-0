@@ -213,4 +213,34 @@ const nameOf = a => String(a).toUpperCase();
   A.eq(W.rowPatch([], []), { all: false, changed: [] }, 'empty stays empty');
   A.eq(W.rowPatch(null, rows([t1])).all, true, 'no previous rows ("reading triggers…") -> the list paints');
 }
+
+/* ---------- (sweep 2026-09-25) CONNECTED BUT UNCREWED is not "not connected" ---------- */
+{
+  // the stranded-user repro: INBOX → BAY → BAY → OUTBOX all belted, no agent yet. The panel said "[the last step is
+  // not connected to the OUTBOX]" + "connect the last step to the OUTBOX" — telling a newcomer to lay belts that exist.
+  const s = stamp('assembly_line', false);
+  const { flow, comp } = read(s);
+  A.eq(flow.outbox.reached, false, 'nothing reaches the OUTBOX TODAY (no crew — the real claim is unchanged)');
+  A.eq(flow.outbox.reachedOnceCrewed, true, 'but the belts do reach it once every bay is crewed');
+  const r = W.readiness(flow, comp, {});
+  A.ok(!r.blocking.some(b => /connect the last step/.test(b.what)), 'no "connect the last step" blocker for a belt that exists: ' + JSON.stringify(r.blocking.map(b => b.what)));
+  A.ok(r.blocking.some(b => /needs an agent/.test(b.what)), 'the real missing piece (an agent) is what blocks');
+  A.eq(r.ready, false, 'and the line is still not ready');
+  const txt = W.howItRuns(flow, { nameOf, triggers: {} }).map(x => x.s).join('');
+  A.ok(/\[the result reaches the OUTBOX once every step has an agent\]/.test(txt) && !/not connected to the OUTBOX/.test(txt), 'the sentence says what is missing: ' + txt);
+  // crew only the FIRST bay: its onward belt leads to an uncrewed bay — probeNext names it (never "connect a belt")
+  const first = flow.order[0];
+  s.assignPropAgent(first, 'a1');
+  const f2 = read(s).flow;
+  A.ok(f2.probeNext[first] && f2.probeNext[first].length === 1 && f2.probeNext[first][0] === f2.order[1], 'the crewed bay\'s belt leads to the next (uncrewed) bay: ' + JSON.stringify(f2.probeNext));
+  A.eq((f2.edges[first] || []).length, 0, '(the REAL plan still hands off to nothing today)');
+  // a line whose last bay is NOT belted to the OUTBOX still says so
+  const s3 = stamp('assembly_line', true);
+  const g3 = s3.projectGeometry();
+  const outbox = g3.props.find(p => p.t === 'outbox');
+  s3.removeProp(outbox.id);
+  const r3 = read(s3);
+  const rb = W.readiness(r3.flow, r3.comp, {});
+  A.ok(rb.blocking.some(b => /add an OUTBOX|connect the last step/.test(b.what)), 'a line that really does not reach an OUTBOX still blocks on it: ' + JSON.stringify(rb.blocking.map(b => b.what)));
+}
 A.report('workflow-line');

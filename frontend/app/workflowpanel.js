@@ -290,7 +290,7 @@ const WorkflowPanel = (() => {
         if (col.gate) nodes.push({ kind: 'gate', gate: col.gate, propId: col.gate.propId });
       });
       nodes.push({ kind: 'outbox', propId: f.outbox.propId, cls: 'wf-term', ok: f.outbox.reached,
-        html: '<span class="k">OUTBOX</span><span class="t">RESULT</span><span class="a">' + (f.outbox.reached ? 'the line ends here' : f.outbox.propId ? 'not connected yet' : 'no OUTBOX') + '</span>' });
+        html: '<span class="k">OUTBOX</span><span class="t">RESULT</span><span class="a">' + (f.outbox.reached ? 'the line ends here' : f.outbox.propId ? (f.outbox.reachedOnceCrewed ? 'connected · waiting on agents' : 'not connected yet') : 'no OUTBOX') + '</span>' });
     } else if (S.lone) {
       nodes.push({ kind: 'col', col: { docks: [{ propId: S.lone, agentId: (prop(S.lone) || {}).agentId || null, role: (prop(S.lone) || {}).role || null, routed: false }], mode: 'single' }, ok: false });
     }
@@ -464,6 +464,8 @@ const WorkflowPanel = (() => {
       else if (nb.next.length) to = nb.next.map(pid => dockLabel(f, pid)).join(' or ');
       else if (!d.agentId) to = 'decided once it has an agent';
       else if (f.outbox.reached && !d.deadEnd) to = 'the OUTBOX';
+      // the belt IS there — the bay it leads to just has no agent yet (never "connect a belt" for a belt that exists)
+      else if (f.probeNext && f.probeNext[p.id]) to = 'nowhere yet — ' + f.probeNext[p.id].map(pid => dockLabel(f, pid)).join(' or ') + ' needs an agent';
       else to = d.deadEnd ? 'nowhere — connect a belt to the next BAY or the OUTBOX' : 'no onward connection confirmed yet';
     }
     return { gets, to };
