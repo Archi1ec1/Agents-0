@@ -15004,9 +15004,7 @@ async function handleAgentDelete(req, res) {
   const agentId = String(body.agentId || body.agent || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });   // same id regex as roster/fs-jail surfaces
   if (agentId === 'agent') return json(400, { error: 'cannot delete the hero agent' });   // the founder is undeletable (resume depends on it)
-  // WORKSPACES/<id> for a reserved id is a STATION directory (codex tokens, channel/connector secrets, plugins) —
-  // the archive step below would move it into _archive and silently sign the station out of everything.
-  if (WorkspaceReserved.isReservedWorkspaceId(agentId)) return json(400, { error: 'agentId names a reserved station directory' });
+  if (WorkspaceReserved.isReservedWorkspaceId(agentId)) return json(400, { error: 'reserved station directory' });   // codex/, channels/ … never archived
 
   const deletion = await agentLifecycle.beginDelete(agentId, 'delete-' + crypto.randomUUID());
   if (!deletion.ok) {
