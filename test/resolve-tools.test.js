@@ -117,6 +117,8 @@ const probeJson = (dur, v, a) => JSON.stringify({ format: { duration: String(dur
   const noPy = R.makeResolveTools({ fsp, pathMod: path, root: ROOT, spawn: fakeSpawn(() => ({ error: 'ENOENT' })), envFor: () => ({}), platform: 'linux' });
   const s1 = await noPy.tools.find(t => t.name === 'resolve_status').run({}, ctx);
   A.ok(/Live control: NO — no Python 3 found/.test(s1.content), 'no Python: status says NO and why');
+  { const K = R._internals; const st = noPy.tools.find(t => t.name === 'resolve_status');
+    A.ok(st.timeoutMs > 3 * K.PY_PICK_TIMEOUT_MS + K.STATUS_PROBE_MS, 'resolve_status backstop (' + st.timeoutMs + 'ms) covers 3 launcher probes + the bridge probe (75s worst case; it was 60s)'); }
   const M = R.makeResolveTools({ fsp, pathMod: path, root: ROOT, envFor: () => ({}), platform: 'linux', spawn: () => null })._internals.OUT_MARK;
   const bridgeSays = (o) => fakeSpawn((cmd, args) => (args.indexOf('import sys;print(sys.version_info[0])') >= 0 ? { stdout: '3\n' } : { stdout: 'noise\n' + M + JSON.stringify(o) + '\n' }));
   const free = R.makeResolveTools({ fsp, pathMod: path, root: ROOT, envFor: () => ({}), platform: 'linux', spawn: bridgeSays({ ok: false, reachable: false, module_imported: true, error: 'Resolve did not answer. It must be running, be Resolve STUDIO' }) });
