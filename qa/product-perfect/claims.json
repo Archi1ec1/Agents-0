@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "6d492e54aff31c0bbfe9452fbfd70b602ca39658",
+    "sourceCommit": "ecb330757065db4a9d319c74059ef02e7b9afee8",
     "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
@@ -598,8 +598,8 @@
       },
       {
         "path": "frontend/app/linewatch.js",
-        "bytes": 18843,
-        "sha256": "e435afb504b2796e39577351f56a5e80aa9621456d91f92ac21702a256226658"
+        "bytes": 19296,
+        "sha256": "f64d87223952bef4a8c7a6104fd76279bcbcf9ff260771bdadd451c81493ebca"
       },
       {
         "path": "frontend/app/logoclip.js",
@@ -1248,8 +1248,8 @@
       },
       {
         "path": "frontend/app/windows/routines.js",
-        "bytes": 61120,
-        "sha256": "c1f40d69e8815bf340d1d801e77acbaacf58c4801bc542fde35c23fa901e91c5"
+        "bytes": 62109,
+        "sha256": "aa902d9e42761c8136287b0ff59008b05c30d7258280cf69d7f8924a4091b1cb"
       },
       {
         "path": "frontend/app/windows/trophies.js",
@@ -1258,13 +1258,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 34982,
-        "sha256": "09289f7a7b9e42937fcca13620cb00d78120721cf8693e473940469a3a4f0d87"
+        "bytes": 36364,
+        "sha256": "87cbce945f6c569f09e4382eee5131eb06e5e42dacefea59fb489cba3e98ce36"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 105941,
-        "sha256": "a08b58cb27be4e21bd07c2a10c5f6649f33ffd03b424698b6fc7ef49aa3e85a2"
+        "bytes": 110749,
+        "sha256": "6c2d674832611049eee5f760c453b36f1b4696715ea158918667c4c5ab0f4424"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
