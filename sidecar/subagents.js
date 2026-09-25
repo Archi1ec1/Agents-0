@@ -130,6 +130,9 @@
         generation: Math.max(1, Math.floor(Number(r.generation) || 1)),
         resultSchema: r.resultSchema || null, structuredResult: r.structuredResult == null ? null : r.structuredResult,
         validation: r.validation || null, repairRunId: r.repairRunId || '',
+        // the worker run's host-proven untrusted-content taint ('' = clean). team.subagents relays it with the
+        // result text so the polling lead latches it too (sec-taint 09-25)
+        taintedBy: r.taintedBy || '',
         artifacts: Array.isArray(r.artifacts) ? r.artifacts.slice(-40) : [],
         steerHistory: Array.isArray(r.steerHistory) ? r.steerHistory.slice(-40) : [],
         attempts: r.attempts || 0, startedAt: r.startedAt || 0, updatedAt: r.updatedAt || 0,
@@ -242,6 +245,7 @@
         status: 'running',
         reason: '',
         result: old && old.result ? old.result : '',
+        taintedBy: old && old.result && old.taintedBy ? old.taintedBy : '',   // the kept result keeps its provenance
         usd: 0,
         events: old && Array.isArray(old.events) ? old.events.slice(-80) : [],
         attempts: (meta.attempts || 0) + 1,
@@ -324,6 +328,7 @@
           structuredResult: result && result.structuredResult != null ? clone(result.structuredResult) : null,
           validation: result && result.validation ? clone(result.validation) : null,
           repairRunId: (result && result.repairRunId) || '',
+          taintedBy: result && typeof result.taintedBy === 'string' ? result.taintedBy.slice(0, 200) : '',
           artifacts: result && Array.isArray(result.artifacts) ? result.artifacts.slice(-40) : ((cur && cur.artifacts) || []),
           completedAt: now(),
           canResume: status !== 'done'

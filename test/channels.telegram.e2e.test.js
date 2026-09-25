@@ -349,7 +349,7 @@ async function waitUntil(fn, ms, label) {
   try {
     let token = await bootToken(B, B);
     A.ok(token.length >= 32, 'got a session API token');
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     await waitUntil(() => tg.calls.some(c => c.method === 'getUpdates' && c.body && c.body.offset === -1), 5000, 'telegram drop-pending poll');
     tg.recoverPoll();

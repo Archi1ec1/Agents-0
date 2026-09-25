@@ -11,6 +11,7 @@ test/contract.test.js
 test/events-contract.test.js
 test/clock-rng.test.js
 test/context.test.js
+test/redact.known-values.test.js
 test/runtimeinfo.test.js
 test/harness-snapshot.test.js
 test/harness-stream-completion.test.js
@@ -46,6 +47,7 @@ test/workspace-recovery.test.js
 test/workspace-lineage.test.js
 test/agent-lifecycle.test.js
 test/durable-store.test.js
+test/durable-write.mode.test.js
 test/domain-store.test.js
 test/provider-runtime.test.js
 test/run-execution-state.test.js
@@ -237,6 +239,7 @@ test/threadstore.test.js
 test/autopilot-threads.test.js
 test/autopilot-focus.test.js
 test/apiauth.test.js
+test/apitickets.test.js
 test/notebook.test.js
 test/skills.test.js
 test/skill-exchange.test.js
@@ -449,6 +452,7 @@ test/projects-store.test.js
 test/projectbless.test.js
 test/folderpick.test.js
 test/pathtrust.test.js
+test/workspace-reserved.test.js
 test/nightfocus.test.js
 test/nightpatch.test.js
 test/projectscan.test.js
@@ -552,6 +556,7 @@ test/cron.run-now.test.js
 test/tool-withheld-message.test.js
 test/cron-guard.test.js
 test/untrusted-taint.test.js
+test/taint-lineage.test.js
 test/routine-tools.test.js
 test/routine-grant-rebind.test.js
 test/comms-tools.test.js
@@ -660,6 +665,7 @@ test/channels.adapter.test.js
 test/channels.proxy-fetch.test.js
 test/channels.owner-pairing.test.js
 test/channels.owner-pairing-all.test.js
+test/channels.owner-gates.test.js
 test/channels.telegram.pairing-ux.test.js
 test/channels.telegram.test.js
 test/channels.telegram.format.test.js
@@ -705,6 +711,7 @@ test/google-relay-guard.test.js
 test/connector-vault.test.js
 test/mcp.catalog.test.js
 test/mcp.oauth.test.js
+test/mcp.oauth-fetch.test.js
 test/connectorstate.test.js
 test/connector-reliability-wiring.test.js
 test/mcp-serve.test.js

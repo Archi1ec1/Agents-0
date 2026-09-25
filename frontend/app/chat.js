@@ -2446,6 +2446,11 @@ const Chat = (() => {
   function wireFileOpen(a, title, agentId) {
     a.href = fileUrl(title, agentId);
     a.target = '_blank'; a.rel = 'noopener';
+    // the rendered ticket lives minutes, the row lives forever: re-mint right before any use of the href
+    // (capture-phase listeners run before the native navigation / the context menu's copy-link reads it).
+    const refresh = () => { try { a.href = fileUrl(title, agentId); } catch (_) {} };
+    a.addEventListener('click', refresh, true); a.addEventListener('auxclick', refresh, true);
+    a.addEventListener('contextmenu', refresh, true); a.addEventListener('focus', refresh, true);
     const core = tauriCore();
     if (core && core.invoke) {
       a.addEventListener('click', ev => {
@@ -2456,7 +2461,7 @@ const Chat = (() => {
             // The host shows a native confirm before any OS launch (renderer clicks are not host
             // gestures). Cancel there is an ANSWER, not a failure — never fall back around it.
             if (/declined at the host/i.test(String(err || ''))) return;
-            return Promise.resolve(core.invoke('open_external_url', { url: a.href }))
+            return Promise.resolve(core.invoke('open_external_url', { url: fileUrl(title, agentId) }))
               .catch(() => { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify('could not open that file — use folder or copy path to find it on disk', 'warn'); });
           });
       });
@@ -2533,8 +2538,8 @@ const Chat = (() => {
   function workspaceDir(agentId) {
     const aid = agentId || 'agent';
     if (_wsDirCache.has(aid)) return _wsDirCache.get(aid);
-    const tok = (typeof Harness !== 'undefined' && Harness.apiToken) ? String(Harness.apiToken() || '') : '';
-    const p = fetch('/api/workspace/dir?agent=' + encodeURIComponent(aid) + (tok ? '&token=' + encodeURIComponent(tok) : ''), { cache: 'no-store' })
+    // header auth only: the hardened window.fetch (harness.js) attaches X-StarNet-Token to every /api/ URL
+    const p = fetch('/api/workspace/dir?agent=' + encodeURIComponent(aid), { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null).then(j => (j && j.dir) ? String(j.dir) : '').catch(() => '');
     _wsDirCache.set(aid, p);
     return p;
@@ -2659,20 +2664,18 @@ const Chat = (() => {
     return MEDIA_KIND_BY_EXT[ext] || 'file';
   }
   // The jailed /api/file URL for a workspace file — usable as a REAL href/src, not just inside fetch().
-  // Token: the SYNC injected global (the same value Harness.apiToken() RESOLVES to — apiToken() itself
-  // returns a Promise, and the old String(promise) baked `token=[object Promise]` into the query, a
-  // guaranteed 403 on any native load that can't ride the header shim). Base: on desktop the page runs
+  // Base: on desktop the page runs
   // on the tauri.localhost origin and the shell rewrites ONLY window.fetch to the sidecar — a relative
   // href would navigate into the bundled-asset protocol and vanish (the same trap cloudsave's unload
   // beacon hit), so native loads carry the ABSOLUTE loopback base (window.__STARNET_API__); in a
   // browser the base is '' and the URL stays same-origin relative.
+  // Auth (2026-09-25): a FILE-SCOPED 5-minute ticket (ApiTicket.fileUrl), never the master token — this href reaches
+  // OS-browser history, Referer and copied links. wireFileOpen re-mints it right before any use.
   function fileUrl(title, agentId) {
-    let base = '', tok = '';
+    if (typeof ApiTicket !== 'undefined' && ApiTicket.fileUrl) return ApiTicket.fileUrl(agentId || 'agent', String(title));
+    let base = '';
     try { base = (typeof window !== 'undefined' && window.__STARNET_API__) ? String(window.__STARNET_API__) : ''; } catch (_) {}
-    try { tok = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) ? String(window.__STARNET_API_TOKEN__) : ''; } catch (_) {}
-    return base + '/api/file?agent=' + encodeURIComponent(agentId || 'agent') +
-      '&path=' + encodeURIComponent(title) +
-      (tok ? '&token=' + encodeURIComponent(tok) : '');
+    return base + '/api/file?agent=' + encodeURIComponent(agentId || 'agent') + '&path=' + encodeURIComponent(title);
   }
   // append a small "open in a new tab" fallback link — shown when an inline player can't decode the file
   // (e.g. an .mkv/.avi the browser won't play), mirroring the reference harness's OpenMediaButton.

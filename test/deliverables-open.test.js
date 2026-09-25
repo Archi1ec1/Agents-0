@@ -53,8 +53,10 @@ function clickFor(row, preview) {
       __STARNET_API__: 'http://127.0.0.1:61661',
       __STARNET_API_TOKEN__: 'launch-token',
       __TAURI__: { core: { invoke: async (name, args) => { calls.push({ name, args }); } } },
-      getSelection: () => ''
+      getSelection: () => '',
+      crypto: require('node:crypto').webcrypto
     };
+    global.ApiTicket = require('../frontend/app/apiticket.js');   // the page loads app/apiticket.js first
 
     const run = clickFor({
       id: 'run:agent:run-1', agentId: 'agent', runId: 'run-1', source: 'run',
@@ -94,8 +96,8 @@ function clickFor(row, preview) {
     await D.handleOpenClick(browser.event, browser.rows);
     A.ok(browserPreview.innerHTML.indexOf('SAFE PREVIEW') >= 0 && browserPreview.innerHTML.indexOf('Visible beside this row') >= 0,
       'browser preview paints inside the clicked card');
-    A.ok(fetched.indexOf('http://127.0.0.1:61661/api/file?') === 0 && fetched.indexOf('token=launch-token') >= 0,
-      'browser preview uses the real desktop API base and launch token');
+    A.ok(fetched.indexOf('http://127.0.0.1:61661/api/file?') === 0 && /[?&]ticket=st1\./.test(fetched) && fetched.indexOf('launch-token') < 0,
+      'browser preview uses the real desktop API base and a scoped ticket — never the launch token in the URL');
     const state = {};
     let releaseOld;
     global.fetch = () => new Promise(resolve => { releaseOld = resolve; });

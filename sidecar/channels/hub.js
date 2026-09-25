@@ -199,19 +199,26 @@
   // slash-actions.js) — the same code path the desktop palette uses, so the answer here is byte-identical to the
   // answer there instead of a second implementation that drifts. Everything else is control-plane work only this
   // hub can do (it owns the in-flight run and the transcript file).
+  //
+  // `owner` — WHO may run it (2026-09-25, sec-owner-gates). Anyone admitted to the chat (a whitelisted group's
+  // members, an allowed non-owner) can TALK to the agent, but only the bound owner may change the station:
+  //   'always' — owner-only in every form (state-changing, or reveals the owner's private spend/schedules)
+  //   'write'  — the bare form is a read-only readout anyone may see; any argument (a change) is owner-only
+  //   absent   — read-only, open to every admitted sender (status, agents, whoami, tools, help, start)
+  // Commander-defined commands (userCommandNames) are owner-only too — they run the owner's own aliases.
   const COMMANDS = [
     { command: 'status', description: 'What this chat is doing right now' },
-    { command: 'stop', description: 'Stop the run in progress' },
-    { command: 'new', description: 'Forget this chat\'s history and start fresh' },
+    { command: 'stop', description: 'Stop the run in progress', owner: 'always' },
+    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always' },
     { command: 'agents', description: 'List agents (→ marks the one you are talking to)' },
-    { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>' },
-    { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]' },
-    { command: 'usage', description: 'Real spend from the station ledger', slash: true },
+    { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>', owner: 'always' },
+    { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]', owner: 'write' },
+    { command: 'usage', description: 'Real spend from the station ledger', slash: true, owner: 'always' },
     { command: 'tools', description: 'The tools this agent can actually call', slash: true },
-    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true },
-    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true },
-    { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]' },
-    { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]' },
+    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always' },
+    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always' },
+    { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
+    { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
     { command: 'whoami', description: 'Show which agent this chat is talking to' },
     { command: 'help', description: 'List these commands', menu: false },
     // Telegram sends this when a fresh chat's START button is pressed. menu:false — the client offers it on an
@@ -220,6 +227,15 @@
   ];
   const SLASH_CMDS = COMMANDS.reduce((m, c) => { if (c.slash) m[c.command] = 1; return m; }, {});
   const KNOWN_CMDS = COMMANDS.reduce((m, c) => { m[c.command] = 1; return m; }, {});
+  const OWNER_CMDS = COMMANDS.reduce((m, c) => { if (c.owner) m[c.command] = c.owner; return m; }, {});
+  // Does this parsed command need the bound owner? Pure, exported for the policy test.
+  function commandNeedsOwner(parsed) {
+    if (!parsed) return false;
+    const rule = OWNER_CMDS[parsed.cmd];
+    if (rule === 'always') return true;
+    if (rule === 'write') return !!String(parsed.arg || '').trim();
+    return false;
+  }
   // the setMyCommands payload (name + one-line description only — Telegram renders no usage strings).
   function menuCommands() {
     return COMMANDS.filter(c => c.menu !== false).map(c => ({ command: c.command, description: c.description }));
@@ -370,6 +386,20 @@
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
+    /* OWNER IDENTITY for control commands and Full Power inheritance (2026-09-25, sec-owner-gates).
+       isOwner(msg) answers "is this sender the bound owner?" in ANY chat type (the owner may /model from their own
+       group); it is minted by the composition root from the adapter's paired owner id, never from message text.
+       ownerSurface:true marks a hub whose every inbound is already the Commander (the local dev/sample routes and
+       the owner-configured line triggers behind the launch token) — it keeps those surfaces byte-identical.
+       Absent both, the fallback is ownerTrusted (owner DM) — fail closed: a hub that cannot name its owner
+       grants the owner-only commands to nobody. */
+    const ownerSurface = o.ownerSurface === true;
+    const isOwnerFor = ownerSurface ? (() => true)
+      : (typeof o.isOwner === 'function' ? o.isOwner : ownerTrustedFor);
+    // untrustedSenders:false — this hub has no chat senders at all (the owner-configured line triggers): its runs
+    // are not tagged as sender-originated, so their Full Power posture is unchanged, while its commands still need
+    // an owner it can never name (a webhook body that starts with /stop is refused, not obeyed).
+    const tagSenderRuns = !ownerSurface && o.untrustedSenders !== false;
     const rosterFn = typeof o.roster === 'function' ? o.roster : null;
     const setModelFn = typeof o.setModel === 'function' ? o.setModel : null;
     const modelCatalogFn = typeof o.modelCatalog === 'function' ? o.modelCatalog : null;
@@ -493,6 +523,37 @@
       const tail = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40 - agentPrefix.length);
       return agentPrefix + (tail || '0');
     }
+    /* HOP HISTORY IS KEYED BY CHAT LINEAGE, NOT BY AGENT (sec-taint 09-25). A downstream hop replays its prior turns
+       from the channel store. That store was keyed by the hop's agentId alone, so every chat, every line and every
+       direct conversation with that agent shared ONE history: text a hop was handed in chat A (upstream output,
+       possibly a hostile page an upstream stage read) replayed into chat B's run of the same agent — and into that
+       agent's own untainted DM fallback history. The key is now a digest of channel + chat + line + dock, so a hop
+       remembers only the handoffs of its OWN chat's line. Deterministic (two FNV-1a lanes), fits the store's
+       agentId grammar ('hop_' + 32 hex = 36 chars ≤ 40), and can never equal a real agent's history file by
+       accident short of a 2^-64 collision. */
+    function hopHistoryKey(chatId, lineId, node) {
+      const src = channel + '\u0000' + String(chatId) + '\u0000' + String(lineId || '') + '\u0000' + String(node || '');
+      let h1 = 0x811c9dc5, h2 = 0x01000193;
+      for (let i = 0; i < src.length; i++) {
+        const c = src.charCodeAt(i);
+        h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+        h2 = Math.imul(h2 ^ c, 0x811c9dc5) >>> 0;
+      }
+      const hex = (n) => ('00000000' + n.toString(16)).slice(-8);
+      return 'hop_' + hex(h1) + hex(h2) + hex(Math.imul(h1 ^ h2, 0x01000193) >>> 0) + hex((h2 + src.length) >>> 0);
+    }
+    // the hop keys a chat has written, remembered on its chat record so /new forgets the line's handoffs too
+    function rememberHopKey(chatId, key) {
+      if (!bindChats || typeof store.getChatRecord !== 'function' || typeof store.saveChatRecord !== 'function') return;
+      try {
+        const rec = store.getChatRecord(chatId) || {};
+        const keys = Array.isArray(rec.hopKeys) ? rec.hopKeys.filter(k => typeof k === 'string' && AID_RE.test(k)) : [];
+        if (keys.indexOf(key) >= 0) return;
+        keys.push(key);
+        store.saveChatRecord(chatId, { hopKeys: keys.slice(-32) });
+      } catch (e) { failNote('channels.hub.hopKeys', e); }
+    }
+
     function resolvedStreamId(chatId) {
       let explicit = '';
       try { if (streamIdFor) explicit = String(streamIdFor(chatId) || ''); } catch (_) { explicit = ''; }
@@ -897,6 +958,10 @@
     // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
     // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
     // /talk confirmations, and /model to name the target honestly.
+    function ownerOnlyReply(label) {
+      return '⚠ ' + label + ' is owner-only on this station — only the paired owner can use it. You can still talk to the agent here.';
+    }
+
     function currentBoundAgent(chatId, boundAgentId, sec) {
       if (boundAgentId) return boundAgentId;
       if (sec && sec.agentId && AID_RE.test(String(sec.agentId))) return String(sec.agentId);
@@ -982,6 +1047,11 @@
         let dropped = 0;
         try { dropped = store.clearHistory(boundId); }
         catch (e) { await deliver(chatId, '⚠ Could not clear this chat: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
+        // the work line's per-chat hop histories start fresh too (hopHistoryKey)
+        try {
+          const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
+          for (const k of (rec && Array.isArray(rec.hopKeys) ? rec.hopKeys : [])) if (typeof k === 'string' && AID_RE.test(k)) dropped += store.clearHistory(k) || 0;
+        } catch (e) { failNote('channels.hub.hopKeys.clear', e); }
         await deliver(chatId, dropped
           ? ('Cleared ' + dropped + ' message' + (dropped === 1 ? '' : 's') + ' — this chat starts fresh. I no longer remember what we discussed.')
           : 'Nothing to clear — this chat had no history yet.', '', 'command');
@@ -1403,6 +1473,11 @@
       const boundAgentId = (boundRec && boundRec.agentId && AID_RE.test(String(boundRec.agentId))) ? String(boundRec.agentId) : null;
       let ownerTrusted = false;
       try { ownerTrusted = ownerTrustedFor(msg) === true; } catch (_) { ownerTrusted = false; }
+      // The bound owner in ANY chat (commands), and the bound owner in a DIRECT chat (Full Power inheritance —
+      // a group's context carries other members' words, so only a DM run is purely the owner's).
+      let senderIsOwner = false;
+      try { senderIsOwner = isOwnerFor(msg) === true; } catch (_) { senderIsOwner = false; }
+      const channelSenderOwner = ownerSurface || ownerTrusted || (senderIsOwner && String(msg.chatType || '') === 'dm');
 
       /* OBSERVE-ONLY: heard, filed, never answered. The mention gate stopped the bot replying to a room it was
          not addressed in, and in doing so gave it amnesia — asked later to "summarise that", it had never seen
@@ -1424,7 +1499,16 @@
       // Telegram/Discord/any future adapter get identical behavior.
       // A FORWARDED "/away on" is a third party's words, not the Commander's command — never parse it as one.
       const parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
-      if (parsed) { await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted); return; }
+      if (parsed) {
+        // OWNER GATE: a non-owner may talk to the agent, never reconfigure the station. Refused for free, before
+        // any handler, write or slash-registry call — and said plainly, so the member knows it is a policy.
+        if (commandNeedsOwner(parsed) && !senderIsOwner) {
+          await deliver(chatId, ownerOnlyReply('/' + parsed.cmd), '', 'command');
+          return;
+        }
+        await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted);
+        return;
+      }
 
       // COMMANDER-DEFINED commands are not in this hub's table (the sidecar owns them), so a "/standup" would
       // otherwise fall through and be answered by the MODEL — spending a turn to say it doesn't understand.
@@ -1433,6 +1517,8 @@
       // command may do here: an alias resolves and runs, a shell exec is refused off-desktop.
       const userNamed = /^\/([A-Za-z0-9_-]+)/.exec(String(msg.text || ''));
       if (userNamed && runSlashFn && userCommandNames().indexOf(userNamed[1].toLowerCase()) !== -1) {
+        // the Commander's own commands run the Commander's own aliases — owner-only, same gate as the table above
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userNamed[1]), '', 'command'); return; }
         // resolve the agent the SAME way handleCommand does, so a user command is scoped to whoever this chat
         // is actually talking to rather than a default
         const ucAgent = currentBoundAgent(chatId, boundAgentId, sec);
@@ -1712,6 +1798,9 @@
             initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null)),
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
+            // RUN ORIGIN (sidecar/run-origin.js): a chat sender started this run. Full Power (per-agent Full Access /
+            // master bypass) is inherited only when that sender is the bound owner in a direct chat.
+            channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,
             // ...but ONLY for who answers a consent prompt. A phone has no floor to place props on, so this run
             // composes the headless office either way. Without this, /approvals on silently cut the agent from
             // the full autonomous office to compute-only (2 tools) — THE MOAT is floor-real placement, and there
@@ -1797,9 +1886,11 @@
               else if (name === 'capdenied') hs.errMsg = hs.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
               else if (name === 'agent.run.end') { if (typeof p.usd === 'number' && isFinite(p.usd)) hs.usd = p.usd; }
             };
+            // THIS chat's line history for THIS dock — never the agent's shared history (see hopHistoryKey)
+            const hopKey = hopHistoryKey(chatId, lineId, h.dockId || h.agentId);
             let hist = [];
-            try { hist = store.loadHistory(h.agentId); } catch (_) {}
-            try { store.appendTurn(h.agentId, 'user', h.text); } catch (e) { failNote('channels.hub.appendTurn', e); }
+            try { hist = store.loadHistory(hopKey); } catch (_) {}
+            try { store.appendTurn(hopKey, 'user', h.text); rememberHopKey(chatId, hopKey); } catch (e) { failNote('channels.hub.appendTurn', e); }
             try {
               await runOnce({
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
@@ -1809,13 +1900,14 @@
                 streamId: canonicalStreamId || undefined,   // the whole line shares one canonical transcript
                 initialTaint: 'upstream agent output',
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
+                channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
                 // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
                 station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
                 taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel,
                 lineId: lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
-            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(h.agentId, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
+            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(hopKey, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
             return { text: hs.buf, usd: hs.usd, error: hs.errMsg };
           }
         });
@@ -2041,5 +2133,5 @@
     };
   }
 
-  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

@@ -279,19 +279,13 @@ const WorkshopStore = (() => {
   }
 
   // W7 — the URL that RUNS a workshop file in a browser tab, served from the jailed read-only /workshop-run/ static
-  // route. A tab navigation (window.open) can't send the token header, so it rides ?token= exactly like /api/file.
-  // The per-launch token is injected synchronously into the page (window.__STARNET_API_TOKEN__), so read it directly
-  // (Harness.apiToken() is a promise — not usable in a sync href). Returns '' if the token isn't present yet.
+  // route. A tab navigation (window.open) can't send the token header, so the URL carries a RUN-SCOPED 10-minute
+  // ticket in its path (/workshop-run/~t/<ticket>/<agent>/<run>/<file>) — relative assets inherit it, nothing else
+  // is reachable with it, and the master token never lands in (OS-)browser history. Minted synchronously so the
+  // open stays inside the click gesture; absolute sidecar base on desktop (ApiTicket). '' when no token is present.
   function runUrl(agentId, runId, relPath) {
-    const tok = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) ? String(window.__STARNET_API_TOKEN__) : '';
-    if (!tok) return '';
-    // Desktop: the page's origin is the Tauri webview (bundled frontend), NOT the sidecar, and the injected
-    // fetch shim only rewrites '/api/'-prefixed strings — so this URL must carry the sidecar base explicitly
-    // (window.__STARNET_API__ = http://127.0.0.1:<port>). Browser build: __STARNET_API__ is unset → relative.
-    const base = (typeof window !== 'undefined' && window.__STARNET_API__) ? String(window.__STARNET_API__) : '';
-    const parts = String(relPath || '').split('/').map(encodeURIComponent).join('/');
-    return base + '/workshop-run/' + encodeURIComponent(agentId || 'agent') + '/' + encodeURIComponent(runId) + '/' + parts
-      + '?token=' + encodeURIComponent(tok);
+    if (typeof ApiTicket === 'undefined' || !ApiTicket.runUrl) return '';
+    return ApiTicket.runUrl(agentId || 'agent', runId, relPath);
   }
 
   // W7 — OS launch is intentionally unavailable: neither loopback API possession nor

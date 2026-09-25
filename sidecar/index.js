@@ -154,8 +154,11 @@ const oauthDevice = require('./providers/oauth-device.js');
 const oauthTokenStore = require('./providers/oauth-token-store.js');
 const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } = require('./spend.js');
 const { makeEmitter } = require('../shared/emitter.js');
-const { redact, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
+const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
+const { makeConnectorOauthFetch } = require('./mcp/oauth-fetch.js');   // DNS-pinned fetch for every connector-OAuth leg
+const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
 const { runRouteFailure } = require('./runroute.js');   // a failure escaping handleRun must never read as an empty 200
 const { json: respondJson, readJsonBody, isAgentId } = require('./respond.js');   // canonical json()/body/agent-id helpers — adopt incrementally, don't mass-migrate
 const { readBody, readBodyBuffer } = require('./http-body.js');
@@ -193,6 +196,8 @@ const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
 const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
+const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
+const { hostPowerWithheldFor } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
 const { makePromptRegistry } = require('./channels/prompts.js');   // C6: the bounded token→meaning map behind inline keyboards
 const { makeOpenAiCompat } = require('./openai-compat.js');   // /v1/* OpenAI-compatible surface (external harness ingress)
 const { makeChannelRegistry, wireChannel } = require('./channels/registry.js');   // H6.2: channel descriptors + generic wire-up
@@ -370,9 +375,12 @@ const DEV_MODE = /^(1|true|yes|on)$/i.test(String(ENV('DEV') || '').trim());
 const DESKTOP_SHELL = /^(1|true|yes|on)$/i.test(String(ENV('DESKTOP_SHELL') || '').trim());
 // API auth/guard DECISIONS live in the unit-tested ./apiauth.js (full threat model documented there);
 // index.js keeps only the thin res-writing wrappers below. Hardened posture: EVERY /api/* route now requires
-// the per-launch token (GET data routes included) except a small header-less set. Native media/file loads
-// can pass the same token as ?token= on /api/file only; all other fetch-driven calls use the custom header.
+// the per-launch token (GET data routes included) except a small header-less set. Surfaces that cannot attach
+// the header (link/tab opens of /api/file + /workshop-run/, the SSE EventSource, the unload save beacon) present a
+// SCOPED, SHORT-LIVED ticket (./apitickets.js) — the master token in a URL is refused everywhere (2026-09-25).
 const apiauth = require('./apiauth.js');
+const apitickets = require('./apitickets.js');
+const TICKET_GUARD = apitickets.replayGuard(4096);   // single-use registry for the once-only ticket kinds (sse, save)
 const { isAllowedApiOrigin, isAllowedHost, requiresApiToken, TAURI_ORIGINS } = apiauth;
 function applyApiCors(req, res) {
   const origin = String(req.headers.origin || '');
@@ -392,11 +400,11 @@ function rejectApi(req, res) {
 function rejectBadApiToken(req, res) {
   if (!requiresApiToken(req)) return false;
   if (apiauth.apiTokenOk(req, API_TOKEN)) return false;
-  // Some browser surfaces provably cannot attach custom headers: native media/link loads (GET/HEAD /api/file)
-  // and the unload save beacon (POST /api/save — navigator.sendBeacon, the last debounced save on close).
-  // Those exact routes accept the SAME per-launch token in the query string; the matrix lives in apiauth so
-  // it stays a tested, deliberately tiny escape hatch.
-  if (apiauth.queryTokenRoute(req) && apiauth.queryTokenOk(req, API_TOKEN)) return false;
+  // Some browser surfaces provably cannot attach custom headers: link/tab opens (GET/HEAD /api/file), the SSE
+  // EventSource (GET /api/channels/events) and the unload save beacon (POST /api/save — navigator.sendBeacon).
+  // Those exact request shapes accept a ?ticket= minted for exactly that resource (apiauth.ticketOk); the MASTER
+  // token is never accepted from a query string (it leaked into browser history, Referer and copied links).
+  if (apiauth.ticketOk(req, API_TOKEN, Date.now(), TICKET_GUARD)) return false;
   res.writeHead(403); res.end('forbidden token'); return true;
 }
 // Desktop build: live BYOK keys are seeded from the OS keychain via env at spawn, and updated
@@ -850,6 +858,7 @@ const processFault = makeProcessFaultHandler({
   keepAlive: UNCAUGHT_KEEP_SERVING,
   breaker: CRASH_LOOP_BREAKER ? crashLedger : null,   // crash-loop circuit breaker: the 3rd fault exit in 10m holds the process alive DEGRADED
   log: msg => console.error('[process-fault] ' + msg),
+  redact: redact,   // /api/health (unauthenticated), the crash ledger and the log all carry the fault text
   // Immediate containment is separate from release: a held crash loop must KEEP the workspace-owner claim so a
   // second writer cannot enter, while every producer in this torn process is stopped and all live runs abort.
   quiesce: () => quiesceForProcessFault(),
@@ -1362,6 +1371,8 @@ const transcriptLiveRuns = new Set();
 // this avoids deleting the only recovery copy after the legacy transcript writer's fail-open append.
 const RUN_JOURNAL_DIR = path.join(WORKSPACES, '.run-journal');
 const runJournal = makeRunJournal({ dir: RUN_JOURNAL_DIR, fs, path, clock: { now: () => Date.now() }, redact });
+// sec-taint 09-25: a continuation / resumed conversation starts tainted when what it replays was (taint-replay.js)
+const replayedTaint = require('./taint-replay.js').makeReplayedTaint({ journal: runJournal, transcript: transcriptStore });
 // Recovery is intentionally lazy. Thousands of unresolved/failed journals are audit evidence and
 // must not be discarded, but parsing all of them synchronously before server.listen made startup
 // proportional to lifetime failures. GET /api/run-recoveries pages through the durable files.
@@ -3734,17 +3745,17 @@ function saveCodexTokens(obj) {
   console.error('[codex] token persist UNVERIFIED after retry (' + codexPersistError + ') — tokens kept in memory for this session; a restart may require re-signing in to ChatGPT.');
   return false;
 }
-// Logout must sanitize BOTH resilient copies before live state is cleared; otherwise a failed unlink can return
-// success now and resurrect the refresh token on restart. Once both copies read back credential-free, removing
-// the null files is only cleanup — a failed unlink cannot recover a secret.
+// Logout must sanitize BOTH resilient copies before live state is cleared; otherwise a failed write can return
+// success now and resurrect the refresh token on restart. The copies are KEPT as a signed-out TOMBSTONE rather than
+// unlinked: an ABSENT current file lets boot migrate a legacy workspace's codex/tokens.json back in
+// (loadCodexTokensWithMigration), which silently signed the Commander back in after an explicit logout.
 function clearCodexTokens() {
-  const ok = saveCredentialRemovalVerified(CODEX_TOKENS_FILE, null, raw => raw === null, 'codex');
+  const ok = saveCredentialRemovalVerified(CODEX_TOKENS_FILE, codexTokenStore.SIGNED_OUT,
+    raw => codexTokenStore.isSignedOutTombstone(raw), 'codex');
   if (!ok) {
     codexPersistError = 'logout could not be persisted to disk';
     return false;
   }
-  try { fs.unlinkSync(CODEX_TOKENS_FILE); } catch (_) {}
-  try { fs.unlinkSync(CODEX_TOKENS_FILE + '.bak'); } catch (_) {}
   codexPersistError = ''; codexAuthDead = null;
   return true;
 }
@@ -4297,6 +4308,9 @@ async function tickOverseer() {
             system: ident.system || cronSystemFor(review.agentId), lead: true, isTask: true,
             syntheticTrigger: true,
             surface: 'autonomous', signal: reviewAbort.signal, streamId: parent.id, runId, parentRunId: worker.runId,
+            // the worker's text rides in `instruction`: a tainted worker hands its taint to the reviewing LEAD
+            // (sec-taint 09-25) — otherwise the hand-back is an untainted lead run steered by a hostile page
+            initialTaint: taintPolicy.relayedTaint(worker) || undefined,
             projectRoot: parent.projectRoot || '', workdir: parent.projectRoot || undefined, sessionTitle: parent.title,
             sessionPrompt: 'Review delegated result', emit: chanEmit,
             messages: transcriptStore.reconstruct(parent.id, { limit: 80 }).concat([{ role: 'user', content: instruction }]) });
@@ -4602,6 +4616,25 @@ let serviceKeys = loadServiceKeys();
 let serviceKeysOwnedEnv = {};   // env vars WE set (the applyEnv clobber guard) — rebuilt on every apply
 function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(serviceKeys, process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
 applyServiceKeysEnv();          // boot: persisted keys are live for the first run without any UI touch
+/* KNOWN-VALUE REDACTION (security audit 2026-09-25). redact() only knew vendor SHAPES, so a shapeless secret —
+   a service key the model was promised it would never see, a custom connector token, a Mistral key, a rotated
+   OAuth refresh token — went verbatim into tool results, transcripts, the bus and diagnostics the moment anything
+   printed it (`echo $MY_KEY`, a server echoing the key in an error body). Every redact() call now also scrubs the
+   exact values the sidecar holds RIGHT NOW (read live, so a rotated/added key is covered on the next call).
+   The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
+   URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
+setKnownSecretSource(() => collectSecretValues([
+  { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
+  { values: Object.values(runtimeKeys) },
+  { values: Object.values(runtimeKeyPools) },
+  { values: Object.values(channelTokenRuntime) },
+  { keyed: channelSecrets },
+  { keyed: codexTokens },
+  { keyed: Object.values(oauthProviders).map(p => p && p.tokens) },
+  { keyed: connectorOauth },
+  { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
+  { keyed: serviceKeys }
+]));
 // Verified persist (secret-durability law): ok ONLY when a read-back proves the write reached disk. On
 // ok:false the in-memory list stays live but the route reports the failure — never a false "saved".
 function saveServiceKeys() {
@@ -4691,10 +4724,16 @@ async function connectorOauthPublicUrl(raw) {
   await skillWebInternals.assertResolvedSafe(u, host => dns.promises.lookup(host, { all: true }));
   return u;
 }
-async function connectorOauthFetch(raw, options) {
-  const u = await connectorOauthPublicUrl(raw);
-  return globalThis.fetch(u.href, Object.assign({}, options || {}, { redirect: 'manual' }));
-}
+// Every leg's socket is PINNED to the address that passed the check (sidecar/mcp/oauth-fetch.js): resolving once to
+// validate and again to connect let a DNS-rebinding authorization server aim DCR/token POSTs at a private address.
+const connectorOauthFetcher = makeConnectorOauthFetch({
+  assertSafeUrl: skillWebInternals.assertSafeUrl,
+  assertResolvedSafe: skillWebInternals.assertResolvedSafe,
+  lookup: host => dns.promises.lookup(host, { all: true }),
+  agentFactory: options => new (require('undici').Agent)(options),
+  onCloseError: e => failNote('connector.oauth.dispatcher-close', e)
+});
+async function connectorOauthFetch(raw, options) { return connectorOauthFetcher.connectorOauthFetch(raw, options); }
 // drop the cached dynamically-registered client for an authorization server (when the AS reports it invalid), so the
 // next sign-in RE-REGISTERS a fresh one instead of wedging forever on a pruned/rotated client id.
 function forgetOauthClient(authServer) {
@@ -5101,7 +5140,7 @@ function liveChannelFor(channel) {
   if (channel === 'dev') {
     if (!DEV_MODE) return null;
     const hub = getDevHub();
-    return { hub: hub, adapter: { send: (chatId, text) => devCaptureReply(chatId, text) } };
+    return { hub: hub, adapter: { ownerSurface: true, send: (chatId, text) => devCaptureReply(chatId, text) } };
   }
   if (channel === 'discord') return discord;
   if (typeof channel === 'string' && channel.indexOf('telegram:') === 0) return telegramBots.get(channel.slice('telegram:'.length)) || null;
@@ -8472,6 +8511,9 @@ function startTelegram(token, key, model, agentCfg) {
     // claims it. A token-reachable group member therefore stays an ordinary channel caller.
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
       && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
+    // the paired owner in ANY chat (owner-only control commands; see hub.js COMMANDS `owner`) — same adapter-minted id
+    isOwner: (msg) => !!(adapterRef && adapterRef._internals && msg
+      && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
     send: (chatId, text, opts) => adapterRef ? adapterRef.send(chatId, text, opts) : Promise.resolve({ ok: false, error: 'no adapter' }),
     // typing indicator: the hub's keep-alive loop refreshes Telegram's "typing…" bubble while a run is in flight
     chatAction: (chatId, actionOpts) => adapterRef ? adapterRef.chatAction(chatId, actionOpts) : Promise.resolve({ ok: false, error: 'no adapter', retryable: false }),
@@ -8734,6 +8776,9 @@ function startTelegramBot(botId) {
     userCommandNames: () => userCommandEntries().map(c => c.name),
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
       && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
+    // the paired owner in ANY chat (owner-only control commands; see hub.js COMMANDS `owner`) — same adapter-minted id
+    isOwner: (msg) => !!(adapterRef && adapterRef._internals && msg
+      && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
     send: (chatId, text, opts) => adapterRef ? adapterRef.send(chatId, text, opts) : Promise.resolve({ ok: false, error: 'no adapter' }),
     chatAction: (chatId, actionOpts) => adapterRef ? adapterRef.chatAction(chatId, actionOpts) : Promise.resolve({ ok: false, error: 'no adapter', retryable: false }),
     // live per-message read (same contract as the station bot). THE BOT IS ITS AGENT: identity (system prompt),
@@ -8980,6 +9025,7 @@ function getDevHub() {
   if (devHub) return devHub;
   devHub = makeChannelHub({
     channel: 'dev', maxMessageLength: 4000, agentPrefix: 'dev_', textBatchWaitMs: 0,
+    ownerSurface: true,   // DEV_MODE-only local route behind the launch token: every inbound is the Commander
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
     userCommandNames: () => userCommandEntries().map(c => c.name),
     runOnce: runOnce, store: channelStore,
@@ -9360,7 +9406,7 @@ function attachmentFailPolicy(res, e) { try { if (!res.headersSent) { res.writeH
    - exactly ONE match key, preserving each route's exact query-string semantics (a live bug class —
      do NOT "normalize" a route onto a different matcher):
        exact:   req.url === path                      (query string makes it MISS — intentional)
-       qsplit:  req.url.split('?')[0] === path        (path match; the url may carry ?token= etc.)
+       qsplit:  req.url.split('?')[0] === path        (path match; the url may carry ?ticket= etc.)
        prefix:  segment-safe prefix on req.url        (exact, query, or /child; no sibling alias)
        qprefix: segment-safe prefix on the query-stripped path
        rx:      req.url.match(rx) — the match array is passed to h as its 3rd arg
@@ -9637,7 +9683,7 @@ const ROUTES = [
   { m: 'POST', rx: GENERIC_CHANNEL_RX.disconnect, h: (req, res, gm) => handleGenericChannelDisconnect(req, res, gm[1]) },
   { m: 'GET', rx: GENERIC_CHANNEL_RX.status, h: (req, res, gm) => handleGenericChannelStatus(req, res, gm[1]) },
   { m: 'POST', rx: GENERIC_CHANNEL_RX.ownerPair, h: (req, res, gm) => handleChannelOwnerPair(req, res, gm[1]) },
-  { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries a ?token= query now
+  { m: 'GET', qsplit: '/api/channels/events', h: handleChannelEvents },   // path match: the SSE url carries ?cursor= + a ?ticket= (header-less EventSource)
   { m: 'POST', exact: '/api/routing', h: handleRouting },
   { m: 'GET', qsplit: '/api/routing/chain', h: handleRoutingChain },   // qsplit, not exact: `exact` compares the FULL url and this route always carries a query
   // PROOF (guided workflow Phase 4): GET is the inert feature probe; POST runs ONE real, labeled sample
@@ -9795,8 +9841,9 @@ const ROUTES = [
   //   POST /api/workshop/open — shell-open a REAL jailed file with the OS default app (interactive user-click only).
   { m: 'POST', exact: '/api/workshop/open', h: handleWorkshopOpen },
   //   GET/HEAD /workshop-run/<agentId>/<runId>/<path...> — jailed, read-only static serving so a built web tool
-  //   actually RUNS in a browser tab (correct content-types, no dir listing, ?token= like /api/file, no-store).
-  //   This is NOT under /api/ so it never touches the /api CORS/token gate above — the handler enforces its own token.
+  //   actually RUNS in a browser tab (correct content-types, no dir listing, no-store). Tab opens use the ticketed
+  //   form /workshop-run/~t/<ticket>/<agentId>/<runId>/<path...> (a run-scoped capability, never the master token).
+  //   This is NOT under /api/ so it never touches the /api CORS/token gate above — the handler enforces its own auth.
   { m: ['GET', 'HEAD'], qprefix: '/workshop-run/', h: serveWorkshopRun },
   // ADDITIVE (Lane B / ux-run-truth): read-only stat of a user-chosen KEEP destination folder, so the return
   // card can validate the typed path inline instead of failing silently on Keep. Strictly less powerful than
@@ -9864,7 +9911,7 @@ const ROUTES = [
   { m: 'GET', prefix: '/api/notebook', h: serveNotebook },
   { m: 'POST', exact: '/api/save/recovery-ack', h: handleSaveRecoveryAck },
   { m: 'GET', prefix: '/api/save', h: serveSaveLoad },
-  { m: 'POST', qsplit: '/api/save', h: handleSaveWrite },   // qsplit, not exact: the unload beacon carries ?token= (apiauth.queryTokenRoute)
+  { m: 'POST', qsplit: '/api/save', h: handleSaveWrite },   // qsplit, not exact: the unload beacon carries ?ticket= (apiauth.ticketOk)
   { m: 'GET', prefix: '/api/insights', h: serveInsights },
   // The recovery reader owns bounded pagination (?limit=&offset=). Match the query-stripped path so COMMS can
   // request its explicit ceiling instead of receiving a misleading static 404 before the handler is reached.
@@ -10268,8 +10315,8 @@ if (require.main === module) {
 
 /* ---- SSE bridge: forward validated channel/work-item telemetry to the live station HUD ---- */
 function handleChannelEvents(req, res) {
-  // SSE can't carry a custom header (EventSource), so the live HUD passes the token as ?token=… instead.
-  if (!apiauth.queryTokenOk(req, API_TOKEN)) { res.writeHead(403); return res.end('forbidden token'); }
+  // Auth is the central /api gate (rejectBadApiToken): the header (Node/MCP clients) or a single-use SSE ticket
+  // (EventSource can't set a header). The master token in ?token= is refused there like on every other route.
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-store',
@@ -10413,6 +10460,7 @@ function getSampleHub() {
   if (sampleHub) return sampleHub;
   sampleHub = makeChannelHub({
     channel: 'sample', maxMessageLength: 4000, agentPrefix: 'smp_', textBatchWaitMs: 0,
+    ownerSurface: true,   // the Commander's own sample-crate route behind the launch token
     runOnce: runOnce, store: channelStore,
     historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
     /* THE SAMPLE IS UNADDRESSED, EVERY TIME. This route's whole claim is "a REAL run on the REAL UNADDRESSED
@@ -10648,6 +10696,8 @@ const triggerFolderPolicy = makeFolderPolicy({
 function makeTriggerHub(hooks) {
   return makeChannelHub({
     channel: 'trigger', maxMessageLength: 4000, agentPrefix: 'trg_', textBatchWaitMs: 0,
+    // no chat senders: runs keep the owner-configured line's posture; a payload's /commands are refused (no owner)
+    untrustedSenders: false,
     runOnce: runOnce,
     // the channel store for chat/outbox bookkeeping, but per-agent TURN HISTORY is this fire's own (hooks.turns): a
     // trigger fire is one standalone job, so a later fire's hops never inherit an earlier fire's handoffs
@@ -14579,16 +14629,19 @@ const WORKSHOP_RUN_PREFIX = '/workshop-run/';
 // built web tool RUNS in a browser tab (an .html loads and executes, unlike /api/file which serves active
 // deliverables as octet-stream+sandbox CSP precisely to STOP them running). Same jail proof /api/file uses
 // (fsJail.resolveInside — the '..'/absolute/symlink escape all throw); correct Content-Type by extension; NO
-// directory listing (a dir 404s); Cache-Control no-store. Browser navigation can't send a header, so the per-launch
-// token rides ?token= on GET/HEAD exactly like /api/file (this route is NOT under /api/, so we enforce it here).
+// directory listing (a dir 404s); Cache-Control no-store. Browser navigation can't send a header, so a tab open uses
+// /workshop-run/~t/<ticket>/<agentId>/<runId>/<path...>: a RUN-SCOPED, short-lived ticket in the PATH, so the page's
+// relative assets inherit it and a '../' out of the run dir fails the MAC. A fetch with the header also works. The
+// master token in ?token= is refused (this route is NOT under /api/, so we enforce auth here).
 // EVERY response carries `Content-Security-Policy: sandbox allow-scripts` (opaque origin, scripts allowed but NO
 // same-origin) so a running deliverable can't read the app token or drive the API — see the headers block below.
 async function serveWorkshopRun(req, res) {
-  // token gate: same per-launch secret as every API route, accepted as ?token= (a tab navigation has no header seam).
-  if (!apiauth.queryTokenOk(req, API_TOKEN)) { res.writeHead(403); return res.end('forbidden token'); }
+  const reqPath = String(req.url || '').split('?')[0];
+  const ticketed = apitickets.splitRunTicket(reqPath);                 // { ticket, rest } | null
+  if (!ticketed && !apiauth.apiTokenOk(req, API_TOKEN)) { res.writeHead(403); return res.end('forbidden token'); }
   let abs;
   try {
-    const rawPath = decodeURIComponent(String(req.url || '').split('?')[0]);
+    const rawPath = decodeURIComponent(ticketed ? WORKSHOP_RUN_PREFIX + ticketed.rest : reqPath);
     const tail = rawPath.slice(WORKSHOP_RUN_PREFIX.length);            // <agentId>/<runId>/<path...>
     const slash = tail.indexOf('/');
     if (slash <= 0) { res.writeHead(404); return res.end('not found'); }
@@ -14596,6 +14649,13 @@ async function serveWorkshopRun(req, res) {
     const rel = tail.slice(slash + 1);                                 // <runId>/<path...>
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) { res.writeHead(403); return res.end('forbidden'); }
     if (!rel || rel.slice(-1) === '/') { res.writeHead(404); return res.end('not found'); }   // no dir/trailing-slash
+    if (rel.indexOf('/') <= 0) { res.writeHead(404); return res.end('not found'); }   // must name <runId>/<file>
+    if (ticketed) {
+      // the ticket is bound to (agentId, runId) — the VERIFIER derives both from the path, never from the ticket
+      const runId = rel.slice(0, rel.indexOf('/'));
+      const v = apitickets.verify(API_TOKEN, ticketed.ticket, 'run', apitickets.scopeRun(agentId, runId), { now: Date.now() });
+      if (!v.ok) { res.writeHead(403); return res.end('forbidden ticket'); }
+    }
     ({ abs } = await fsJail.resolveInside(agentId, 'workshop/' + rel));  // throws on '..'/absolute/symlink/bad agentId
   } catch (e) {
     const msg = (e && e.message) || '';
@@ -14616,7 +14676,8 @@ async function serveWorkshopRun(req, res) {
     // cross-origin + uncredentialed — so an agent-built deliverable can't exfiltrate the launch token or drive the
     // API (self-approve consent, write files, dump config). /api/file sandboxes the SAME bytes with script-src 'none'
     // to STOP them running; here scripts must run, so we sandbox the ORIGIN instead of killing the scripts.
-    'Content-Security-Policy': 'sandbox allow-scripts'
+    'Content-Security-Policy': 'sandbox allow-scripts',
+    'Referrer-Policy': 'no-referrer'   // the ticketed URL must not ride a Referer to anything the tool links/loads
   };
   if (req.method === 'HEAD') { headers['Content-Length'] = st.size; res.writeHead(200, headers); return res.end(); }
   res.writeHead(200, headers);
@@ -15008,6 +15069,9 @@ async function handleAgentDelete(req, res) {
   const agentId = String(body.agentId || body.agent || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });   // same id regex as roster/fs-jail surfaces
   if (agentId === 'agent') return json(400, { error: 'cannot delete the hero agent' });   // the founder is undeletable (resume depends on it)
+  // An agent whose id collides with a station directory (codex/, channels/ …) CAN be deleted — that is how the
+  // Commander recovers it (re-recruit it and it gets a safe id) — but WORKSPACES/<id> is the station's, never moved.
+  const reservedId = WorkspaceReserved.isReservedWorkspaceId(agentId);
 
   const deletion = await agentLifecycle.beginDelete(agentId, 'delete-' + crypto.randomUUID());
   if (!deletion.ok) {
@@ -15049,7 +15113,7 @@ async function handleAgentDelete(req, res) {
     }
     // the agent's fs workspace dir (WORKSPACES/<aid>/ — the deliverables/artifacts jail). Archived whole so the
     // Commander can still recover a deleted agent's work off disk; it never touches another agent's jail.
-    move(path.join(WORKSPACES, agentId), agentId);
+    if (!reservedId) move(path.join(WORKSPACES, agentId), agentId);
   } catch (e) {
     console.warn('[agent.delete] archive failed:', (e && e.message) || e);
     // fall through — still drop the roster entry so the delete is honoured; the stores stay put (safe: retained).
@@ -16166,6 +16230,17 @@ async function runOnceCore(o) {
     completion: makeCompletionEvidence({ authority: completionAuthority }),
     now: () => Date.now()
   });
+  /* DURABLE TAINT (sec-taint 09-25). A latch made after the run journal began is journaled too, so a recovery
+     continuation of this run (which replays its checkpointed context, untrusted bytes included) restores the taint
+     from runJournal state instead of starting clean. A latch before the journal rides the begin meta instead. */
+  const latchRunTaint = (source) => {
+    const before = execution.taintedBy();
+    const after = execution.latchTaint(source);
+    if (!before && after && execution.journalStarted() && !execution.journalFailed()) {
+      try { runJournal.taint(runId, { source: after }); } catch (e) { failNote('run-journal.taint', e); }
+    }
+    return after;
+  };
   // One sequence across provider and tool recovery. Adapter-local counters restart at one, but the durable run
   // record must preserve the actual cross-stage order in which recovery actions happened.
   const recordRunRecoveryAttempt = (attempt) => {
@@ -16183,17 +16258,27 @@ async function runOnceCore(o) {
   // is already paused on its first permission card: selecting Full Access must suppress the next call in THIS
   // run, every later run/surface, and every run after restart. None of these switches mints the separate
   // physical-desktop lease above.
-  const agentFullAccessNow = () => ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
+  /* FULL POWER FOLLOWS THE OWNER, NOT THE CHAT (2026-09-25, sec-owner-gates). Full Access / master bypass is the
+     Commander's standing authority. A run a chat-channel SENDER started inherits it only when that sender is the
+     bound owner in a direct chat (host-minted by the hub: `channelSender` + `channelSenderOwner`, never from
+     text). A group member, an allowed non-owner, or a relay-asserted stranger runs at the ordinary unattended
+     floor even on a Full Access agent. The restriction rides into delegated workers through the host-context
+     connectorAuthority, so a non-owner cannot launder it through team.delegate to a Full Access specialist.
+     Every other origin (the app, routines/loops/cron, triggers, dev/sample hubs) is unchanged: DECISIONS.md
+     "FULL POWER MEANS THE WHOLE LOCAL COMPUTER" and the tested "Full Access follows the agent to its routine". */
+  const hostPowerWithheld = hostPowerWithheldFor(o);
+  const agentFullAccessNow = () => !hostPowerWithheld && ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
+  const stationBypassNow = () => !hostPowerWithheld && (FULL_ACCESS || masterBypassOn());
   // One central, host-minted meaning for "Full Power": station-wide env/master bypass or this agent's
   // persisted Full Access posture. Every downstream policy seam reads this source instead of inventing a
   // niche exception. It is live so a flip or revocation affects the next tool call.
-  const unrestrictedHostNow = () => FULL_ACCESS || masterBypassOn() || agentFullAccessNow();
+  const unrestrictedHostNow = () => stationBypassNow() || agentFullAccessNow();
   // The execution profile is snapshotted for this run's tool projection. Approval remains live and revocable
   // through agentFullAccessNow(); the profile never mints the separate physical-desktop lease.
   const agentExecutionProfileNow = () => {
     const rec = agentRoster.get(String(agentId || '')) || {};
     return executionProfiles.resolve(rec.executionProfile, {
-      approvalMode: rec.approvalMode,
+      approvalMode: hostPowerWithheld ? 'ask' : rec.approvalMode,
       backendId: executionEnvironment.backendIdFor(agentId),
       physicalDesktopLease: remoteDesktopAuthorized
     });
@@ -16201,7 +16286,7 @@ async function runOnceCore(o) {
   const executionProfile = agentExecutionProfileNow();
   const userControlAuthority = makeRunAuthority({
     surface, isTask, environment: executionEnvironment.forAgent(agentId), confirm: o.prompt, unattendedGrants, ownerTrusted,
-    remoteDesktopAuthorized, masterBypass: FULL_ACCESS || masterBypassOn(), fullAccess: agentFullAccessNow,
+    remoteDesktopAuthorized, masterBypass: stationBypassNow(), fullAccess: agentFullAccessNow,
     connectorAuthority: o.connectorAuthority
   });
   const prompt = o.prompt;
@@ -16656,7 +16741,7 @@ async function runOnceCore(o) {
     // the wrong one whenever the two postures differ. Hand orchestration the EFFECTIVE posture so the delegated
     // prompt states what will actually happen. A thunk read off the live roster: computed at dispatch time, and
     // deliberately NOT reusing `agentFullAccess` (declared further down) so this stays order-independent.
-    approvalPosture: () => (FULL_ACCESS || ((agentRoster.get(agentId) || {}).approvalMode === 'full')) ? 'full' : 'ask',
+    approvalPosture: () => (!hostPowerWithheldFor(o) && (FULL_ACCESS || ((agentRoster.get(agentId) || {}).approvalMode === 'full'))) ? 'full' : 'ask',
     perWorker: ORCH_PER_WORKER, workerMaxIters: ORCH_WORKER_MAX_ITERS, newId: () => crypto.randomUUID(),
     dispatchTimeoutMs: ORCH_DISPATCH_TIMEOUT_MS,   // minutes, not the 30s fast-tool cap (see constant)
     // Saved session metadata is available headlessly; visual delivery still uses
@@ -17215,6 +17300,8 @@ async function runOnceCore(o) {
       authorize: (call, tool) => signal?.aborted ? { ok: false, reason: 'delegating run cancelled' } : userControlAuthority.authorize(call, tool),
       prompt: typeof prompt === 'function' ? (call, tool) => signal?.aborted ? 'deny' : prompt(call, tool) : null,
       fullAccess: () => !signal?.aborted && unrestrictedHostNow(),
+      // host-minted, never tool-supplied: a worker delegated from a non-owner channel run stays below Full Power
+      withholdHostPower: hostPowerWithheld,
       taintedBy: () => execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null)
     },
     // HOOKS reach the tool boundary through the dispatch ctx. registry.js consults them AFTER the authority,
@@ -17271,7 +17358,13 @@ async function runOnceCore(o) {
     parkOutput: async (content, meta) => {
       try {
         const safeTool = String((meta && meta.tool) || 'tool').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 40);
-        const stem = safeTool + '-' + String(runId || 'run').replace(/[^A-Za-z0-9_-]/g, '') + '-' + (parkSeq++);
+        /* PROVENANCE IN THE NAME (sec-taint 09-25): bytes from an untrusted source (web / connector result), a
+           tainted worker's relayed text, or anything this run parks after it was tainted are saved as
+           `untrusted-*`, and taint.isUntrustedSource treats reading such a file back as reading the source itself —
+           so a LATER run cannot fs.read a parked hostile page and stay clean. */
+        const untrusted = !!(execution.taintedBy() || (meta && meta.taintedBy)
+          || revokedByTaint.isSource({ name: String((meta && meta.tool) || ''), capability: String((meta && meta.capability) || '') }, { args: {} }));
+        const stem = (untrusted ? taintPolicy.UNTRUSTED_PARK_PREFIX : '') + safeTool + '-' + String(runId || 'run').replace(/[^A-Za-z0-9_-]/g, '') + '-' + (parkSeq++);
         return await outputArtifacts.park(agentId || 'agent', stem, content);
       } catch (_) { return null; }
     },
@@ -17479,6 +17572,8 @@ async function runOnceCore(o) {
      is left. Directive text is captured pre-loop (runTranscript.setDirective below). */
   const runTranscript = makeRunTranscript({
     store: transcriptStore, streamId: o.streamId, agentId, runId,
+    // rows written after untrusted content entered this run carry its taint source (sec-taint 09-25)
+    taint: () => execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null),
     // mid-run write failures never kill the run or reorder dialogue: the rows stay pending (and in the run journal)
     // and retry at the next boundary / strict run end. Counted + warned, so a failing disk is never invisible.
     onFailure: (stage, e) => failNote('transcript.run.' + stage, e)
@@ -17662,14 +17757,14 @@ async function runOnceCore(o) {
       && typeof o.connectorAuthority?.fullAccess === 'function' && o.connectorAuthority.fullAccess() === true;
     let postTaint = revokedByTaint.boundary(liveTool, {
       taintedBy: taintSource, surface: effectSurface, hasPrompt: typeof effectPrompt === 'function',
-      fullAccess: FULL_ACCESS || masterBypassOn() || agentFullAccessNow() || connectorFullAccess
+      fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
     });
     if (postTaint.needsConfirmation) {
       let decision = 'deny';
       try { decision = await effectPrompt(c, liveTool); } catch (_) {}
       postTaint = revokedByTaint.boundary(liveTool, {
         taintedBy: taintSource, surface: effectSurface, hasPrompt: true, decision,
-        fullAccess: FULL_ACCESS || masterBypassOn() || agentFullAccessNow() || connectorFullAccess
+        fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
       });
     }
     const postTaintConfirmed = postTaint.oneShot;
@@ -17872,7 +17967,16 @@ async function runOnceCore(o) {
        a hostile connector inject text while the run kept its terminal / credentialed / connector-write powers.
        What actually matters is whether untrusted BYTES reached the context, not whether the call succeeded. */
     if (!execution.taintedBy() && r && typeof r.content === 'string' && r.content.length && revokedByTaint.isSource(liveTool, c)) {
-      execution.latchTaint(c.name);
+      latchRunTaint(c.name);
+    }
+    /* RELAYED TAINT (sec-taint 09-25). team.dispatch / team.spawn / team.subagents / team.resume hand this run the
+       text of ANOTHER run. When that run was tainted (its worker read a hostile page), the text it returns is the
+       attacker's lever — without this latch a worker could launder a web page into an untainted lead and steer it
+       into the terminal/connector powers the worker itself had already lost. The relaying tool reports the worker's
+       host-proven latch (never model-supplied); the lead inherits it, errors included. */
+    if (!execution.taintedBy() && r) {
+      const relayed = taintPolicy.relayedTaint(r);
+      if (relayed) latchRunTaint(relayed);
     }
     // observe BEFORE the tool-output budget clip below, so the collector parses the tool's REAL result text.
     if (!internalBriefControl) {
@@ -18347,6 +18451,13 @@ async function runOnceCore(o) {
   let msgs = o.recovery
     ? JSON.parse(JSON.stringify(o.recovery.messages || []))
     : (sys ? [{ role: 'system', content: sys }, ...convo] : convo.slice());
+  // REPLAYED TAINT (sec-taint 09-25): a continuation, resumed conversation or replayed session history puts the
+  // PRIOR runs' context back in front of the model — a web page an earlier turn read included. Taint is a
+  // property of the context, not of the run id, so this run starts tainted when what it replays was tainted.
+  try {
+    const replayed = replayedTaint({ recovery: o.recovery, streamId, msgs });
+    if (replayed) execution.latchTaint(replayed);
+  } catch (e) { failNote('taint.replay', e); }
   // Cortex (M-mem.3): surface the agent's OWN memory in-prompt — RANK it by relevance to this message
   // (BM25 + recency/trust/pin), inject the top few as a recalled-memory fence before the triggering user
   // message, and emit memory.used per surfaced record (-> useCount/trust + the XP reuse path). The recency
@@ -18418,7 +18529,8 @@ async function runOnceCore(o) {
         recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '',
         userTitle: o.syntheticTrigger ? '' : latestUserText(msgs), startedAt: Date.now(),
         cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '',
-        cronJobName: trigger === 'schedule' ? String(o.cronJobName || '').slice(0, 200) : ''
+        cronJobName: trigger === 'schedule' ? String(o.cronJobName || '').slice(0, 200) : '',
+        initialTaint: execution.taintedBy() || ''   // additive: a continuation of this run restores it (replayedTaint)
       });
       runJournal.checkpoint(runId, { phase: 'initial', turn: 0, messages: msgs });
       execution.startJournal();
@@ -18757,7 +18869,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, stepTest: o.stepTest === true, lineId: o.lineId || '', dockId: o.dockId || '', taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -18784,7 +18896,7 @@ async function runOnceCore(o) {
         }
       } else {
         if (title && !retryDirective && !o.syntheticTrigger && !runTranscript.directiveWritten()) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
-        if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages);
+        if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages, { taint: execution.taintedBy() });
       }
     } catch (_) {}
     transcriptLiveRuns.delete(runId);   // H2: settled (or retained in the journal) — its rows are ordinary history now
@@ -18973,6 +19085,9 @@ async function runOnceCore(o) {
     result.endedAt = Date.now();
     result.durationMs = result.endedAt - runStartedAt;
     result.parentRunId = o.parentRunId || '';
+    // UNTRUSTED-CONTENT TAINT this run ended with (host-proven latch, or the delegating lead's inherited taint).
+    // team.dispatch/team.spawn relay it with the worker's text so the LEAD latches too (sec-taint 09-25).
+    result.taintedBy = execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null) || null;
   }
   return result;
 
@@ -21147,7 +21262,8 @@ async function serveWorkspaceFile(req, res) {
     'Cache-Control': 'no-store',
     'Content-Disposition': (active ? 'attachment' : 'inline') + '; filename="' + safeDownloadName(abs) + '"',
     'X-Content-Type-Options': 'nosniff',
-    'Accept-Ranges': 'bytes'   // advertise range support so the browser asks for byte ranges when seeking
+    'Accept-Ranges': 'bytes',   // advertise range support so the browser asks for byte ranges when seeking
+    'Referrer-Policy': 'no-referrer'   // a ticketed open URL must never ride a Referer out of the opened document
   };
   if (active) headers['Content-Security-Policy'] = "sandbox; default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'";
 
@@ -21956,9 +22072,12 @@ async function handleChannelWebhook(req, res) {
   let body; try { body = JSON.parse(raw) || {}; } catch (_) { return json(400, { error: 'bad json' }); }
   const live = liveChannelFor(channel);
   if (!(live && live.hub && typeof live.hub.onInbound === 'function')) return json(409, { error: channel + ' is not connected' });
-  const msg = body.message || body;
-  if (!msg.chatId || (!msg.text && !(Array.isArray(msg.media) && msg.media.length))) return json(400, { error: 'message payload is incomplete' });
-  await live.hub.onInbound(Object.assign({}, msg, { chatId: String(msg.chatId), userId: String(msg.userId || ''), chatType: msg.chatType === 'group' ? 'group' : 'dm' }));
+  // The HMAC proves the operator's relay sent this body, not which platform user wrote it: bind the claimed
+  // sender to the live adapter's own admission (paired owner for a DM, allowlist for a group) and copy only
+  // platform fields — see channels/relay-admission.js.
+  const admitted = admitRelayMessage(body.message || body, live.adapter);
+  if (!admitted.ok) return json(admitted.code || 403, { error: admitted.error });
+  await live.hub.onInbound(admitted.message);
   json(202, { ok: true, accepted: true, channel, nonce: verdict.nonce });
 }
 

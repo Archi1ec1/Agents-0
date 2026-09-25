@@ -20,6 +20,21 @@ A.ok(csp.length > 0 && csp !== 'null', 'Tauri CSP is configured');
 A.ok(/default-src 'self'/.test(csp), 'CSP defaults to self');
 A.ok(/connect-src[^;]*http:\/\/127\.0\.0\.1:\*/.test(csp), 'CSP permits the packaged sidecar bridge');
 A.ok(!/connect-src[^;]*localhost:\*/.test(csp), 'CSP does not include broad localhost connect access');
+// 2026-09-25: no inline script. The shipped frontend has zero inline <script> blocks and zero inline on*= handlers;
+// Tauri also hashes every bundled .js into script-src, which already made 'unsafe-inline' inert in WebView2.
+A.ok(!/script-src[^;]*'unsafe-inline'/.test(csp), "script-src does not allow 'unsafe-inline'");
+A.ok(!/'unsafe-eval'/.test(csp), "CSP never allows 'unsafe-eval'");
+// 127.0.0.1:* is a compile-time placeholder: main() pins it to this launch's sidecar port before the app is built.
+const mainRsCsp = fs.readFileSync(path.join(__dirname, '../src-tauri/src/main.rs'), 'utf8');
+A.ok(/let sidecar_port = free_port\(\);\s*\n\s*pin_config_csp\(&mut context\.config_mut\(\)\.app\.security\.csp, sidecar_port\);/.test(mainRsCsp),
+  'main() pins the CSP loopback source to the sidecar port before building the app');
+A.ok(/let port = sidecar_port;/.test(mainRsCsp) && (mainRsCsp.match(/= free_port\(\)/g) || []).length === 1,
+  'setup() spawns the sidecar on that SAME pinned port (one free_port call)');
+A.ok(/fn open_external_url\(state: State<AppState>, url: String\)[\s\S]{0,400}url_carries_api_token\(trimmed, &state\.api_token\)/.test(mainRsCsp),
+  'open_external_url refuses any URL carrying the master API token');
+const indexHtml = fs.readFileSync(path.join(__dirname, '../frontend/index.html'), 'utf8');
+A.eq((indexHtml.match(/<script\b(?![^>]*\bsrc=)[^>]*>\s*\S/gi) || []).length, 0, 'index.html has no inline <script> block');
+A.eq((indexHtml.match(/<[a-z][^>]*\son[a-z]+\s*=/gi) || []).length, 0, 'index.html has no inline on*= event handler');
 A.ok(/object-src 'none'/.test(csp), 'CSP disables plugin/object loads');
 A.ok(/frame-ancestors 'none'/.test(csp), 'CSP blocks framing');
 A.ok(/base-uri 'none'/.test(csp), 'CSP blocks base tag rewriting');
