@@ -46,10 +46,19 @@ overwrites `RELEASE_NOTES.md` with a scaffold — paste the final text from here
 - Web tools pin the DNS-validated address per hop (DNS-rebinding guard), and dangling-symlink workspace
   escapes are blocked.
 - `team.configure` requires consent, is refused in tainted runs, and scans the instructions it writes.
+- `code.run` now asks for consent like `shell.exec` (its worker is not a real sandbox yet).
+- Discord, Slack, Matrix and Signal bots need the same one-time owner pairing code as Telegram before they take
+  orders. Owners already paired keep working.
+- Forwarded Telegram messages, webhook payloads and watched-folder files start runs as untrusted text.
+- An agent that rewrites a granted routine's instructions drops that routine's unattended grants.
+- The local server pins its Host on every path and refuses to be framed by other sites; a saved agent colour can
+  no longer inject markup.
+- The desktop window only ever navigates within the app itself (including after a crash recovery), and the API
+  token is injected only into the app's own pages.
 
 ## Before the cut — owed
 
-- Polish pass `agent/polish-0924` (post-merge review fixes): fold its user-visible items in here.
-- `agent/security-audit-0923` (code.run gating, tainted forwards, routine grant rebind, pairing on every
-  channel, Host floor, colour XSS, Tauri navigation guard) is NOT on trunk yet — merge it or say it is not in.
+- Polish pass (trunk d5b9a6288) and security audit (trunk 62f53ce31) are merged; their user-visible items are
+  folded in above. Still open from the audit: a real `code.run` sandbox, owner gates on channel control commands,
+  the master token in some URLs, CSP `unsafe-inline`; the secrets/storage/MCP pass was never completed.
 - Verify this list against the exact cut head (`git merge-base --is-ancestor <sha> <tag>` for each item).

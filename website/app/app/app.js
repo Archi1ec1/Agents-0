@@ -875,7 +875,10 @@ const App = (() => {
       if (!s || !s.id || s.id === 'agent' || agents.has(s.id)) continue;   // hero already registered; skip dups (so the 'specialist' default below is always correct here — the orchestrator never routes through this path)
       // An empty model is the durable "Follow station default" choice, not a missing pin
       // to replace with a snapshot of the hero. Preserve it across reload/provider changes.
-      const a = { id: s.id, name: s.name, color: s.color, skin: s.skin || DATA.DEFAULT_SKIN, model: s.model || null,
+      const a = { id: s.id, name: s.name,
+                  // a saved suit tint lands in style attrs: hex only, else a palette suit (security audit 2026-09-23)
+                  color: /^#[0-9a-f]{3,8}$/i.test(String(s.color || '')) ? String(s.color) : (typeof SUITS !== 'undefined' ? SUITS[agents.size % SUITS.length] : '#6fb3bf'),
+                  skin: s.skin || DATA.DEFAULT_SKIN, model: s.model || null,
                   provider: s.model ? (s.provider || (agent && agent.provider) || null) : null,
                   reasoningEffort: s.model ? (s.reasoningEffort || (agent && agent.reasoningEffort) || null) : null,
                   personaId: (typeof Personas !== 'undefined' ? Personas.resolve(s.personaId) : s.personaId), role: s.role || 'specialist', voiceTraits: s.voiceTraits || null, customVoice: s.customVoice || '',

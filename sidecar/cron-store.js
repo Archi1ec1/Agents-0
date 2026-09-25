@@ -599,12 +599,23 @@
     return { version: ENVELOPE_VERSION, jobs: jobs };
   }
 
+  /* GRANTS BIND TO THE APPROVED INSTRUCTION (2026-09-23 security audit). Returns the unattended grants an AGENT
+     edit must drop: rewriting a granted routine's prompt would otherwise inherit the Commander's standing
+     workbench/connectors power for an instruction the Commander never saw. Pure; the Commander's own edit path
+     (POST /api/cron/update) does not call this. */
+  function grantsRevokedByAgentEdit(current, patch) {
+    if (!current || !patch || !Object.prototype.hasOwnProperty.call(patch, 'prompt')) return [];
+    if (String(patch.prompt == null ? '' : patch.prompt) === String(current.prompt == null ? '' : current.prompt)) return [];
+    return normGrants(current.unattendedGrants);
+  }
+
   function toEnvelope(jobs) { return { version: ENVELOPE_VERSION, jobs: (jobs || []).slice() }; }
 
   return {
     makeJob: makeJob,
     createJob: createJob,
     updateJob: updateJob,
+    grantsRevokedByAgentEdit: grantsRevokedByAgentEdit,
     pauseJob: pauseJob,
     resumeJob: resumeJob,
     triggerJob: triggerJob,

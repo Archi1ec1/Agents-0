@@ -48,7 +48,8 @@
       // not a toggleable family: switching it off would strand every deferred tool behind a tool that no
       // longer exists. It is never itself deferred — the finder cannot be the thing that must be found.
       { capId: 'toolsearch', tool: 'tool.search', scope: 'read', requiresConsent: false, network: false },
-      { capId: 'code', tool: 'code.run', scope: 'read', requiresConsent: false, network: false },
+      // execute + consent: see the SECURITY STOPGAP note in tools/builtin/code.js (vm child is not an isolation boundary)
+      { capId: 'code', tool: 'code.run', scope: 'execute', requiresConsent: true, network: false },
       // HARNESS SELF-KNOWLEDGE: reading the station's own secret-free status is part of being able to
       // operate at all, not a power the Commander should have to unlock with a DISH, CABINET or WORKBENCH.
       // A distinct capId is required because `compute` is the non-callable model gate in resolve.js.

@@ -198,6 +198,7 @@ test/capsummary.test.js
 test/boot-security.test.js
 test/sidecar-fixture.test.js
 test/sidecar.security.test.js
+test/agent-color-escape.test.js
 test/tauri.hardening.test.js
 test/finish-line-doctrine.test.js
 test/manual.test.js
@@ -552,6 +553,7 @@ test/tool-withheld-message.test.js
 test/cron-guard.test.js
 test/untrusted-taint.test.js
 test/routine-tools.test.js
+test/routine-grant-rebind.test.js
 test/comms-tools.test.js
 test/acp-core.test.js
 test/workstreams.test.js
@@ -657,6 +659,7 @@ test/estop-persistence-ui.test.js
 test/channels.adapter.test.js
 test/channels.proxy-fetch.test.js
 test/channels.owner-pairing.test.js
+test/channels.owner-pairing-all.test.js
 test/channels.telegram.pairing-ux.test.js
 test/channels.telegram.test.js
 test/channels.telegram.format.test.js
@@ -679,6 +682,7 @@ test/channels.webhook-durability.test.js
 test/channels.secrets.test.js
 test/channels.setup-guide.test.js
 test/channels.hub.test.js
+test/channels.forwarded-taint.test.js
 test/channels.workline-transcript.test.js
 test/cross-surface-continuity.test.js
 test/channels.outbox.test.js
