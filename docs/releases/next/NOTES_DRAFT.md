@@ -46,7 +46,16 @@ overwrites `RELEASE_NOTES.md` with a scaffold — paste the final text from here
 - Web tools pin the DNS-validated address per hop (DNS-rebinding guard), and dangling-symlink workspace
   escapes are blocked.
 - `team.configure` requires consent, is refused in tainted runs, and scans the instructions it writes.
-- `code.run` now asks for consent like `shell.exec` (its worker is not a real sandbox yet).
+- `code.run` runs model code in an isolated worker under Node's permission model (no processes, files, workers or
+  code-from-strings) and still asks for consent like `shell.exec`.
+- Chat channels: only the paired owner can change settings, switch agents, start routines or use the new-chat
+  command, and an agent's Full Access applies only to the owner's direct messages.
+- The API token no longer appears in any link, file URL or event stream (short-lived per-file tickets instead), and
+  the desktop app's content security policy allows only its own engine port and no inline scripts.
+- Untrusted content stays marked through helper agents, resumed conversations and work-line hand-offs.
+- An agent can no longer be named into a station credential folder, secrets the engine holds are redacted from
+  logs and streams, credential files are private to your user on macOS/Linux, and signing out of ChatGPT survives a
+  restart. Document imports and connector sign-ins got size caps and DNS-rebinding protection.
 - Discord, Slack, Matrix and Signal bots need the same one-time owner pairing code as Telegram before they take
   orders. Owners already paired keep working.
 - Forwarded Telegram messages, webhook payloads and watched-folder files start runs as untrusted text.
@@ -58,7 +67,8 @@ overwrites `RELEASE_NOTES.md` with a scaffold — paste the final text from here
 
 ## Before the cut — owed
 
-- Polish pass (trunk d5b9a6288) and security audit (trunk 62f53ce31) are merged; their user-visible items are
-  folded in above. Still open from the audit: a real `code.run` sandbox, owner gates on channel control commands,
-  the master token in some URLs, CSP `unsafe-inline`; the secrets/storage/MCP pass was never completed.
+- Polish pass (d5b9a6288), security audit (62f53ce31) and security hardening (04dcb93fd) are merged and folded in
+  above. Still open: Slack/Matrix bot tokens are plaintext on desktop, MCP tool descriptions are not treated as
+  untrusted, helper processes inherit the engine's environment. Verify in an INSTALLED build: code.run's isolated
+  worker starts from the bundled resources path, and the pinned CSP inside real WebView2.
 - Verify this list against the exact cut head (`git merge-base --is-ancestor <sha> <tag>` for each item).
