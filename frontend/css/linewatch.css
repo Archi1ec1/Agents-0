@@ -27,6 +27,10 @@
 .lw-row dt { font-size: 13px; letter-spacing: 1.3px; color: var(--ph-dim); }
 .lw-row dd { margin: 0; font-size: 16px; line-height: 1.2; color: var(--text); overflow-wrap: anywhere; }
 .lw-card[data-state="failed"] .lw-row:last-child dd { color: color-mix(in srgb, var(--bad, #ff4a3d) 45%, var(--text)); }
+/* the RUN row's agent, by skin: a small recessed well (inset ring, never a border — see .agt in interface.css) */
+.lw-row dd.lw-who { display: flex; align-items: center; gap: 7px; }
+.lw-row:has(> dd.lw-who) { align-items: center; }   /* the label sits beside the figure, not under its feet */
+.lw-thumb { border-radius: 4px; background: rgba(0,0,0,.34); box-shadow: inset 0 0 0 1px var(--lw-edge), inset 0 1px 3px rgba(0,0,0,.15); }
 .lw-foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* the card's keys: the COMMS glass button (thin edge, top light; hover = edge + fill, never a bloom) */
 .lw-card .bb { color: var(--ph); border: 1px solid var(--lw-edge); border-radius: 5px; background: rgba(var(--ph-rgb),.05); box-shadow: var(--lw-light); text-shadow: none;

@@ -923,3 +923,4 @@ test/openai-waiting-keepalive.test.js
 test/comms-wait-line.test.js
 test/line-stats.test.js
 test/linewatch.test.js
+test/agent-skin-thumbs.test.js
