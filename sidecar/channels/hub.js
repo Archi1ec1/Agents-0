@@ -336,6 +336,11 @@
     // Opt-in for unaddressed sample runs: resolve identity only AFTER the router picks the dock.
     const resolveEntryRunConfig = typeof o.resolveEntryRunConfig === 'function' ? o.resolveEntryRunConfig : null;
     const onLineOutcome = typeof o.onLineOutcome === 'function' ? o.onLineOutcome : null;
+    // ENTRY TAINT (security review 2026-09-24): a hub whose every inbound message is EXTERNAL DATA rather than the
+    // owner speaking — the line-trigger hub (a webhook payload / a watched folder's file contents) — names the taint
+    // its FIRST hop starts under, so the entry run's sensitive tools are consent-gated exactly like any other run
+    // that has read untrusted content. Absent -> the old rule (only a media attachment taints the entry run).
+    const entryTaint = (typeof o.entryTaint === 'string' && o.entryTaint.trim()) ? o.entryTaint.trim().slice(0, 80) : null;
     // SAMPLE/PROOF SEAM (additive, 2026-08-05): an optional streamId (string, or fn(chatId) -> string) stamped
     // onto every runOnce this hub fires (entry dock AND chain hops). With it, the host records the runs +
     // transcripts under that workstream (runs.jsonl streamId -> a readable OUTBOX crate); WITHOUT it — every
@@ -1702,9 +1707,9 @@
         try {
           await runOnce({
             key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask,
-            emit: sink, signal: ac.signal, runId, trigger: 'event',
+            emit: sink, signal: ac.signal, runId, lineId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
-            initialTaint: mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null),
+            initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null)),
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
             // ...but ONLY for who answers a consent prompt. A phone has no floor to place props on, so this run
@@ -1714,6 +1719,8 @@
             floorless: true,
             prompt: consentPrompt,
             broadcast: true,   // P1: mirror this routed run's lifecycle to the station floor over SSE — it has no browser-local stream
+            // LINE WATCH (additive): the run row records the line + bay it worked AT (the per-line stats and bay lamps)
+            lineId: lineId || undefined, dockId: dockId || undefined,
             // A channel task is real work the agent should learn from, exactly like a COMMS task. Admission is
             // already owner-gated upstream (adapter.js ownerOk: a non-owner DM never reaches this host, a group
             // must be whitelisted), and each record is stamped with its origin (channel:<name>) so the Commander
@@ -1798,13 +1805,14 @@
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
                 baseUrl: hopConfig.baseUrl || hopConfig.base_url || '', reasoningEffort: hopConfig.reasoningEffort || hopConfig.reasoning_effort,
                 system: hopConfig.system || personaFor(h.agentId, rec), messages: hist.map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: h.text }]),
-                agentId: h.agentId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
+                agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 streamId: canonicalStreamId || undefined,   // the whole line shares one canonical transcript
                 initialTaint: 'upstream agent output',
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
                 // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
                 station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
-                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel
+                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel,
+                lineId: lineId || undefined, dockId: h.dockId || undefined   // LINE WATCH: the hop's line + bay on its run row
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
             if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(h.agentId, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
@@ -1812,7 +1820,9 @@
           }
         });
         if (onLineOutcome) {
-          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (_) {}
+          // a throwing outcome hook is the HOST's bug (the trigger runner records every fire's truth through it): never
+          // let it abort the reply, but never swallow it silently either — the failopen ledger names it
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
         }
         if (!myRec.superseded && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it

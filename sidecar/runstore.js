@@ -74,6 +74,7 @@
   const UNCERTAIN_MUTATIONS_MAX = 200;
   const COMPLETION_ROWS_MAX = 100;
   const RECOVERY_ATTEMPTS_MAX = 100;
+  const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;   // a floor prop id (lineId = its INBOX's id, dockId = the bay's id)
   function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; }
   function nonnegative(v) { return Math.max(0, num(v)); }
   function str(v) { return v == null ? '' : String(v); }
@@ -275,6 +276,12 @@
         // by the owner before it continued — history must never claim an agent wrote the owner's words. Present
         // only when true, so every other row stays byte-identical.
         ...(e.handoffEdited ? { handoffEdited: true } : {}),
+        // LINE WATCH (additive, 2026-09-23): WHICH work line and WHICH bay (dock prop id) this run worked AT, set
+        // by the host that dispatched it (hub / chain hop / routine / step test) — never re-derived from a stream
+        // prefix. The per-line stats plate and the bay status lamps read these. Present only when known, so every
+        // other row stays byte-identical.
+        ...(ID_RE.test(str(e.lineId)) ? { lineId: str(e.lineId) } : {}),
+        ...(ID_RE.test(str(e.dockId)) ? { dockId: str(e.dockId) } : {}),
         toolTrace: toolTraceList(e.toolTrace),
         failureStage: str(e.failureStage).trim().slice(0, FAILURE_FIELD_MAX),
         failureCode: str(e.failureCode).trim().slice(0, FAILURE_FIELD_MAX),

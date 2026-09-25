@@ -160,9 +160,7 @@
 /* TERMINAL MARKDOWN — a small, restrained subset in the agent's prose (chat.js renderMarkdown). Phosphor tokens
    only; a header is BRIGHT text, never oversized web type. XSS is handled upstream (escape-then-wrap). */
 .cmsg .body .md-b { color: var(--ph-bright); font-weight: 400; text-shadow: none; }
-.cmsg .body .md-h { display: inline-block; color: var(--ph-bright); letter-spacing: .5px; }
-.cmsg .body .md-li { display: inline-block; }
-.cmsg .body .md-li .md-bul { color: var(--ph); }
+.cmsg .body .md-h { color: var(--ph-bright); letter-spacing: .5px; }   /* display/margins: the block rule in the report-markdown section below */
 .cmsg .body .md-code {
   font-family: inherit; color: var(--ph-bright); background: rgba(var(--ph-rgb),.10);
   border: 1px solid var(--ph-faint); border-radius: 3px; padding: 0 4px;
@@ -339,6 +337,13 @@
 #comms-presence.paused .cp-verb { color: var(--gold); text-shadow: 0 0 5px color-mix(in srgb, var(--gold) 45%, transparent); }
 #comms-presence .cp-tool.paused-note { color: var(--gold); flex: 1 1 auto; white-space: normal; opacity: .95; }
 #comms-presence .cp-tool.paused-note::before { content: ''; }
+/* LIVE WAIT LINE (chat.js waitNoteText) — the retry rung / countdown / reason / duration must stay readable at the
+   300 px FIT minimum, so it wraps instead of ellipsis-clipping (a long model id breaks anywhere). */
+#comms-presence .cp-tool.wait-note { white-space: normal; overflow-wrap: anywhere; }
+#comms-presence .cp-tool.wait-note .cp-model {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* RESOLVED — the card collapses to a single quiet summary line, no blink, no live glow */
 #comms-presence.resolved {

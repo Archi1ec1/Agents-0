@@ -140,6 +140,20 @@ function bigRunOnce(size) {
       A.eq(recs.length, 8, 'every background record is listed (4 spawned + 4 dispatched)');
       A.ok(recs.every(r => r.id && r.status && r.agentId), 'each keeps id/status/agentId');
       A.ok(recs.filter(r => r.resultTruncated).every(r => r.resultPath && park.read(r.resultPath).length === r.resultChars), 'each shortened record\'s full text is on disk');
+
+      // POLLING is idempotent: the same unchanged records re-listed write no new park files and name the same paths
+      const parkedBefore = park.calls.length;
+      const filesBefore = fs.readdirSync(path.join(root, 'lead4', '.output')).length;
+      const again = JSON.parse((await subagentsTool.run({}, { agentId: 'lead4', parkOutput: park.parkOutput })).content);
+      const third = JSON.parse((await subagentsTool.run({}, { agentId: 'lead4', parkOutput: park.parkOutput })).content);
+      A.eq(park.calls.length, parkedBefore, 'two more team.subagents polls parked nothing new');
+      A.eq(fs.readdirSync(path.join(root, 'lead4', '.output')).length, filesBefore, 'and wrote no new .output files');
+      A.eq(again.map(r => r.resultPath), recs.map(r => r.resultPath), 'the re-listed rows name the files already saved');
+      A.eq(third.map(r => r.resultPath), recs.map(r => r.resultPath), 'on every poll');
+      // a DIFFERENT run's parker (a new capCtx.parkOutput) does not inherit another run's memo
+      const park2 = hostParker(root, 'lead4');
+      await subagentsTool.run({}, { agentId: 'lead4', parkOutput: park2.parkOutput });
+      A.ok(park2.calls.length > 0, 'a new run parks its own copies');
     }
 
     // ---- 7. fitAggregate directly: heavy metadata is compacted (and says so) before identity can be crowded out ----

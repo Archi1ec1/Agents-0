@@ -622,6 +622,7 @@ test/chain.multibay.test.js
 test/routing.steptest.test.js
 test/routing.steptest.multibay.test.js
 test/routing.triggers.test.js
+test/trigger-polish.test.js
 test/channels.multibay.test.js
 test/cron.multibay.test.js
 test/refit-card-stack.test.js
@@ -636,6 +637,7 @@ test/workflow-line.test.js
 test/workflow-line-compiled-order.test.js
 test/floor.multibay.test.js
 test/workflow-panel-source.test.js
+test/sibling-scope.test.js
 test/propanchor.test.js
 test/prop-mount.test.js
 test/prop-flat-decal.test.js
@@ -751,6 +753,7 @@ test/release-train-chrome-warmup.test.js
 test/release-train-provenance.test.js
 test/frontend-dist-staging.test.js
 test/desktop-build-macos-notarization.test.js
+test/desktop-build-macos-python-host.test.js
 test/desktop-artifact-open.test.js
 test/release-train-macos-trust.test.js
 test/release-train-windows-trust.test.js
@@ -768,6 +771,8 @@ test/lint-determinism.js
 test/station-bridge.test.js
 test/station-commands.test.js
 test/station-tools.test.js
+test/team-configure-guard.test.js
+test/agent-config.test.js
 test/code-mode.test.js
 test/output-artifacts.test.js
 test/station-recovery.test.js
@@ -800,18 +805,14 @@ test/task-conversation.test.js
 test/task-conversation-ui.test.js
 test/emergency-control.test.js
 test/work-rating-control.test.js
-
 test/session-focus-safety.test.js
 test/session-typing-safety.test.js
 test/session-continuity.test.js
 test/session-reliability.e2e.test.js
-
 test/harness-placement.test.js
 test/github-device.test.js
-
 test/onboarding-refresh.test.js
 test/tutorial-platform-guide.test.js
-
 test/openai-outcomes.test.js
 test/request-reservations.test.js
 test/result-contract.test.js
@@ -821,14 +822,10 @@ test/world-seat-recovery.test.js
 test/world-lifecycle.test.js
 test/world-crew-approval.test.js
 test/world-movement-continuity.test.js
-
 test/save-concurrency.test.js
-
 test/cloudsave-concurrency.test.js
-
 test/sprite-direction-details.test.js
 test/chat-history-reconcile.test.js
-
 test/prop-industrial-remaster.test.js
 test/industrialtextures.test.js
 test/world-texture-ready.test.js
@@ -852,7 +849,6 @@ test/projection-depth-rendering.test.js
 test/station-templates.test.js
 test/remaster-physical-fit.test.js
 test/arrival.test.js
-
 test/genesis-wake-credential.test.js
 test/dossier-growth-live.test.js
 test/industrial-shells.test.js
@@ -876,6 +872,7 @@ test/overseer-ui.test.js
 test/workspace-owner-election.test.js
 test/project-home-ui.test.js
 test/cli.test.js
+test/cli.stop-child.test.js
 test/loop.truncated-args-refuse.test.js
 test/loop.verify-on-stop-failed-check.test.js
 test/loop.grace-no-tools.test.js
@@ -923,3 +920,13 @@ test/threshold.anchored.test.js
 test/tail.token-budget.test.js
 test/fold.user-verbatim.test.js
 test/compaction.images.test.js
+test/skills.on-demand.test.js
+test/manual.on-demand.test.js
+test/loop.retry-events.test.js
+test/loop.waiting-heartbeat.test.js
+test/subagents.waiting-is-progress.test.js
+test/openai-waiting-keepalive.test.js
+test/comms-wait-line.test.js
+test/line-stats.test.js
+test/linewatch.test.js
+test/agent-skin-thumbs.test.js

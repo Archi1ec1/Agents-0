@@ -28,10 +28,18 @@ const HOST = '127.0.0.1';
    Re-measured 2026-09-23 on the wave-2 integration tree (trunk 0ea1bbb71 + all three wave-2 lanes): both layouts
    36,967 / 37,188 system chars | 79 tools | 60,931 tool bytes. The +3 tools / +3.6 KB is the STUDIO DaVinci Resolve edit
    bay (resolve_timeline_file / resolve_status / resolve_control, eefd36fe8) that landed on trunk after the measurement
-   above — intended growth, so the tool budgets were raised here with the same ~6% headroom. */
+   above — intended growth, so the tool budgets were raised here with the same ~6% headroom.
+   PROMPT DIET 2026-09-23 (agent/w3-prompt-diet, progressive disclosure — nothing removed, moved one tool call away):
+     default-new-install  36,929 -> 23,174 system chars | 79 -> 80 tools | 60,931 -> 61,626 tool bytes
+     fully-granted-floor  37,188 -> 23,395 system chars | 79 -> 80 tools | 60,931 -> 61,626 tool bytes
+   INSTALLED SKILLS ~12.4K -> ~1.1K (one index line per offered recipe; skill.view serves the exact body by its
+   library:<slug> name) and the operator manual ~9.3K -> ~6.3K (orientation + every behaviour rule stay inline; the
+   navigation / props / troubleshooting reference sections are a TOC served verbatim by manual.read). The +1 tool /
+   +695 B is manual.read plus skill.view's description naming installed recipes; the tool budgets above still hold.
+   The system budgets drop to the new measurement + ~6% so the diet cannot silently regrow. */
 const BUDGET = {
-  'default-new-install': { systemChars: 39100, tools: 84, toolBytes: 64600 },
-  'fully-granted-floor': { systemChars: 39400, tools: 84, toolBytes: 64600 }
+  'default-new-install': { systemChars: 24600, tools: 84, toolBytes: 64600 },
+  'fully-granted-floor': { systemChars: 24800, tools: 84, toolBytes: 64600 }
 };
 
 (async () => {

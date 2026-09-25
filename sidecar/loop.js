@@ -609,17 +609,43 @@
      transcript will carry; dropDuplicateCalls AFTER it, so repaired args compare as the values they are. Both run
      before anything is persisted. Pure and deterministic: same calls -> same ids -> same stream. Both mutate
      `calls` in place, like repairCalls. */
+  /* INPUT EVENTS ARE NOT DUPLICATES. The merge above assumes a second identical copy cannot mean anything the first
+     did not — true of a send, a write, a read. It is FALSE for an input event: "press ArrowDown" twice moves two rows,
+     scroll twice scrolls twice, back twice goes back two pages, a terminal write of "\n" twice submits twice. For
+     these tools each copy IS the intent, so they are never merged. Wire-form (underscored, lowercase) names;
+     computer_* covers every desktop-input action (computer.use keys/clicks). */
+  const REPEATABLE_INPUT = new Set([
+    'browser_press', 'browser_scroll', 'browser_back', 'browser_forward', 'browser_click', 'browser_type',
+    'browser_drag', 'browser_test_input', 'terminal_write', 'terminal_interrupt'
+  ]);
+  function repeatableInput(name) {
+    const k = String(name == null ? '' : name).replace(/\./g, '_').toLowerCase();
+    return REPEATABLE_INPUT.has(k) || /^computer_/.test(k);
+  }
+  // Returns Map(kept call id -> number of identical copies dropped), so the kept call's result can SAY it ran once.
   function dropDuplicateCalls(calls) {
-    const seenSig = new Set();
+    const seenSig = new Map();   // signature -> kept call id
+    const dropped = new Map();
     for (let i = 0; i < calls.length;) {
       const c = calls[i];
-      if (!c.parseError) {
+      if (!c.parseError && !repeatableInput(c.name)) {
         const sig = String(c.name == null ? '' : c.name) + '\u0000' + canonicalJson(c.args == null ? {} : c.args);
-        if (seenSig.has(sig)) { calls.splice(i, 1); continue; }
-        seenSig.add(sig);
+        if (seenSig.has(sig)) {
+          const kept = seenSig.get(sig);
+          dropped.set(kept, (dropped.get(kept) || 0) + 1);
+          calls.splice(i, 1);
+          continue;
+        }
+        seenSig.set(sig, c.id);
       }
       i++;
     }
+    return dropped;
+  }
+  // The note a kept call's result carries when its identical copies were merged away (they have no result of their own).
+  function duplicateNote(n) {
+    return '\n\n[harness note: you issued this exact call (same tool, same arguments) ' + (n + 1) + ' times in one turn; it ran ONCE and the '
+      + n + ' identical cop' + (n === 1 ? 'y was' : 'ies were') + ' not dispatched. If you really need the effect repeated, call it again in a later turn.]';
   }
   function uniqueCallIds(calls, messages) {
     const counts = new Map();
@@ -827,7 +853,7 @@
     const _cg = limits.continueGuard;
     const CG_MAX = (_cg === false) ? 0 : (_cg && _cg.max != null ? _cg.max : 2);
     let cgUsed = 0;
-    let memorySaveNudges = 0, memoryWrites = 0;
+    let memorySaveNudges = 0, memoryWrites = 0, configurationWrites = 0;
     // Companion nudge budgets (same disable knob as the continuation guard — they are one family):
     //  · markup nudge — the turn's TEXT carried tool-call markup (scrubbed above; NEVER executed). Tell the
     //    model once that text markup is data and to make a REAL call. Bounded like CG.
@@ -991,6 +1017,57 @@
     // OPTIONAL injected sleep for bounded mid-stream retry backoff (o.sleep(ms) -> Promise). Absent = retry with
     // NO wait (keeps the loop deterministic + test-fast); when present it honors the classifier's retryAfterMs.
     const sleep = (typeof o.sleep === 'function') ? o.sleep : null;
+    /* LIVE WAIT HEARTBEAT (agent.waiting, 2026-09-23). A model call that has produced no token or tool event yet —
+       a slow first byte, a reasoning stream with nothing visible, a backoff between ladder rungs — used to be
+       indistinguishable from a dead run, and a worker's liveness sweep read it as "no progress". While such a
+       wait lasts, every tick of the INJECTED ticker (o.waitTicker(beat) -> stop(); the host arms a real ~15 s
+       interval) emits agent.waiting { phase, sinceMs } with sinceMs read from the injected clock. The loop never
+       reaches for an ambient timer or time, so it stays deterministic; no ticker (or no clock) = no heartbeat,
+       and every existing caller is byte-identical. */
+    const waitTicker = (typeof o.waitTicker === 'function' && clock && typeof clock.now === 'function') ? o.waitTicker : null;
+    const NO_WAIT = { phase() {}, pause() {}, resume() {}, stop() {} };
+    function waitClock() {
+      try { const t = Number(clock.now()); return isFinite(t) ? t : 0; }
+      catch (e) { failNote('loop.wait.clock', e); return 0; }
+    }
+    // One wait: `beatNow` emits a first heartbeat immediately (a retried attempt going out — see its call site).
+    function startWaiting(phase, beatNow) {
+      if (!waitTicker) return NO_WAIT;
+      const st = { phase, since: waitClock(), live: true, paused: false, disarm: null };
+      const beat = () => {
+        if (!st.live || st.paused || signal.aborted) return;
+        // runs on the HOST's timer, outside the loop's own try blocks: a throwing emit must never escape into it
+        try { emit('agent.waiting', { agentId, runId, phase: st.phase, sinceMs: Math.max(0, Math.round(waitClock() - st.since)), model: String(model) }); }
+        catch (e) { failNote('loop.wait.emit', e); }
+      };
+      try { const d = waitTicker(beat); st.disarm = (typeof d === 'function') ? d : null; }
+      catch (e) { failNote('loop.wait.ticker', e); }
+      if (beatNow) beat();
+      return {
+        phase(p) { st.phase = p; },   // first_byte -> streaming keeps `since`: the wait began when the call went out
+        // Visible output silences the heartbeat WITHOUT disarming it: the same stream can go quiet again (a sentence,
+        // then minutes of streaming tool arguments the Commander cannot see), and that new silence must keep beating.
+        pause() { st.paused = true; },
+        // A NEW silent stretch begins (tool arguments started streaming after visible text): beat again, counting
+        // from now. A no-op unless paused, so a wait that never showed output keeps its original `since`.
+        resume(p) {
+          if (!st.live || !st.paused) return;
+          st.paused = false; st.phase = p || st.phase; st.since = waitClock();
+        },
+        stop() {
+          if (!st.live) return;
+          st.live = false;
+          if (st.disarm) { try { st.disarm(); } catch (e) { failNote('loop.wait.disarm', e); } }
+        }
+      };
+    }
+    // provider.retry — emitted BEFORE the backoff it announces. delayMs is the wait the loop will ACTUALLY sleep:
+    // with no injected sleep the retry goes out at once, and "retry in 30s" would be a lie.
+    function emitRetry(fields) {
+      const ev = Object.assign({ agentId, runId }, fields, { delayMs: sleep ? Math.max(0, Number(fields.delayMs) || 0) : 0, model: String(model) });
+      if (!(Number(ev.retryAfterMs) > 0)) delete ev.retryAfterMs;
+      emit('provider.retry', ev);
+    }
     const onRecovery = (typeof o.onRecovery === 'function') ? o.onRecovery : null;
     let recoveryAttemptSequence = 0;
     function noteRecovery(row) {
@@ -1182,8 +1259,10 @@
       if (prevSummary) lines.push(prevSummary);
       lines.push('[compaction fallback — the summarizer was unavailable; ' + older.length + ' older messages reduced to one line each]');
       for (const m of older) {
-        // the user's own words are carried whole in the note's verbatim section (see summaryNote) — not clipped here too
-        if (fidelity.collectUserMessages([m]).length) { lines.push('- ' + (m.role === 'user' ? 'user' : 'steering note') + ': [carried word for word in the user messages section below]'); continue; }
+        // the user's own words ride the note's verbatim section (see summaryNote) — not clipped here too. That section
+        // is BUDGETED (compaction-fidelity mergeUserMessages): a long message is cut to its fair share and the oldest
+        // can be omitted, each marked there — so this line points at it and never promises it is whole.
+        if (fidelity.collectUserMessages([m]).length) { lines.push('- ' + (m.role === 'user' ? 'user' : 'steering note') + ': [see the user messages section below — it marks any message it had to trim or omit]'); continue; }
         // text, never bytes: an image part is "[image]", a data URL a sized marker (compaction-fidelity contentText)
         let c = fidelity.contentText(m && m.content);
         if (m && Array.isArray(m.tool_calls) && m.tool_calls.length) c = 'called ' + m.tool_calls.map(t => (t && t.function && t.function.name) || 'tool').join(', ') + (c ? ' — ' + c : '');
@@ -1490,12 +1569,19 @@
          same provider/model now end the ladder (recovery-policy: fallback when one is configured, otherwise fail
          'provider_stalled'). Any other failure class resets the count, and so does a fallback switch. */
       let idleStalls = 0;
+      let retrySent = false;   // this attempt re-sends the turn after a provider.retry (its first heartbeat goes out at once)
       while (true) {
         bookUsage(usage, usageModel);   // a re-entry after retry/compress/fallback: book the partial attempt BEFORE the reset
         acc.text = ''; acc.toolCalls = {}; acc.reasoning = []; streamedTextChunks = []; usage = null; lastFinishReason = null;
         usageModel = model;
         let streamErr = null;
         let sawTruncation = false;
+        let sawStreamEvent = false;   // any event from this attempt's stream: provider.retry `stage` + the waiting phase
+        /* The wait this attempt opens ends at the first visible output (a streamed token) or when the attempt
+           settles. A retried attempt announces itself with an immediate sinceMs:0 beat, so a "retry in 30s"
+           line is replaced the moment the retry actually goes out instead of lingering until the next tick. */
+        const waiting = startWaiting('first_byte', retrySent);
+        retrySent = false;
         try {
           const req = { model, messages: wireMessages(), tools, signal, stream: true };   // stale screen captures -> placeholders
           if (typeof o.isTask === 'boolean') req.isTask = o.isTask;
@@ -1504,20 +1590,28 @@
           if (retriesUsed > 0) req.preStreamRetries = 0;              // the ladder owns pacing: one request per rung
           for await (const ev of provider.stream(req)) {
             if (signal.aborted) break;
+            if (!sawStreamEvent) { sawStreamEvent = true; waiting.phase('streaming'); }
             if (ev.type === 'text') {
               const delta = String(ev.delta == null ? '' : ev.delta);
+              // the wait is over the moment the Commander SEES output. Reasoning, usage and streaming tool arguments
+              // show nothing (agent.tool_call fires only after the stream), and a retry's deduped re-stream is
+              // buffered — the heartbeat keeps beating 'streaming' through all of those. PAUSED, not stopped: a tool
+              // call streaming after the text re-arms it (below), or a worker writing a long file after one sentence
+              // went silent for minutes and the liveness sweep (subagents.checkStalls) marked it stale.
+              if (delta && dedupeAgainst == null) waiting.pause();
               acc.text += delta;
               if (dedupeAgainst == null) emit('agent.token', { agentId, runId, delta });
               else streamedTextChunks.push(delta);
             }
             else if (ev.type === 'reasoning') { if (ev.block) acc.reasoning.push(ev.block); }
-            else if (ev.type === 'tool_start') { acc.toolCalls[ev.index] = { id: ev.id, name: ev.name, args: '' }; }
-            else if (ev.type === 'tool_args') { if (acc.toolCalls[ev.index]) acc.toolCalls[ev.index].args += (ev.chunk || ''); }
+            else if (ev.type === 'tool_start') { acc.toolCalls[ev.index] = { id: ev.id, name: ev.name, args: '' }; waiting.resume('streaming'); }
+            else if (ev.type === 'tool_args') { if (acc.toolCalls[ev.index]) acc.toolCalls[ev.index].args += (ev.chunk || ''); waiting.resume('streaming'); }
             else if (ev.type === 'usage') { usage = ev.usage; if (cost) emit('cost.estimate', Object.assign({ agentId, runId }, cost.estimate(usage, model))); }
             else if (ev.type === 'done') { lastFinishReason = ev.finishReason; sawTruncation = !!ev.truncated; }   // A3: remember WHY the turn stopped
             // 'tool_done' needs no action here
           }
         } catch (e) { streamErr = e; }
+        finally { waiting.stop(); }
         if (!streamErr) {
           // TRUNCATED STREAM (truthful-telemetry law). The response body ended CLEANLY mid-generation: the
           // adapter observed neither its protocol's end-of-stream sentinel nor a finish_reason. There is no
@@ -1528,9 +1622,12 @@
           if (truncRetries < MAX_TRUNC_RETRIES && !signal.aborted) {
             truncRetries++;                          // a truncation is transient — re-run the turn once
             armRetryDedupe(acc);                     // half an answer already streamed; don't print it twice
+            idleStalls = 0;                          // a truncated stream DID deliver bytes: not an idle stall
             noteRecovery({ stage: 'provider_stream', action: 'retry', reason: 'truncated', attempt: truncRetries, model, delayMs: STREAM_RETRY_DELAYS[0] });
-            if (sleep) { try { await sleep(STREAM_RETRY_DELAYS[0]); } catch (_) {} }
+            emitRetry({ attempt: truncRetries, reason: 'truncated', delayMs: STREAM_RETRY_DELAYS[0], maxAttempts: MAX_TRUNC_RETRIES, stage: sawStreamEvent ? 'mid_stream' : 'pre_stream' });
+            if (sleep) { const backoff = startWaiting('retry_backoff', false); try { await sleep(STREAM_RETRY_DELAYS[0]); } catch (_) {} backoff.stop(); }
             if (signal.aborted) break;
+            retrySent = true;
             continue;
           }
           // Retry spent. Hand it to the fatal path, which reconciles the usage the provider WILL bill before
@@ -1541,7 +1638,9 @@
         if (signal.aborted) break;                   // a cancel mid-stream: fall through to the cancel check below
         // classify so `transient` is honest, and so the shouldCompress / shouldFallback / shouldRotateCredential
         // hints drive recovery instead of being discarded.
-        const cls = classifyApiError(streamErr, { model: model, approxTokens: currentApproxTokens(), contextLimit: contextLimit });
+        // approxTokens = the run-start size; liveApproxTokens = the prompt now, trusted by the classifier's overflow
+        // ratio only for a 400 that names no specific cause (an "invalid base64" on a long run is not an overflow).
+        const cls = classifyApiError(streamErr, { model: model, approxTokens: approxTokens, liveApproxTokens: currentApproxTokens(), contextLimit: contextLimit });
         // An adapter that exhausted its own pre-stream retries already spent rungs of THIS ladder: advance the rung
         // index and the patience clock by exactly that spend, so continuing never multiplies it.
         const spent = preStreamSpend(streamErr);
@@ -1673,15 +1772,23 @@
         // ~105.6s of local patience, however the failure splits between adapter and loop.
         if (decision.action === 'retry') {
           retriesUsed++;
+          const waitedBefore = ladderWaitMs;          // local backoff spent BEFORE this rung (provider.retry waitedMs)
           ladderWaitMs += decision.ladderMs || 0;   // a server-stated wait is honored outside the local budget
           armRetryDedupe(acc);
           // NOTE: no provider.fallback emit here — a same-provider retry is NOT a failover; emitting it would
           // inflate the floor's failover counter and lie about a model/credential switch that didn't happen
-          // (truthful-telemetry law). The retry is bounded and its outcome (success or the final error) is what
-          // surfaces observably.
+          // (truthful-telemetry law). The same-provider retry has its OWN event, provider.retry, emitted before
+          // the backoff so the Commander sees "retry 3/6 in 30s (overloaded)" instead of silence.
           noteRecovery({ stage: 'provider_stream', action: 'retry', reason: decision.reason, attempt: retriesUsed, model, delayMs: decision.delayMs });
-          if (sleep) { try { await sleep(decision.delayMs); } catch (_) {} }
+          // "retry n/6" must not promise rungs the patience budget will refuse: when THIS rung spent the last of it (the
+          // policy shrank it to fit), it is the last local rung, so the total is n. (A server-stated Retry-After is
+          // honored outside the budget and is not predictable here, so it keeps the rung count.)
+          const patienceSpent = decision.ladderMs > 0 && ladderWaitMs >= STREAM_RETRY_PATIENCE_MS;
+          emitRetry({ attempt: retriesUsed, reason: String(decision.reason || 'transient'), delayMs: decision.delayMs, maxAttempts: patienceSpent ? Math.min(retriesUsed, MAX_STREAM_RETRIES) : MAX_STREAM_RETRIES,
+            stage: sawStreamEvent ? 'mid_stream' : 'pre_stream', retryAfterMs: cls.retryAfterMs, waitedMs: waitedBefore, patienceMs: STREAM_RETRY_PATIENCE_MS });
+          if (sleep) { const backoff = startWaiting('retry_backoff', false); try { await sleep(decision.delayMs); } catch (_) {} backoff.stop(); }
           if (signal.aborted) break;   // a cancel during the backoff ends cleanly below
+          retrySent = true;
           continue;
         }
         if (decision.reason === 'provider_stalled') {
@@ -1825,7 +1932,7 @@
 
       uniqueCallIds(calls, messages);             // a reused id gets a unique one BEFORE any event names it
       repairCalls(calls, emit, agentId, runId);   // L2: fix broken tool-call JSON before it is used or discarded
-      dropDuplicateCalls(calls);                  // exact in-turn duplicates (name + canonical args) run once
+      const mergedDupes = dropDuplicateCalls(calls);   // exact in-turn duplicates (name + canonical args) run once — never input events
       /* DUPLICATE CHECK STOP. If the model already supplied a sufficient answer while reissuing the exact check
          from the immediately-prior tool turn, dispatching it again adds no evidence and forces another paid turn.
          Drop it before persisting the assistant turn so tool-call/result pairing remains valid. Explicit retry
@@ -1847,7 +1954,10 @@
         const duplicate = !empty && priorAssistantText != null && text === priorAssistantText;   // a re-emitted prior turn
         const claimsMemorySave = /(?:^|\n)\s*(?:Done[ —:,.-]+)?I(?:['’]ve| have)?\s+(?:saved|stored|remembered|updated)\b[^.!?\n]{0,100}\b(?:preference|instruction|correction|requirement|memory|design style)s?\b/i.test(text);
         const canSaveMemory = tools.some(t => wireKey(t && ((t.function && t.function.name) || t.name)) === 'notebook_write');
-        if (claimsMemorySave && canSaveMemory && memoryWrites === 0) {
+        // A verified Dossier edit is an instruction save, not a notebook mutation. Explicit
+        // memory/preference claims still require a notebook receipt, even in the same run.
+        const verifiedConfigurationSave = configurationWrites > 0 && !/\b(?:preference|memory|design style)s?\b/i.test(text);
+        if (claimsMemorySave && canSaveMemory && memoryWrites === 0 && !verifiedConfigurationSave) {
           if (!graceUsed && memorySaveNudges < 2) {
             memorySaveNudges++;
             messages.push({ role: 'system', content: '<memory_receipt>You claimed a preference or correction was saved, but this run has no successful notebook write receipt. Use notebook_read and notebook_write to save or update the actual requirement now. For corrections use replaceId and previousBody; for approved reusable requirements pin within the intended scope. If it was already saved, verify it with a read and say it was already present; otherwise explicitly say it has not been saved. Do not repeat an unsupported save claim.</memory_receipt>' });
@@ -2032,10 +2142,24 @@
         emit('agent.run.error', { agentId, runId, message: String((e && e.message) || e), transient: false });
         return end('error', { failureStage: 'tool_boundary', failureCode: (e && e.fatalToRun) ? 'durability_boundary' : 'tool_dispatch_failure' });
       } finally { bookToolCosts(); }
-      for (const r of results) messages.push(toolResultMsg(r.callId, r.isError, r.content));
+      for (const r of results) {
+        // a merged duplicate has no result of its own: the kept call's result says the copies were not dispatched
+        const merged = mergedDupes.get(r.callId) || 0;
+        messages.push(toolResultMsg(r.callId, r.isError, merged ? String(r.content == null ? '' : r.content) + duplicateNote(merged) : r.content));
+      }
       for (const call of calls) {
         const receipt = results.find(r => r.callId === call.id);
         if (wireKey(call.name) === 'notebook_write' && receipt && !receipt.isError && /^(?:Saved|Updated) note "/.test(String(receipt.content))) memoryWrites++;
+        if (wireKey(call.name) === 'team_configure' && receipt && !receipt.isError) {
+          try {
+            const saved = JSON.parse(receipt.content);
+            if (saved.durable === true && saved.agentId && ['identity', 'purpose', 'manual', 'context'].includes(saved.field)) configurationWrites++;
+          } catch (_) {
+            // Refusals are plain text; malformed receipts are not save evidence either.
+            // Skip this receipt and inspect the next tool result.
+            continue;
+          }
+        }
       }
       const repairNote = failedCheckRepairNote(calls, results);
       if (repairNote) messages.push({ role: 'system', content: repairNote });

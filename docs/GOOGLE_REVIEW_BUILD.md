@@ -5,6 +5,11 @@ data-access verification demo**. It never ships: public releases keep every broa
 source (`sidecar/mcp/google-client.js` `RELEASED`), and this build opens them only through a developer
 preload that lives in `dev/` (not bundled) and refuses to load outside the review launcher.
 
+> **Superseded for public builds (2026-09-23):** Google services were un-deferred as **public early access**
+> (`EARLY_ACCESS = true` in `sidecar/mcp/google-client.js`) — every build now opens them with Google's
+> unverified-app warning and the 100-user cap until verification lands. This review build is still how the
+> verification demo gets recorded.
+
 ## Why two submissions, not one
 
 Google reviews scopes by tier ([scope classes](https://developers.google.com/workspace/gmail/api/auth/scopes)):
@@ -90,6 +95,14 @@ Restricted Google data therefore reaches only Google and the model provider the 
 restates mail/Drive content in the same conversation, memory notes and files the agent writes from that content
 (both can later be sent on a StarNet Managed run), and any future StarNet server feature. Whether the exemption
 applies is Google's determination during review; this is a technical position, not a compliance claim.
+
+## Early access is ON in source (2026-09-23)
+
+Andrew chose to ship Google in every build before approval: `EARLY_ACCESS = true` in
+`sidecar/mcp/google-client.js`. Every Google card tells users to choose **Advanced → Go to StarNet** at Google's
+unverified-app screen. Google caps an unverified app at **100 users**; the fallback if that cap is hit is a Gmail
+App Password (IMAP/SMTP) connector, not yet built. **When Google approves**: set `EARLY_ACCESS = false`, flip the
+approved services in `RELEASED`, run the gates, and ship — the warning and the cap disappear.
 
 ## Early access builds (before approval)
 

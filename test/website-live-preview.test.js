@@ -9,7 +9,8 @@ const vm = require('vm');
 
 const ROOT = path.join(__dirname, '..');
 const js = fs.readFileSync(path.join(ROOT, 'website', 'live-preview.js'), 'utf8');
-const css = fs.readFileSync(path.join(ROOT, 'website', 'styles.css'), 'utf8');
+// the preview's clip/iframe rules are homepage-only, so they live in home.css (loaded only by index.html)
+const css = fs.readFileSync(path.join(ROOT, 'website', 'home.css'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'website', 'index.html'), 'utf8');
 const demo = fs.readFileSync(path.join(ROOT, 'website', 'app', 'demo-boot.js'), 'utf8');
 

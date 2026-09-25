@@ -36,6 +36,12 @@
   const MAX_MARKERS = 500;
   const PROBE_TIMEOUT_MS = 15000;
   const BRIDGE_TIMEOUT_MS = 120000;
+  const PY_PICK_TIMEOUT_MS = 10000;   // per launcher candidate (win32 tries up to 3: py -3, python, python3)
+  const STATUS_PROBE_MS = 45000;
+  /* resolve_status worst case: every launcher candidate times out before the last one answers, then the probe runs
+     its full budget (3 x 10s + 45s = 75s). The registry backstop sits above that so it never pre-empts the probe's
+     own honest 'not reachable' answer. */
+  const STATUS_TIMEOUT_MS = 3 * PY_PICK_TIMEOUT_MS + STATUS_PROBE_MS + 15000;
   const OUT_MARK = '@@STARNET_RESOLVE@@';
 
   /* ── time ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -394,7 +400,7 @@ out(dict(base, ok=False, error="unknown action " + str(act)))
       const cands = forced ? [[forced, []]] : (platform === 'win32' ? [['py', ['-3']], ['python', []], ['python3', []]] : [['python3', []], ['python', []]]);
       const tried = [];
       for (const [cmd, pre] of cands) {
-        const r = await run(cmd, pre.concat(['-c', 'import sys;print(sys.version_info[0])']), { env, timeoutMs: 10000 });
+        const r = await run(cmd, pre.concat(['-c', 'import sys;print(sys.version_info[0])']), { env, timeoutMs: PY_PICK_TIMEOUT_MS });
         if (r.code === 0 && /^3/.test(str(r.stdout))) return { cmd, pre };
         tried.push(cmd + ': ' + (r.error || ('exit ' + r.code)));
       }
@@ -506,14 +512,14 @@ out(dict(base, ok=False, error="unknown action " + str(act)))
 
     // ── resolve_status ─────────────────────────────────────────────────────────────────────────────────
     const statusTool = {
-      name: 'resolve_status', capability: 'studio', scope: 'read', requiresConsent: false, timeoutMs: 60000,
+      name: 'resolve_status', capability: 'studio', scope: 'read', requiresConsent: false, timeoutMs: STATUS_TIMEOUT_MS,
       description: 'Check DaVinci Resolve on this machine: installed? reachable for live control (Studio + external '
         + 'scripting on)? which project, timelines, current timeline (fps, length, tracks, markers). Call this before '
         + 'resolve_control. If live control is unavailable (free Resolve, Resolve closed), use resolve_timeline_file.',
       schema: { type: 'object', properties: {} },
       run: async () => {
         const app = await installed();
-        const r = await bridge('probe', {}, 45000);
+        const r = await bridge('probe', {}, STATUS_PROBE_MS);
         const lines = [];
         lines.push('Installed: ' + (app ? 'yes (' + app + ')' : 'not found at the default location'));
         if (r.reachable) {
@@ -611,5 +617,5 @@ out(dict(base, ok=False, error="unknown action " + str(act)))
     };
   }
 
-  return { makeResolveTools, buildFcpxml, rateOf, ftime };
+  return { makeResolveTools, buildFcpxml, rateOf, ftime, _internals: { PY_PICK_TIMEOUT_MS, STATUS_PROBE_MS, STATUS_TIMEOUT_MS } };
 });

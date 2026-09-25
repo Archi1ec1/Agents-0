@@ -49,12 +49,14 @@ const RELEASED = {
   'google-calendar': false, 'google-docs': false, 'google-sheets': false
 };
 
-/* EARLY ACCESS — a publisher BUILD flag, never a user setting. A build staged with STARNET_GOOGLE_EARLY_ACCESS=1
-   (scripts/stage-google-client.mjs, desktop-build.yml's opt-in input; never release-train) carries
-   `earlyAccess: true` in its bundled registration, which opens every Google service BEFORE Google's verification:
-   Google then shows its "unverified app" warning at sign-in and caps the app at 100 users. The catalog labels
-   every card so nobody mistakes it for a verified release. Legacy endpoints stay deferred; the relay guard applies. */
-const EARLY_ACCESS = false;
+/* EARLY ACCESS — never a user setting. It opens every Google service BEFORE Google's verification: Google then
+   shows its "unverified app" warning at sign-in and caps the app at 100 users. The catalog labels every card so
+   nobody mistakes it for a verified release. Legacy endpoints stay deferred; the relay guard applies.
+   The SOURCE default below is what decides it today: ON since 2026-09-23 (Andrew) — users need Google NOW while
+   verification is pending, so EVERY build (public release-train included) is early access. The staged-registration
+   flag (STARNET_GOOGLE_EARLY_ACCESS=1 → `earlyAccess: true`, read by loadEarlyAccess) can only turn it ON, so it is
+   inert while this is true. When Google approves: set this back to false and release services through RELEASED. */
+const EARLY_ACCESS = true;
 function loadEarlyAccess({ readFile }) {
   try { return JSON.parse(readFile() || '{}').earlyAccess === true; }
   catch (e) { return false; }   // no staged registration (dev, public build) => not early access

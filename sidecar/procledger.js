@@ -25,7 +25,7 @@
    receipt of its own so the next boot retries it.
 
      makeProcLedger({ fs, pathMod, file, clock, isWin?, execFile?, probe?, killTree?, processTable?, log? }) ->
-       { record({pid,cmd,kind?,created?,pin?}), pinIdentity(pid), release(pid), touch(pids), markExited(pid),
+       { record({pid,cmd,kind?,created?,pin?}), pinIdentity(pid), release(pid), touch(pids), markExited(pid, at?),
          sweep() -> Promise<summary>, list(), _internals } */
 'use strict';
 (function (root, factory) {
@@ -271,14 +271,15 @@
       return n;
     }
 
-    /* markExited(pid): the owner observed the root exit but is KEEPING the receipt (a kill it could not confirm).
-       Freezes the orphan window at the exit — after this instant the PID may belong to a stranger. */
-    function markExited(pid) {
+    /* markExited(pid, at?): the owner observed the root exit but is KEEPING the receipt (a kill it could not confirm).
+       Freezes the orphan window at the exit — after this instant the PID may belong to a stranger. at (optional):
+       the instant the exit was OBSERVED, when the stamp is written later than that (trackChild defers it). */
+    function markExited(pid, at) {
       pid = Number(pid);
       const e = live.find(r => r.pid === pid);
       if (!e || e.exited) return false;
       e.exited = true;
-      const t = now();
+      const t = Number(at) > 0 ? Number(at) : now();
       if (t > 0) e.exitedAt = t;
       save();
       return true;
@@ -430,7 +431,7 @@
 
     function list() { return stale.concat(live).map(r => Object.assign({}, r)); }
 
-    return { record, pinIdentity, release, touch, markExited, sweep, list, _internals: { save, cmdMatches, normCmd, orphanWindow } };
+    return { record, pinIdentity, release, touch, markExited, sweep, list, now, _internals: { save, cmdMatches, normCmd, orphanWindow } };
   }
 
   /* FOREGROUND RECEIPTS (h2 process supervision, 2026-09-22). shell.exec's foreground child was never in the ledger,
@@ -442,6 +443,12 @@
      not pay a probe each; one that outlives it is pinned then, and touched every touchMs while its handle is held
      so children it starts later stay inside the provable window. A receipt that never got pinned still falls back
      to the (redacted) command-line match at the next boot. Every timer is unref'd. */
+  /* TODO(posix-fg-receipts): on POSIX a foreground receipt gets NO identity pin and NO orphan walk.
+     makePosixProbe returns created:null (start-time parsing not implemented), so pinIdentity() never pins and the
+     next boot's sweep falls back to matching the REDACTED command line; and processTable is Windows-only, so the
+     descendants of a POSIX root that already exited are never walked (only a still-live group leader is killed by
+     makeKillTree's -pid). Closing it needs a POSIX start-time source (ps -o lstart= / /proc/<pid>/stat field 22)
+     for the pin, plus a POSIX process table (pid, ppid, start) so ownedTree/orphanWindow can run there too. */
   function trackChild(ledger, pid, o) {
     o = o || {};
     pid = Number(pid);
@@ -477,10 +484,13 @@
       exited() {
         if (exitedFlag || finished) return;
         exitedFlag = true; stopTimers();   // no touch after the exit: the PID may be a stranger's from here on
+        // the exit instant is captured NOW, not when the deferred stamp fires: stamping at write time put exitedAt
+        // up to exitStampMs past the real exit, widening the orphan window into a span the PID was not ours
+        const at = (typeof ledger.now === 'function') ? Number(ledger.now()) || 0 : 0;
         const stamp = () => {
           exitTimer = null;
           if (finished) return;
-          try { if (typeof ledger.markExited === 'function') ledger.markExited(pid); } catch (e) { trackFailNote('procledger.track.exited', e); }
+          try { if (typeof ledger.markExited === 'function') ledger.markExited(pid, at); } catch (e) { trackFailNote('procledger.track.exited', e); }
         };
         if (exitStampMs > 0) exitTimer = unref(setTimeout(stamp, exitStampMs)); else stamp();
       },

@@ -65,6 +65,17 @@ async function contract(tools, label) {
   A.ok(lines(off).indexOf('node_modules/dep/x.js') < 0, label + ': node_modules stays skipped even with gitignore:false');
   const cxr = await tools.searchTool.run({ query: 'NEEDLE', file_glob: '*.md', context: 1, limit: 100 }, ctx);
   A.ok(/^docs\/guide\.md$/m.test(cxr.content) && /^ {2}1: NEEDLE guide$/m.test(cxr.content), label + ': context/densified rendering is stable');
+  // a PATH-shaped file_glob is workspace-relative on BOTH engines, with or without a scoped `path`
+  const pg = await tools.searchTool.run({ query: 'NEEDLE', file_glob: 'src/*.js', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pg), ['src/app.js'], label + ': a path file_glob matches the workspace-relative path');
+  const pgScoped = await tools.searchTool.run({ query: 'NEEDLE', path: 'src', file_glob: 'src/*.js', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pgScoped), ['src/app.js'], label + ': …and means the SAME thing when `path` is set (rg used to match it against the scoped dir)');
+  const pgDeep = await tools.searchTool.run({ query: 'NEEDLE', path: 'docs', file_glob: 'docs/**', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pgDeep).sort(), ['docs/guide.md', 'docs/top-only.txt'], label + ': a scoped ** path glob');
+  const pgMiss = await tools.searchTool.run({ query: 'NEEDLE', path: 'src', file_glob: '*/app.js', output_mode: 'files_only', limit: 100 }, ctx);
+  A.eq(lines(pgMiss), ['src/app.js'], label + ': */app.js is relative to the workspace root, not the scoped dir');
+  const logGlob = await tools.searchTool.run({ query: 'NEEDLE', file_glob: '*.log', output_mode: 'files_only', limit: 100 }, ctx);
+  A.ok(lines(logGlob).indexOf('build.log') < 0, label + ': a file_glob never re-includes a .gitignored file (an rg -g glob overrides ignore rules)');
   const flat = await tools.searchTool.run({ query: 'guide', limit: 100 }, ctx);
   A.eq(flat.content, 'docs/guide.md:1: NEEDLE guide', label + ': the flat path:line: text row is byte-identical');
 }
@@ -101,6 +112,12 @@ async function contract(tools, label) {
     A.ok(I.gitignored(stack, 'q1.md', false) && !I.gitignored(stack, 'q12.md', false), '? is exactly one character');
     const nested = [{ baseRel: '', rules: I.parseGitignore('*.log\n') }, { baseRel: 'src', rules: I.parseGitignore('!keep.log\n') }];
     A.ok(I.gitignored(nested, 'src/a.log', false) && !I.gitignored(nested, 'src/keep.log', false), 'a nested negation re-includes within its own subtree (last match wins)');
+    const deepPath = [{ baseRel: '', rules: I.parseGitignore('**/foo/bar' + String.fromCharCode(10)) }];
+    A.ok(I.gitignored(deepPath, 'src/foo/bar', false), '**/foo/bar matches foo/bar under any directory (it was stripped to an anchored foo/bar)');
+    A.ok(I.gitignored(deepPath, 'foo/bar', false) && I.gitignored(deepPath, 'a/b/foo/bar', false), '…including at the root and at depth');
+    A.ok(!I.gitignored(deepPath, 'src/foo/baz', false) && !I.gitignored(deepPath, 'bar', false), '…and nothing else');
+    const nestedDeep = [{ baseRel: 'pkg', rules: I.parseGitignore('**/foo/bar' + String.fromCharCode(10)) }];
+    A.ok(I.gitignored(nestedDeep, 'pkg/x/foo/bar', false) && I.gitignored(nestedDeep, 'pkg/foo/bar', false), 'a nested **/foo/bar matches at any depth under its own directory');
   }
 
   // ---- 4. the rg engine: same rows, when the machine has ripgrep ----

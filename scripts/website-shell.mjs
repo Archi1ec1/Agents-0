@@ -248,7 +248,7 @@ for (const page of pages) {
     const sections = [...main.matchAll(/<h[23][^>]*id="([^"]+)"[^>]*>([\s\S]*?)<\/h[23]>([\s\S]*?)(?=<h[23]\b|<nav class="doc-pager"|$)/g)].map(m => ({ id: m[1], t: textOf(m[2]).replace(/^\d+[.\s]*/, ''), b: textOf(m[3]).slice(0, 2400) }));
     index.push({ u: page.replace(/^docs\//, ''), t: entry.title, g: entry.group, k: entry.kind, d: textOf(desc), h: heads, s: sections });
   } else {
-    const styleVersion = page === 'index.html' ? '20260922-station-preview' : V;
+    const styleVersion = page === 'index.html' ? '20260924-home-rules' : V;
     html = html.replace(/(href="(?:\.\.\/)?(?:styles\.css|docs\/docs\.css|\/styles\.css))(?:\?v=[^"]*)?"/, `$1?v=${styleVersion}"`);
     if (LOADS_SITE_JS.includes(page)) {
       html = html.replace(/(<span (?:id="ver-badge"|class="ver")>)v[\d.]+(<\/span>)/g, `$1v${FALLBACK_RELEASE}$2`);

@@ -118,9 +118,27 @@ function intervalJob(id, everyStr) {
     s.runs[0].resolve(); await flush();
     A.eq(s.getJob('f1').lastRunId, 'run-2', 'the stale run did NOT overwrite the replacement (generation fence)');
     A.eq(s.getJob('f1').nextRunAt, advancedNext, 'the stale run did not disturb the advanced nextRunAt');
-    const staleResult = lastOf(s.events, 'cron.result');
-    A.eq(staleResult.runId, 'run-1', 'the stale run still reports its own cron.result');
-    A.ok(String(staleResult.reason).indexOf('stale-lease') >= 0, 'the stale settlement is honestly labeled stale-lease');
+    // ONE RUN, ONE cron.result (2026-09-24): the sweep's reclaim already settled run-1 (and reported it); the
+    // zombie's late unowned settle must not emit a second outcome for the same runId
+    const run1Results = s.events.filter(e => e.name === 'cron.result' && e.payload.runId === 'run-1');
+    A.eq(run1Results.length, 1, 'the reclaimed run reports exactly ONE cron.result (no duplicate stale-lease emit)');
+    A.eq(run1Results[0].payload.reason, 'stale-lock-reclaimed', '…and it is the reclaim, the outcome on the record');
+    A.eq(lastOf(s.events, 'cron.result').runId, 'run-2', 'the last outcome on the bus is still the replacement\'s');
+  }
+
+  // ---- 2b. an unowned settle for a run that NEVER reported (no reclaim settled it) still emits stale-lease ----
+  {
+    const j = intervalJob('f2', 'every 60m');
+    const s = setup([j]);
+    s.clock.set(T0 + 3600000);
+    s.driver.applyTick(s.clock.now());
+    // simulate a lease replaced out from under run-1 without a settlement (a successor owns the job)
+    s.driver.leases.set('f2', { runId: 'someone-else', startedAt: s.clock.now(), heartbeatAt: s.clock.now(), ac: new AbortController() });
+    s.runs[0].resolve(); await flush();
+    const r = s.events.filter(e => e.name === 'cron.result' && e.payload.runId === 'run-1');
+    A.eq(r.length, 1, 'an unowned settle with no prior report still emits its one honest result');
+    A.ok(/stale-lease/.test(r[0].payload.reason), '…labeled stale-lease');
+    s.driver.leases.delete('f2');
   }
 
   // ---- 3. FENCE + ABORT: the sweep aborts the zombie; its rejected settle is fenced the same way. ----

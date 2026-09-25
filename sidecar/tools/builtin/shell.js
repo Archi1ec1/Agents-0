@@ -962,10 +962,12 @@
           const source = environment && typeof environment.statusBackground === 'function' ? environment : null;
           if (!source && !bg) return { content: 'Background processes are not available in this build.', summary: 'unavailable' };
           const t0 = now();
-          const step = 1000, rounds = Math.max(1, Math.ceil(timeoutMs / step));
+          // timeoutMs 0 = check once, never sleep; the last step is trimmed so the wait never overshoots its budget
+          const step = 1000, rounds = Math.ceil(timeoutMs / step);
           let v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           for (let i = 0; v && v.running && i < rounds && !(ctx.signal && ctx.signal.aborted); i++) {
-            await new Promise(function (res) { setTimeout(res, step); });
+            const ms = Math.min(step, timeoutMs - i * step);
+            await new Promise(function (res) { setTimeout(res, ms); });
             v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           }
           r = v ? Object.assign({ ok: true, state: v.running ? ((ctx.signal && ctx.signal.aborted) ? 'cancelled' : 'running') : 'exited', waitedMs: Math.max(0, now() - t0) }, v) : { ok: false, error: 'no such background process' };
@@ -1070,8 +1072,14 @@
       }
     };
 
+    /* The registry's 30s default backstop used to cut off the Windows verify path (snapshot + taskkill + confirm +
+       second pass can legitimately take over a minute), turning a kill that was still gathering proof into a bare
+       timeout. Sized from the bg manager's own worst case (shellbg.killBudgetMs) plus headroom. */
+    const BG_KILL_BUDGET_MS = (bg && Number(bg.killBudgetMs) > 0) ? Number(bg.killBudgetMs)
+      : ((typeof require === 'function') ? require('../../shellbg.js').killBudgetMs() : 76500);
     const bgKillTool = {
       name: 'shell.bg.kill', capability: 'workbench', scope: 'write', requiresConsent: false,
+      timeoutMs: BG_KILL_BUDGET_MS + 10000,
       description: 'Stop one of your background processes by id (from shell.bg.status). Kills the whole process tree and confirms it is gone.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       run: async function (args, ctx) {
@@ -1093,7 +1101,16 @@
           return { content: 'Kill sent to background process ' + id + ' but NOT confirmed: ' + (r.error || 'the process tree could not be read back')
             + (r.rootExited ? ' (its main process did exit).' : '.'), summary: 'kill unconfirmed' };
         }
-        const proven = r && r.verified ? ' — the whole process tree (' + (r.killedPids || []).length + ' process(es)) is confirmed gone.' : '.';
+        /* 'verified' is proof about HOST processes. On a docker/ssh backend the host-side record is the docker exec /
+           ssh client, so a verified verdict says nothing about the job inside the container or on the remote host. */
+        const backendId = environment
+          ? (typeof environment.backendIdFor === 'function' ? environment.backendIdFor(aid) : environment.backendId)
+          : null;
+        const remote = !!(environment && backendId && backendId !== 'local');
+        const proven = remote
+          ? ' — the kill was sent through the ' + backendId + ' backend, but the process tree inside it could not be confirmed gone (unverified).'
+          : (r && r.verified ? ' — the whole process tree (' + (r.killedPids || []).length + ' process(es)) is confirmed gone.' : '.');
+        if (r && r.ok && !r.alreadyExited && remote) return { content: 'Kill sent to background process ' + id + proven, summary: 'kill unconfirmed' };
         return { content: r.ok ? (r.alreadyExited ? 'Process ' + id + ' had already exited.' : 'Killed background process ' + id + proven) : ('Could not kill: ' + r.error), summary: r.ok ? 'killed' : 'not killed' };
       }
     };
