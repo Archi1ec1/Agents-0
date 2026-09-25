@@ -156,6 +156,7 @@ const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } =
 const { makeEmitter } = require('../shared/emitter.js');
 const { redact, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
 const { runRouteFailure } = require('./runroute.js');   // a failure escaping handleRun must never read as an empty 200
 const { json: respondJson, readJsonBody, isAgentId } = require('./respond.js');   // canonical json()/body/agent-id helpers — adopt incrementally, don't mass-migrate
 const { readBody, readBodyBuffer } = require('./http-body.js');
@@ -14975,6 +14976,9 @@ async function handleAgentDelete(req, res) {
   const agentId = String(body.agentId || body.agent || '');
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) return json(400, { error: 'invalid agentId' });   // same id regex as roster/fs-jail surfaces
   if (agentId === 'agent') return json(400, { error: 'cannot delete the hero agent' });   // the founder is undeletable (resume depends on it)
+  // WORKSPACES/<id> for a reserved id is a STATION directory (codex tokens, channel/connector secrets, plugins) —
+  // the archive step below would move it into _archive and silently sign the station out of everything.
+  if (WorkspaceReserved.isReservedWorkspaceId(agentId)) return json(400, { error: 'agentId names a reserved station directory' });
 
   const deletion = await agentLifecycle.beginDelete(agentId, 'delete-' + crypto.randomUUID());
   if (!deletion.ok) {

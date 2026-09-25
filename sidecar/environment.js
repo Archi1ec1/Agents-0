@@ -24,12 +24,14 @@
   const nodeCrypto = require('node:crypto');
   const { note: envFailNote } = require('./failopen.js');
   const { trackChild } = require('./procledger.js');   // F2: foreground receipts for the boot orphan sweep
+  const { assertWorkspaceId } = require('./workspace-reserved.js');   // station-owned dirs are never agent jails
   const WIN = (typeof process !== 'undefined' && process.platform) === 'win32';
   const DEFAULT_DOCKER_IMAGE = 'node:20-bookworm';
 
   function safeAgentId(id) {
     if (!AID_RE.test(id || '')) throw new Error('bad agentId');
-    return id;
+    // WORKSPACES/<id> is this agent's jail on every backend; a station-owned directory name is never one.
+    return assertWorkspaceId(id);
   }
   function clamp(n, lo, hi) {
     n = Number(n);

@@ -59,6 +59,8 @@
     const workspaceRoot = deps.workspaceRoot ? P.resolve(String(deps.workspaceRoot)) : '';
     const now = typeof deps.now === 'function' ? deps.now : (() => null);
     const MAX_WALK = Number(deps.maxWalk) > 0 ? Number(deps.maxWalk) : 40;
+    const isReservedWorkspaceId = typeof deps.isReservedWorkspaceId === 'function' ? deps.isReservedWorkspaceId
+      : (typeof require === 'function' ? require('./workspace-reserved.js').isReservedWorkspaceId : (() => false));
 
     const winish = P.sep === '\\';
     function pathInside(abs, base) {
@@ -160,7 +162,9 @@
         const workspaceReal = await realpathOrSelf(workspaceRoot);
         if (pathInside(real, workspaceReal)) {
           const agentId = String(o.agentId == null ? '' : o.agentId);
-          if (/^[A-Za-z0-9_-]{1,40}$/.test(agentId)) {
+          // A station-owned directory (codex/, channels/, connectors/, plugins/ …) is never an agent's own
+          // workspace, even for an agent whose id collides with it — those fall through to the deny below.
+          if (/^[A-Za-z0-9_-]{1,40}$/.test(agentId) && !isReservedWorkspaceId(agentId)) {
             const ownReal = await realpathOrSelf(P.join(workspaceRoot, agentId));
             if (pathInside(real, ownReal)) return { base: ownReal, abs: norm };
           }

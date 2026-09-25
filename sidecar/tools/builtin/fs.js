@@ -21,10 +21,13 @@ const { note: failNote } = require('../../failopen');
   const { parsePatch, hunkOldText, hunkNewText, addText } = require('./patchparse.js');
   const { fuzzyFindAndReplace } = require('./fuzzymatch.js');
   const crypto = require('node:crypto');
+  const { assertWorkspaceId } = require('../../workspace-reserved.js');
 
   function safeAgentId(id) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(id || '')) throw new Error('bad agentId');
-    return id;
+    // An id equal to a station-owned directory (codex/, channels/, connectors/, plugins/ …) would make that
+    // credential/code directory this agent's private jail — refuse it (sidecar/workspace-reserved.js).
+    return assertWorkspaceId(id);
   }
   function kb(n) { return n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB'; }
   function emitDeliverable(ctx, aid, pathStr) {
