@@ -3124,27 +3124,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
        the master 1:1 in the buffer, then integer-NN it into the frame. The frame is sized so the largest
        shipped character (43×46, pikachu) still clears ×2, which means EVERY skin lands on exactly ×2 — the
        roster reads at one consistent size instead of each skin finding its own fractional fit. */
-    const buf = drawPortrait._buf || (drawPortrait._buf = document.createElement('canvas'));
-    const BW = 220, BH = 220; buf.width = BW; buf.height = BH;
-    const bctx = buf.getContext('2d');
-    bctx.clearRect(0, 0, BW, BH);
-    bctx.imageSmoothingEnabled = false;   // the blit below is 1:1; keep it exact
-    bctx.save();
-    bctx.translate(BW / 2, BH - 40);
-    // 1/sc makes drawBody's own `dw = frame.width * sc` resolve to frame.width — an exact, unresampled
-    // 1:1 blit of the master. A missing/zero scale falls back to the old 3× rather than dividing by zero.
-    const sc = (typeof SPRITES.bodyScale === 'function') ? SPRITES.bodyScale({ id: a.id, skin: a.skin }) : 0;
-    bctx.scale(sc > 0 ? 1 / sc : 3, sc > 0 ? 1 / sc : 3);
-    SPRITES.drawBody(bctx, { id: a.id, skin: a.skin, px: 0, py: 0, dir: 'south', color: a.color, state: 'idle', sitting: false, working: false, phase: 0, noShadow: true }, performance.now());
-    bctx.restore();
-    // measure the drawn body's real bounds (alpha > 16), so the fit ignores the master's transparent padding
-    const d = bctx.getImageData(0, 0, BW, BH).data;
-    let minX = BW, minY = BH, maxX = 0, maxY = 0, any = false;
-    for (let y = 0; y < BH; y++) for (let x = 0; x < BW; x++) {
-      if (d[(y * BW + x) * 4 + 3] > 16) { any = true; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
-    }
-    if (!any) return;
-    const sw = maxX - minX + 1, sh = maxY - minY + 1;
+    // The 1:1 render + measured bounds live in AgentPortraits.renderBody (shared with the Workflow skin thumbs,
+    // so every surface draws the same figure the floor does); this function owns only the frame fit below.
+    const r = (typeof AgentPortraits !== 'undefined' && AgentPortraits.renderBody) ? AgentPortraits.renderBody(a, performance.now()) : null;
+    if (!r) return;
+    const buf = r.canvas, minX = r.minX, minY = r.minY, sw = r.sw, sh = r.sh;
     // INTEGER fit, floored at 1× — a fractional k is the whole defect, and 1× (native) is always honest.
     // Pads are device px so the fit math and the drawn result share one coordinate space.
     const padX = 6 * dev, padTop = 6 * dev, padBot = 6 * dev;

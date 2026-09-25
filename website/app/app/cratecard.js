@@ -84,7 +84,10 @@ const CrateCard = (() => {
   function paint() {
     if (!el || !cur) return;
     const card = cur.resolve(row);
-    const rows = card.rows.map(r => '<div class="lw-row"><dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd></div>').join('');
+    // the RUN row shows the agent by its SKIN (AgentPortraits — the body the floor draws), once a run is proven
+    const who = card.runBy && typeof cur.agentOf === 'function' ? cur.agentOf(card.runBy) : null;
+    const skin = who && typeof AgentPortraits !== 'undefined' && AgentPortraits.thumbHTML ? AgentPortraits.thumbHTML(who, 22, 28, 'lw-thumb') : '';
+    const rows = card.rows.map(r => '<div class="lw-row"><dt>' + esc(r[0]) + '</dt><dd' + (skin && r[0] === 'RUN' ? ' class="lw-who">' + skin + '<span>' + esc(r[1]) + '</span>' : '>' + esc(r[1])) + '</dd></div>').join('');
     const doorsHtml = (card.actions.transcript ? '<button type="button" class="bb sm" data-a="run">▸ LOGBOOK · TRANSCRIPT</button>' : '')
       + (card.actions.workflow ? '<button type="button" class="bb sm" data-a="wf">▸ WORKFLOW PANEL</button>' : '');
     el.setAttribute('data-state', card.state);
@@ -97,7 +100,7 @@ const CrateCard = (() => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { timer = 0; if (!cur) return; fetchRow(); paint(); tick(); }, 1000);
   }
-  /* open({ clientX, clientY, payload, resolve(row)->card, runIdOf(), runEnded(), openRun(t), openWorkflow(f), api? }) */
+  /* open({ clientX, clientY, payload, resolve(row)->card, runIdOf(), runEnded(), openRun(t), openWorkflow(f), api?, agentOf(aid)->{id,skin}? }) */
   function open(o) {
     if (!o || typeof o.resolve !== 'function') return false;
     close();
