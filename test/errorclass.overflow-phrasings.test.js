@@ -151,4 +151,21 @@ const anthropicBody = (status, message) => Object.assign(new Error('api error'),
   }
 }
 
+// ---- C. the LIVE prompt size only speaks for a 400 that names no cause of its own ----
+{
+  // a long run (90k live of a 200k window, started at 2k): an unrelated 400 is NOT an overflow
+  const live = { approxTokens: 2000, liveApproxTokens: 90000, contextLimit: 200000 };
+  A.eq(R(httpErr(400, 'messages.3.content.0.image.source.base64: invalid base64 data'), live).reason, 'format_error', 'invalid base64 at 90k/200k live -> format_error, not overflow');
+  A.eq(R(httpErr(400, 'tools.2.input_schema: JSON schema is invalid'), live).reason, 'format_error', 'a bad tool schema at 90k/200k live -> format_error');
+  A.eq(R(httpErr(400, 'invalid base64'), live).shouldCompress, false, 'a named-cause 400 never takes the destructive fold');
+  // a genuine overflow phrasing is still an overflow at any size
+  A.eq(R(httpErr(400, 'prompt is too long: 215000 tokens > 200000 maximum'), live).reason, 'context_overflow', 'overflow wording at 90k live -> context_overflow');
+  // a bare/unrecognizable 400 on a grown run is still recognized by the live ratio
+  A.eq(R(httpErr(400, 'invalid request'), live).reason, 'context_overflow', 'a cause-less 400 on a grown run -> context_overflow (live ratio)');
+  A.eq(R(httpErr(400, 'invalid request'), { approxTokens: 2000, liveApproxTokens: 50000, contextLimit: 200000 }).reason, 'format_error', 'under 0.4 live -> format_error');
+  // the run-start ratio behaves exactly as before
+  A.eq(R(httpErr(400, 'invalid base64'), { approxTokens: 90000, contextLimit: 200000 }).reason, 'context_overflow', 'run-start ratio unchanged');
+  A.eq(R(httpErr(400, 'invalid request'), { approxTokens: 2000, liveApproxTokens: 999999, contextLimit: 0 }).reason, 'format_error', 'cold catalog: live size never fires the ratio');
+}
+
 A.report('errorclass.overflow-phrasings.test');

@@ -4,7 +4,7 @@
    burns paid attempts on never-succeed failures (402 out-of-credits, 400 malformed) and tells the user
    nothing useful. This pure classifier maps any provider error to a reason + the action it implies.
 
-   classifyApiError(err, { provider, model, approxTokens, contextLimit, numMessages })
+   classifyApiError(err, { provider, model, approxTokens, liveApproxTokens, contextLimit, numMessages })
      -> { reason, retryable, shouldRotateCredential, shouldFallback, shouldCompress, statusCode, message }
 
    Reasons: auth · billing · rate_limit · quota_exhausted · overloaded · server_error · timeout ·
@@ -249,8 +249,22 @@
     if (/content_policy|moderation/.test(c)) return 'content_policy_blocked';
     if (OVERFLOW_RE.test(low)) return 'context_overflow';
     // ratio heuristic ONLY with a known limit — a cold catalog (contextLimit 0) falls to format_error
-    if (ctx.contextLimit > 0 && ctx.approxTokens > 0.4 * ctx.contextLimit) return 'context_overflow';
+    if (overRatio(low, ctx)) return 'context_overflow';
     return 'format_error';
+  }
+
+  /* THE OVERFLOW RATIO, TWO SIZES. ctx.approxTokens is the prompt size at RUN START (the heuristic's original
+     input). ctx.liveApproxTokens is the prompt's CURRENT size (loop.js currentApproxTokens) — without it a run that
+     grew past the window mid-way could never be recognized by the ratio. But on a long run the live figure sits
+     above 0.4·window for EVERY later request, so an unrelated 400 ("invalid base64", a bad tool schema) was read as
+     an overflow: a destructive fold and a wrong failureCode. So the live size only speaks for a 400 whose text names
+     no specific cause of its own (NAMED_CAUSE_RE); a 400 that says what is wrong with the request is believed. */
+  const NAMED_CAUSE_RE = /base64|image|media[ _]?type|mime|schema|json|parse|invalid[_ ]type|tool_use|tool_result|tool_call|function|parameter|argument|field|property|enum|encoding|utf-?8|unsupported|not supported|role|messages?\.\d|content\.\d/;
+  function overRatio(low, ctx) {
+    const limit = Number(ctx && ctx.contextLimit) || 0;
+    if (!(limit > 0)) return false;
+    if ((Number(ctx.approxTokens) || 0) > 0.4 * limit) return true;
+    return (Number(ctx.liveApproxTokens) || 0) > 0.4 * limit && !NAMED_CAUSE_RE.test(low);
   }
 
   /* A 429 is not always "wait a few seconds". A ChatGPT-subscription user who has burned their WEEKLY quota
@@ -337,7 +351,7 @@
     // 5. transport
     if (/ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|ECONNABORTED|UND_ERR/i.test(transportCode(err))) return 'timeout';
     // 6. ratio heuristic (only with a known limit)
-    if (ctx.contextLimit > 0 && ctx.approxTokens > 0.4 * ctx.contextLimit) return 'context_overflow';
+    if (overRatio(low, ctx)) return 'context_overflow';
     // 7. unknown — one retry is safe-ish
     return 'unknown';
   }

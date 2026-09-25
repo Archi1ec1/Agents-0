@@ -6,7 +6,8 @@
    the Commander sees output. Locked here:
 
      · first_byte: nothing received yet -> one beat per tick, sinceMs counting from when the call went out
-     · the first visible token stops it (and disarms the ticker); later ticks emit nothing
+     · the first visible token silences it; later ticks emit nothing until tool arguments start streaming,
+       which re-arms it (a new silence, sinceMs from its start); the attempt settling disarms the ticker
      · streaming: a stream that is open but shows nothing (reasoning, streaming tool arguments) keeps beating
      · retry_backoff: beats during the ladder's sleep; the retried attempt announces itself at once (sinceMs 0)
      · the ticker is always disarmed when the attempt settles (success, fatal error)
@@ -170,6 +171,45 @@ const waits = seq => seq.filter(e => e.name === 'agent.waiting').map(e => e.payl
     A.eq(threw, null, 'the beat swallowed (and noted) the emit failure');
     g.open();
     A.eq((await done).reason, 'done', 'the run is unaffected');
+  }
+
+  // ---- 8. a sentence, then a long tool-argument stream: the heartbeat pauses on the text and RE-ARMS for the args ----
+  {
+    const h = harness();
+    const g1 = gate(), g2 = gate();
+    let call = 0;
+    const provider = { stream: async function* () {
+      call++;
+      if (call === 1) {
+        yield { type: 'text', delta: 'Writing the report now.' };
+        await g1.p;
+        yield { type: 'tool_start', index: 0, id: 'c1', name: 'fs_write' };
+        yield { type: 'tool_args', index: 0, chunk: '{"path":"report.md",' };
+        await g2.p;
+        yield { type: 'tool_args', index: 0, chunk: '"content":"x"}' };
+        yield { type: 'done', finishReason: 'tool_calls' };
+        return;
+      }
+      for (const ev of tail('done')) yield ev;
+    } };
+    const o = Object.assign(h.opts(provider), {
+      tools: [{ type: 'function', function: { name: 'fs_write', parameters: { type: 'object' } } }],
+      dispatch: async () => ({ content: 'written', isError: false, summary: 'ok' }),
+      capCtx: { canRun: () => true, canUse: () => ({ ok: true }), agentId: 'a', room: 'office' }
+    });
+    const done = runAgentLoop(o);
+    await flush();
+    h.tick(15000);
+    A.eq(waits(h.seq).length, 0, 'visible text: no beat while the Commander is watching output');
+    g1.open(); await flush();
+    h.tick(15000);
+    h.tick(15000);
+    A.eq(waits(h.seq).map(w => [w.phase, w.sinceMs]), [['streaming', 15000], ['streaming', 30000]],
+      'tool arguments streaming after the text beat again, sinceMs counting from when the new silence began');
+    g2.open();
+    A.eq((await done).reason, 'done', 'the run completed');
+    A.eq(h.armed.size, 0, 'nothing left armed');
+    A.eq(h.dropped.length, 0, 'every beat passed the frozen contract');
   }
 
   A.report('loop.waiting-heartbeat');

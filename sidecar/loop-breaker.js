@@ -18,8 +18,9 @@
        registry summary 'unknown-tool') is a strike; any turn with a real call resets. STRIKE_MAX (3) consecutive
        strikes end the run on EVERY surface: a model that cannot name a real tool three turns running is not
        going to recover by being asked again, and the registry's answer already lists the closest real tools.
-     · (b) same-tool failure streak — consecutive failures of ONE tool (any arguments). One system nudge at
-       warnAfter (3) on every surface; a hard stop at stopAfter (8) on UNATTENDED runs only. A success of that
+     · (b) same-tool failure streak — consecutive failures of ONE tool (any arguments), counted at most once per
+       turn (a parallel fan-out failing together is one failed attempt). One system nudge at warnAfter (3) on every
+       surface; a hard stop at stopAfter (8) on UNATTENDED runs only, never in the turn the nudge is first issued. A success of that
        tool clears it; a successful MUTATION of any tool (an edit, a command) clears every streak — the next
        failure is a new experiment, not a replay (Hermes PROGRESS_RESET).
      · (c) no-progress success polling — a tool turn whose calls ALL succeeded and whose (tool, canonical args,
@@ -100,6 +101,8 @@ function makeLoopBreaker(options) {
   const strikeNames = [];
   const fails = new Map();     // wire name -> consecutive failures
   const warned = new Set();    // wire names already nudged in their current streak
+  const warnedAt = new Map();  // wire name -> the observe() turn its current streak's nudge was issued on
+  let turn = 0;                // observe() calls that reached the same-tool detector
   let npKey = '', npStreak = 0, npWarned = false, npName = '';
 
   function tracked(name) {
@@ -140,22 +143,33 @@ function makeLoopBreaker(options) {
     }
 
     // ---- (b) same-tool failure streak (any arguments) ----
+    /* ONE FAILURE PER TOOL PER TURN. The streak counts TURNS in which a tool failed, not results: eight parallel
+       web_fetch calls failing in one turn are one failed attempt at a strategy, not eight — counting each result
+       hard-stopped an unattended run on its FIRST turn, before the model ever saw a warning. And a stop never
+       lands in the same turn the warning is first issued: the nudge must reach the model before the run can end
+       for ignoring it (a disabled warning, or one configured past the stop, leaves the stop unconditioned). */
+    turn++;
+    const countedThisTurn = new Set();
+    const stopNeedsWarning = ST_WARN > 0 && ST_WARN <= ST_STOP;
     for (const x of attempted) {
       const key = wireKey(x.call.name);
       if (!key) continue;
       if (x.r.isError) {
         if (String(x.r.summary || '') === UNKNOWN_TOOL_SUMMARY) continue;   // (a) owns a tool that does not exist
+        if (countedThisTurn.has(key)) continue;
+        countedThisTurn.add(key);
         const n = (fails.get(key) || 0) + 1;
         fails.set(key, n);
         const label = String(x.call.name || key).slice(0, 80);
-        if (unattended && ST_STOP && n >= ST_STOP) {
+        const warnedEarlier = warned.has(key) && warnedAt.get(key) < turn;
+        if (unattended && ST_STOP && n >= ST_STOP && (!stopNeedsWarning || warnedEarlier)) {
           return { notes, stop: {
             failureStage: 'tool_loop', failureCode: 'repeated_tool_failure',
             message: 'loop breaker: ' + label + ' failed ' + n + ' times in a row (with varying arguments) on an unattended run — stopping a run that is not making progress'
           } };
         }
         if (ST_WARN && n >= ST_WARN && !warned.has(key)) {
-          warned.add(key);
+          warned.add(key); warnedAt.set(key, turn);
           if (!lgWarned.has(key)) {
             notes.push('<failure_streak>' + label + ' has now failed ' + n + ' times in a row. Varying the arguments has not worked. '
               + 'Stop repeating this tool with small changes: read the error text above, check your assumptions (names, paths, inputs, whether the resource exists), '
@@ -165,8 +179,8 @@ function makeLoopBreaker(options) {
           }
         }
       } else {
-        fails.delete(key); warned.delete(key);
-        if (PROGRESS_RESET.has(key)) { fails.clear(); warned.clear(); }
+        fails.delete(key); warned.delete(key); countedThisTurn.delete(key);
+        if (PROGRESS_RESET.has(key)) { fails.clear(); warned.clear(); countedThisTurn.clear(); }
       }
     }
 
