@@ -2599,7 +2599,7 @@
         {
           "kind": "contains",
           "path": "src-tauri/src/credentials.rs",
-          "needle": "pub(crate) const SIDECAR_CHANNEL_TOKEN_ENVS: [(&str, &str); 2]"
+          "needle": "pub(crate) const SIDECAR_CHANNEL_TOKEN_ENVS: [(&str, &str); 4]"
         },
         {
           "kind": "contains",
@@ -3273,7 +3273,7 @@
         {
           "kind": "contains",
           "path": "src-tauri/src/credentials.rs",
-          "needle": "pub(crate) const SIDECAR_CHANNEL_TOKEN_ENVS: [(&str, &str); 2]"
+          "needle": "pub(crate) const SIDECAR_CHANNEL_TOKEN_ENVS: [(&str, &str); 4]"
         }
       ],
       "refsChecked": [
