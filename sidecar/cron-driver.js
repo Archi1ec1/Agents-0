@@ -155,6 +155,17 @@
     if (typeof newId !== 'function' || typeof newAbort !== 'function' || typeof now !== 'function') throw new Error('cron-driver: newId/newAbort/now are required');
 
     const leases = new Map();   // jobId -> { runId, startedAt, heartbeatAt, ac, isOnce, durableAt } — one-run-per-job in-flight lock
+    /* runIds whose OWNED settlement already committed + emitted cron.result (bounded, oldest evicted). A reclaim
+       (stale-lease sweep, a contained fireJob throw) settles the run ON ITS OWNER'S BEHALF; the aborted host's late
+       finishFire then arrives UNOWNED for the same runId and used to emit a SECOND cron.result{(stale-lease)} —
+       one run, two outcomes on the bus. One runId reports once. */
+    const settledRunIds = new Set();
+    const SETTLED_RUN_IDS_MAX = 256;
+    function noteSettled(runId) {
+      if (runId == null) return;
+      settledRunIds.add(String(runId));
+      while (settledRunIds.size > SETTLED_RUN_IDS_MAX) settledRunIds.delete(settledRunIds.values().next().value);
+    }
     // G4.3 in-process reentrancy guard: a tick re-entered at the SAME instant (e.g. the boot resume
     // reconcile racing the first timer tick, or a fire's run host synchronously re-entering applyTick)
     // must be a NO-OP — the outer pass has not yet persisted its advance, so a re-entrant pass would
@@ -290,7 +301,10 @@
           baseReason = baseReason + ' (paused: consecutive-failures x' + settled.consecutiveFailures + ')';
         }
       }
-      if (!owned || committed) try { emit('cron.result', { jobId: jobId, runId: runId, outcome: outcome, reason: owned ? baseReason : (baseReason + ' (stale-lease)') }); } catch (_) {}
+      // an UNOWNED settle whose runId already reported (its reclaim settled it) stays silent: one run, one cron.result
+      const alreadyReported = !owned && runId != null && settledRunIds.has(String(runId));
+      if ((!owned || committed) && !alreadyReported) try { emit('cron.result', { jobId: jobId, runId: runId, outcome: outcome, reason: owned ? baseReason : (baseReason + ' (stale-lease)') }); } catch (_) {}
+      if (owned && committed) noteSettled(runId);
       const continueAfterCommit = !(owned && committed && afterFinalizationCommitted && afterFinalizationCommitted(cronStore.getJob(getJobs(), jobId)) === false);
       if (owned && committed && continueAfterCommit) {
         const liveJob = cronStore.getJob(getJobs(), jobId) || { id: jobId };
@@ -605,8 +619,8 @@
              per cycle), and a reliably-hanging recurring routine never advanced consecutiveFailures toward
              the auto-disable ceiling built for exactly that case. Record the reclaim as a TRANSIENT failure:
              markRun clears the claim/heartbeat, re-arms via the bounded backoff, and the retry ceiling turns
-             a permanent hang into a terminal, visible failure. The unowned settle still emits its honest
-             cron.result{(stale-lease)} when the aborted run winds down — no double event here. */
+             a permanent hang into a terminal, visible failure. THIS settle is the run's one cron.result: the
+             aborted run's late finishFire arrives unowned for the same runId and is silenced (settledRunIds). */
           finishFire(jobId, lease.runId, {
             reason: 'stale-lock-reclaimed',
             errMsg: 'run reclaimed: no progress for ' + Math.round(heartbeatStaleMs / 1000) + 's', transient: true
