@@ -5,6 +5,11 @@ data-access verification demo**. It never ships: public releases keep every broa
 source (`sidecar/mcp/google-client.js` `RELEASED`), and this build opens them only through a developer
 preload that lives in `dev/` (not bundled) and refuses to load outside the review launcher.
 
+> **Superseded for public builds (2026-09-23):** Google services were un-deferred as **public early access**
+> (`EARLY_ACCESS = true` in `sidecar/mcp/google-client.js`) — every build now opens them with Google's
+> unverified-app warning and the 100-user cap until verification lands. This review build is still how the
+> verification demo gets recorded.
+
 ## Why two submissions, not one
 
 Google reviews scopes by tier ([scope classes](https://developers.google.com/workspace/gmail/api/auth/scopes)):

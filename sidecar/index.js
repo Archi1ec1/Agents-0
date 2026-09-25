@@ -1287,8 +1287,8 @@ function recordDiagError(message, ts, runId) {
 const diagnostics = makeDiagnostics({ redact });   // pure assembler; redact injected for the second sanitization backstop
 /* Which proxy env vars are set, HOST ONLY (see diagnostics.proxyHostOnly — credentials are stripped there before
    anything is reported). Reading process.env belongs here, not in the pure assembler. This exists because Node's
-   fetch IGNORES these variables (measured on v22.23: a dead HTTPS_PROXY still reached the network, and neither
-   `require('undici')` nor `node:undici` is available in a bundled build to install a ProxyAgent) — so a user
+   fetch IGNORES these variables (measured on v22.23: a dead HTTPS_PROXY still reached the network; undici now ships
+   as a staged runtime dependency, but no ProxyAgent is wired) — so a user
    behind a proxy gets a working UI and a sidecar that cannot reach any provider. Surfacing the mismatch is the
    honest move until real proxy routing is built. */
 const PROXY_ENV_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'];
