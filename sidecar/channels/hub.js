@@ -493,6 +493,37 @@
       const tail = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40 - agentPrefix.length);
       return agentPrefix + (tail || '0');
     }
+    /* HOP HISTORY IS KEYED BY CHAT LINEAGE, NOT BY AGENT (sec-taint 09-25). A downstream hop replays its prior turns
+       from the channel store. That store was keyed by the hop's agentId alone, so every chat, every line and every
+       direct conversation with that agent shared ONE history: text a hop was handed in chat A (upstream output,
+       possibly a hostile page an upstream stage read) replayed into chat B's run of the same agent — and into that
+       agent's own untainted DM fallback history. The key is now a digest of channel + chat + line + dock, so a hop
+       remembers only the handoffs of its OWN chat's line. Deterministic (two FNV-1a lanes), fits the store's
+       agentId grammar ('hop_' + 32 hex = 36 chars ≤ 40), and can never equal a real agent's history file by
+       accident short of a 2^-64 collision. */
+    function hopHistoryKey(chatId, lineId, node) {
+      const src = channel + '\u0000' + String(chatId) + '\u0000' + String(lineId || '') + '\u0000' + String(node || '');
+      let h1 = 0x811c9dc5, h2 = 0x01000193;
+      for (let i = 0; i < src.length; i++) {
+        const c = src.charCodeAt(i);
+        h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+        h2 = Math.imul(h2 ^ c, 0x811c9dc5) >>> 0;
+      }
+      const hex = (n) => ('00000000' + n.toString(16)).slice(-8);
+      return 'hop_' + hex(h1) + hex(h2) + hex(Math.imul(h1 ^ h2, 0x01000193) >>> 0) + hex((h2 + src.length) >>> 0);
+    }
+    // the hop keys a chat has written, remembered on its chat record so /new forgets the line's handoffs too
+    function rememberHopKey(chatId, key) {
+      if (!bindChats || typeof store.getChatRecord !== 'function' || typeof store.saveChatRecord !== 'function') return;
+      try {
+        const rec = store.getChatRecord(chatId) || {};
+        const keys = Array.isArray(rec.hopKeys) ? rec.hopKeys.filter(k => typeof k === 'string' && AID_RE.test(k)) : [];
+        if (keys.indexOf(key) >= 0) return;
+        keys.push(key);
+        store.saveChatRecord(chatId, { hopKeys: keys.slice(-32) });
+      } catch (e) { failNote('channels.hub.hopKeys', e); }
+    }
+
     function resolvedStreamId(chatId) {
       let explicit = '';
       try { if (streamIdFor) explicit = String(streamIdFor(chatId) || ''); } catch (_) { explicit = ''; }
@@ -982,6 +1013,11 @@
         let dropped = 0;
         try { dropped = store.clearHistory(boundId); }
         catch (e) { await deliver(chatId, '⚠ Could not clear this chat: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
+        // the work line's per-chat hop histories start fresh too (hopHistoryKey)
+        try {
+          const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
+          for (const k of (rec && Array.isArray(rec.hopKeys) ? rec.hopKeys : [])) if (typeof k === 'string' && AID_RE.test(k)) dropped += store.clearHistory(k) || 0;
+        } catch (e) { failNote('channels.hub.hopKeys.clear', e); }
         await deliver(chatId, dropped
           ? ('Cleared ' + dropped + ' message' + (dropped === 1 ? '' : 's') + ' — this chat starts fresh. I no longer remember what we discussed.')
           : 'Nothing to clear — this chat had no history yet.', '', 'command');
@@ -1797,9 +1833,11 @@
               else if (name === 'capdenied') hs.errMsg = hs.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
               else if (name === 'agent.run.end') { if (typeof p.usd === 'number' && isFinite(p.usd)) hs.usd = p.usd; }
             };
+            // THIS chat's line history for THIS dock — never the agent's shared history (see hopHistoryKey)
+            const hopKey = hopHistoryKey(chatId, lineId, h.dockId || h.agentId);
             let hist = [];
-            try { hist = store.loadHistory(h.agentId); } catch (_) {}
-            try { store.appendTurn(h.agentId, 'user', h.text); } catch (e) { failNote('channels.hub.appendTurn', e); }
+            try { hist = store.loadHistory(hopKey); } catch (_) {}
+            try { store.appendTurn(hopKey, 'user', h.text); rememberHopKey(chatId, hopKey); } catch (e) { failNote('channels.hub.appendTurn', e); }
             try {
               await runOnce({
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
@@ -1815,7 +1853,7 @@
                 lineId: lineId || undefined, dockId: h.dockId || undefined   // LINE WATCH: the hop's line + bay on its run row
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
-            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(h.agentId, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
+            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(hopKey, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
             return { text: hs.buf, usd: hs.usd, error: hs.errMsg };
           }
         });
