@@ -152,11 +152,19 @@
 
   // Ask the host to keep the full output. Never throws and never blocks a result: a parker that fails just
   // means we fall back to the plain clamp — losing the tail must never also lose the answer.
-  async function parkIfOver(content, call, ctx, limit) {
+  // PROVENANCE rides the park request (capability + any relayed taint) so the HOST can name a park made from
+  // untrusted bytes as such; a later fs.read of that file then taints like the result that made it (taint.js).
+  function parkMeta(call, tool, out) {
+    const meta = { tool: (call && call.name) || 'tool' };
+    if (tool && tool.capability) meta.capability = String(tool.capability);
+    if (out && typeof out === 'object' && typeof out.taintedBy === 'string' && out.taintedBy) meta.taintedBy = out.taintedBy;
+    return meta;
+  }
+  async function parkIfOver(content, call, ctx, limit, meta) {
     if (typeof content !== 'string' || content.length <= (limit || OUTPUT_MAX)) return null;
     if (!ctx || typeof ctx.parkOutput !== 'function') return null;
     try {
-      const r = await ctx.parkOutput(content, { tool: (call && call.name) || 'tool' });
+      const r = await ctx.parkOutput(content, meta || { tool: (call && call.name) || 'tool' });
       return (r && r.path) ? String(r.path) : null;
     } catch (_) { return null; }
   }
@@ -460,13 +468,17 @@
         // Park BEFORE clamping — the clamp is what destroys the middle, so the full text has to be on disk first.
         let parked = null;
         if (typeof full === 'string' && (full !== raw || full.length > limit) && ctx && typeof ctx.parkOutput === 'function') {
-          try { const p = await ctx.parkOutput(full, { tool: (call && call.name) || 'tool' }); parked = p && p.path ? String(p.path) : null; } catch (e) { failNote('tools.registry.parkOutput', e); }
+          try { const p = await ctx.parkOutput(full, parkMeta(call, tool, out)); parked = p && p.path ? String(p.path) : null; } catch (e) { failNote('tools.registry.parkOutput', e); }
         } else {
-          parked = await parkIfOver(raw, call, ctx, limit);
+          parked = await parkIfOver(raw, call, ctx, limit, parkMeta(call, tool, out));
         }
         const fullBytes = typeof full === 'string' ? utf8Bytes(full) : null;
         const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked) : raw;
-        return await notifyPost(okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null, hostCap), elapsed());
+        const done = okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null, hostCap);
+        // RELAYED TAINT (additive): a tool that hands back ANOTHER run's text (team.dispatch / team.subagents …)
+        // reports that run's host-proven taint; the run host latches it on the ingesting run (see taint.relayedTaint).
+        if (shaped && typeof out.taintedBy === 'string' && out.taintedBy) done.taintedBy = out.taintedBy.slice(0, 200);
+        return await notifyPost(done, elapsed());
       } catch (e) {
         /* A TIMEOUT IS NOT A NO-OP (h1 audit 2026-09-22). "timed out" read like "nothing happened", the failure-recovery
            nudge invited another attempt, and a connector write that had landed remotely was sent twice. A read tool

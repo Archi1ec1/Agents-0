@@ -50,7 +50,33 @@
     // like the upload that created it; otherwise a poisoned document can bypass the web/MCP taint boundary.
     const name = String((tool && tool.name) || '');
     const p = String((call && call.args && call.args.path) || '');
-    return name === 'fs.read' && /(?:^|[\\/])\.attachments(?:[\\/]|$)/i.test(p);
+    if (name === 'fs.read' && /(?:^|[\\/])\.attachments(?:[\\/]|$)/i.test(p)) return true;
+    // PARKED UNTRUSTED OUTPUT. The host parks over-cap output into .output/; a park made from untrusted bytes (a web
+    // or connector result, a tainted worker's text, anything a tainted run produced) is named `untrusted-*` by the
+    // host. Reading it back — in a LATER run, where the original tool result no longer latches anything — carries
+    // the same provenance as the result that made it. fs.search rooted inside .output/ or .attachments/ returns the
+    // same bytes as snippets (a workspace-root search already skips those hidden folders).
+    if (name === 'fs.read' && UNTRUSTED_PARK.test(p)) return true;
+    return name === 'fs.search' && /(?:^|[\\/])\.(?:attachments|output)(?:[\\/]|$)/i.test(p);
+  }
+  const UNTRUSTED_PARK = /(?:^|[\\/])\.output[\\/]untrusted-[^\\/]*$/i;
+  const UNTRUSTED_PARK_PREFIX = 'untrusted-';
+
+  /* A tool RESULT may carry `taintedBy`: the host-proven taint of content that tool relays from ANOTHER run (a
+     delegated worker's text, a background subagent record). The tool is not itself a web/connector source, so
+     isUntrustedSource cannot see it — the relayed run's own latch is the proof. Returns the reason the INGESTING
+     run should latch, or null. Pure. */
+  function relayedTaint(result) {
+    const src = result && typeof result.taintedBy === 'string' ? result.taintedBy.trim() : '';
+    return src ? 'worker output (tainted by ' + src.slice(0, 120) + ')' : null;
+  }
+  // First taint across rows (worker rows / subagent records). null when none carries one.
+  function firstTaint(rows) {
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      const t = r && typeof r.taintedBy === 'string' ? r.taintedBy.trim() : '';
+      if (t) return t;
+    }
+    return null;
   }
 
   // Once the run is tainted, may this tool still be called?
@@ -83,5 +109,5 @@
     return { allow, needsConfirmation: false, oneShot: allow };
   }
 
-  return { isUntrustedSource, allowedWhenTainted, postTaintBoundary, CONNECTOR_CAP };
+  return { isUntrustedSource, allowedWhenTainted, postTaintBoundary, relayedTaint, firstTaint, CONNECTOR_CAP, UNTRUSTED_PARK_PREFIX };
 });

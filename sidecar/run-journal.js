@@ -277,7 +277,9 @@ function analyze(records, corrupt, damage) {
   let resolution = null;
   let finishPayload = null;
   let continuation = null;
+  let taintedBy = '';           // first durable taint latch (a 'taint' record) — see makeRunJournal.taint
   for (const r of records) {
+    if (r.type === 'taint' && !taintedBy && r.payload && r.payload.source) taintedBy = String(r.payload.source).slice(0, 200);
     if (r.type === 'checkpoint') {
       if (r.payload && r.payload.phase === 'initial' && !baseCheckpoint) baseCheckpoint = r.payload;
       else {
@@ -375,6 +377,10 @@ function analyze(records, corrupt, damage) {
     retirable: !forensic && (status === 'finished'
       || (continuationSettled && (status === 'resolved' || status === 'resumable'))),
     meta: first && first.type === 'begin' ? first.payload : {},
+    // UNTRUSTED-CONTENT TAINT the run carried (begin meta's initialTaint, else its first mid-run latch). A recovery
+    // continuation replays this run's context, so it must start with the same taint (index.js replayedTaint).
+    taintedBy: (first && first.type === 'begin' && first.payload && first.payload.initialTaint
+      ? String(first.payload.initialTaint).slice(0, 200) : '') || taintedBy || null,
     firstTs: first ? Number(first.ts) || 0 : 0, lastTs: last ? Number(last.ts) || 0 : 0,
     uncertain, replayableReads, replayablePrepared, completed, recoveryAttempts,
     baseCheckpoint: baseCheckpoint || {}, deltaCheckpoint: latestCheckpoint || {},
@@ -517,6 +523,8 @@ function makeRunJournal(opts) {
     toolIntent(runId, payload) { return record(runId, 'tool_intent', payload); },
     toolDispatch(runId, payload) { return record(runId, 'tool_dispatch', payload); },
     toolResult(runId, payload) { return record(runId, 'tool_result', payload); },
+    // the run's taint latched mid-run (untrusted content entered its context); additive record type
+    taint(runId, payload) { return record(runId, 'taint', payload); },
     finish(runId, payload) { return record(runId, 'finish', payload); },
     resolve(runId, payload) {
       payload = payload || {};

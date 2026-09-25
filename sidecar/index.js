@@ -1362,6 +1362,8 @@ const transcriptLiveRuns = new Set();
 // this avoids deleting the only recovery copy after the legacy transcript writer's fail-open append.
 const RUN_JOURNAL_DIR = path.join(WORKSPACES, '.run-journal');
 const runJournal = makeRunJournal({ dir: RUN_JOURNAL_DIR, fs, path, clock: { now: () => Date.now() }, redact });
+// sec-taint 09-25: a continuation / resumed conversation starts tainted when what it replays was (taint-replay.js)
+const replayedTaint = require('./taint-replay.js').makeReplayedTaint({ journal: runJournal, transcript: transcriptStore });
 // Recovery is intentionally lazy. Thousands of unresolved/failed journals are audit evidence and
 // must not be discarded, but parsing all of them synchronously before server.listen made startup
 // proportional to lifetime failures. GET /api/run-recoveries pages through the durable files.
@@ -4297,6 +4299,9 @@ async function tickOverseer() {
             system: ident.system || cronSystemFor(review.agentId), lead: true, isTask: true,
             syntheticTrigger: true,
             surface: 'autonomous', signal: reviewAbort.signal, streamId: parent.id, runId, parentRunId: worker.runId,
+            // the worker's text rides in `instruction`: a tainted worker hands its taint to the reviewing LEAD
+            // (sec-taint 09-25) — otherwise the hand-back is an untainted lead run steered by a hostile page
+            initialTaint: taintPolicy.relayedTaint(worker) || undefined,
             projectRoot: parent.projectRoot || '', workdir: parent.projectRoot || undefined, sessionTitle: parent.title,
             sessionPrompt: 'Review delegated result', emit: chanEmit,
             messages: transcriptStore.reconstruct(parent.id, { limit: 80 }).concat([{ role: 'user', content: instruction }]) });
@@ -16112,6 +16117,17 @@ async function runOnceCore(o) {
     completion: makeCompletionEvidence({ authority: completionAuthority }),
     now: () => Date.now()
   });
+  /* DURABLE TAINT (sec-taint 09-25). A latch made after the run journal began is journaled too, so a recovery
+     continuation of this run (which replays its checkpointed context, untrusted bytes included) restores the taint
+     from runJournal state instead of starting clean. A latch before the journal rides the begin meta instead. */
+  const latchRunTaint = (source) => {
+    const before = execution.taintedBy();
+    const after = execution.latchTaint(source);
+    if (!before && after && execution.journalStarted() && !execution.journalFailed()) {
+      try { runJournal.taint(runId, { source: after }); } catch (e) { failNote('run-journal.taint', e); }
+    }
+    return after;
+  };
   // One sequence across provider and tool recovery. Adapter-local counters restart at one, but the durable run
   // record must preserve the actual cross-stage order in which recovery actions happened.
   const recordRunRecoveryAttempt = (attempt) => {
@@ -17217,7 +17233,13 @@ async function runOnceCore(o) {
     parkOutput: async (content, meta) => {
       try {
         const safeTool = String((meta && meta.tool) || 'tool').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 40);
-        const stem = safeTool + '-' + String(runId || 'run').replace(/[^A-Za-z0-9_-]/g, '') + '-' + (parkSeq++);
+        /* PROVENANCE IN THE NAME (sec-taint 09-25): bytes from an untrusted source (web / connector result), a
+           tainted worker's relayed text, or anything this run parks after it was tainted are saved as
+           `untrusted-*`, and taint.isUntrustedSource treats reading such a file back as reading the source itself —
+           so a LATER run cannot fs.read a parked hostile page and stay clean. */
+        const untrusted = !!(execution.taintedBy() || (meta && meta.taintedBy)
+          || revokedByTaint.isSource({ name: String((meta && meta.tool) || ''), capability: String((meta && meta.capability) || '') }, { args: {} }));
+        const stem = (untrusted ? taintPolicy.UNTRUSTED_PARK_PREFIX : '') + safeTool + '-' + String(runId || 'run').replace(/[^A-Za-z0-9_-]/g, '') + '-' + (parkSeq++);
         return await outputArtifacts.park(agentId || 'agent', stem, content);
       } catch (_) { return null; }
     },
@@ -17425,6 +17447,8 @@ async function runOnceCore(o) {
      is left. Directive text is captured pre-loop (runTranscript.setDirective below). */
   const runTranscript = makeRunTranscript({
     store: transcriptStore, streamId: o.streamId, agentId, runId,
+    // rows written after untrusted content entered this run carry its taint source (sec-taint 09-25)
+    taint: () => execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null),
     // mid-run write failures never kill the run or reorder dialogue: the rows stay pending (and in the run journal)
     // and retry at the next boundary / strict run end. Counted + warned, so a failing disk is never invisible.
     onFailure: (stage, e) => failNote('transcript.run.' + stage, e)
@@ -17818,7 +17842,16 @@ async function runOnceCore(o) {
        a hostile connector inject text while the run kept its terminal / credentialed / connector-write powers.
        What actually matters is whether untrusted BYTES reached the context, not whether the call succeeded. */
     if (!execution.taintedBy() && r && typeof r.content === 'string' && r.content.length && revokedByTaint.isSource(liveTool, c)) {
-      execution.latchTaint(c.name);
+      latchRunTaint(c.name);
+    }
+    /* RELAYED TAINT (sec-taint 09-25). team.dispatch / team.spawn / team.subagents / team.resume hand this run the
+       text of ANOTHER run. When that run was tainted (its worker read a hostile page), the text it returns is the
+       attacker's lever — without this latch a worker could launder a web page into an untainted lead and steer it
+       into the terminal/connector powers the worker itself had already lost. The relaying tool reports the worker's
+       host-proven latch (never model-supplied); the lead inherits it, errors included. */
+    if (!execution.taintedBy() && r) {
+      const relayed = taintPolicy.relayedTaint(r);
+      if (relayed) latchRunTaint(relayed);
     }
     // observe BEFORE the tool-output budget clip below, so the collector parses the tool's REAL result text.
     if (!internalBriefControl) {
@@ -18293,6 +18326,13 @@ async function runOnceCore(o) {
   let msgs = o.recovery
     ? JSON.parse(JSON.stringify(o.recovery.messages || []))
     : (sys ? [{ role: 'system', content: sys }, ...convo] : convo.slice());
+  // REPLAYED TAINT (sec-taint 09-25): a continuation, resumed conversation or replayed session history puts the
+  // PRIOR runs' context back in front of the model — a web page an earlier turn read included. Taint is a
+  // property of the context, not of the run id, so this run starts tainted when what it replays was tainted.
+  try {
+    const replayed = replayedTaint({ recovery: o.recovery, streamId, msgs });
+    if (replayed) execution.latchTaint(replayed);
+  } catch (e) { failNote('taint.replay', e); }
   // Cortex (M-mem.3): surface the agent's OWN memory in-prompt — RANK it by relevance to this message
   // (BM25 + recency/trust/pin), inject the top few as a recalled-memory fence before the triggering user
   // message, and emit memory.used per surfaced record (-> useCount/trust + the XP reuse path). The recency
@@ -18364,7 +18404,8 @@ async function runOnceCore(o) {
         recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '',
         userTitle: o.syntheticTrigger ? '' : latestUserText(msgs), startedAt: Date.now(),
         cronJobId: trigger === 'schedule' ? String(o.cronJobId || '') : '',
-        cronJobName: trigger === 'schedule' ? String(o.cronJobName || '').slice(0, 200) : ''
+        cronJobName: trigger === 'schedule' ? String(o.cronJobName || '').slice(0, 200) : '',
+        initialTaint: execution.taintedBy() || ''   // additive: a continuation of this run restores it (replayedTaint)
       });
       runJournal.checkpoint(runId, { phase: 'initial', turn: 0, messages: msgs });
       execution.startJournal();
@@ -18703,7 +18744,7 @@ async function runOnceCore(o) {
         }
       }
       const runEndedAt = Date.now();
-      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, lineId: o.lineId || '', dockId: o.dockId || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
+      runStore.record({ runId, parentRunId: o.parentRunId || '', agentId, provider: activeProviderId, reason: ((result && result.reason) || 'done'), clarifying: taskQuestionAsked, turns: finalTurns, tokens: finalTokens, usd: finalUsd, title: title, streamId: o.streamId || '', sessionTitle: o.sessionTitle || '', deliveryPrompt: o.syntheticTrigger ? '' : (o.sessionPrompt || ''), deliveryText, recipeId: o.recipeId || '', projectRoot: o.projectRoot || '', deliverable: deliverableNotes.take(runId), model: finalModel, reasoningEffort, unmetered: runUnmetered && mediaUsd === 0, artifacts: execution.artifactList(), toolsOk: execution.toolsOk(), toolTrace: execution.toolTraceList(), failureStage: execution.failureStage(), failureCode: execution.failureCode(), uncertainMutations: execution.uncertainMutations(), completionEvidence: finalCompletionEvidence, recoveryAttempts: execution.recoveryAttempts(), startedAt: runStartedAt, endedAt: runEndedAt, durationMs: runEndedAt - runStartedAt, identityFallback, internal, surface, recoveryOf: o.recovery ? String(o.recovery.sourceRunId || '') : '', handoffEdited: o.handoffEdited === true, lineId: o.lineId || '', dockId: o.dockId || '', taintedBy: execution.taintedBy() || '' });   // execution terminal stays separate from the neutral Task Brief outcome used by progression; recoveryOf links a continuation to the interrupted run it resumed
 
       // P0.1/H1.1: persist the full DIALOGUE (not just the outcome) — a durable server-side transcript for EVERY
       // run, incl. headless ones (cron/Telegram/delegated). Append the triggering user directive, then EVERY new
@@ -18730,7 +18771,7 @@ async function runOnceCore(o) {
         }
       } else {
         if (title && !retryDirective && !o.syntheticTrigger && !runTranscript.directiveWritten()) transcriptStore.append({ streamId: o.streamId, agentId, role: 'user', content: title });
-        if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages);
+        if (result && Array.isArray(result.messages)) transcriptStore.appendNew(o.streamId, agentId, result.messages, { taint: execution.taintedBy() });
       }
     } catch (_) {}
     transcriptLiveRuns.delete(runId);   // H2: settled (or retained in the journal) — its rows are ordinary history now
@@ -18919,6 +18960,9 @@ async function runOnceCore(o) {
     result.endedAt = Date.now();
     result.durationMs = result.endedAt - runStartedAt;
     result.parentRunId = o.parentRunId || '';
+    // UNTRUSTED-CONTENT TAINT this run ended with (host-proven latch, or the delegating lead's inherited taint).
+    // team.dispatch/team.spawn relay it with the worker's text so the LEAD latches too (sec-taint 09-25).
+    result.taintedBy = execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null) || null;
   }
   return result;
 

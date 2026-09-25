@@ -53,12 +53,15 @@ function makeRunTranscript(opts) {
   const agentId = o.agentId;
   const runId = o.runId;
   const onFailure = typeof o.onFailure === 'function' ? o.onFailure : function () {};
+  // the run's CURRENT taint source (null = clean), read at each write: a row written after untrusted content
+  // entered the run carries it, so a later replay of that row restores the taint (transcriptstore.taintOf)
+  const taintNow = typeof o.taint === 'function' ? function () { try { return o.taint() || null; } catch (e) { onFailure('taint', e); return null; } } : function () { return null; };
   let directive = '';
   let directiveWritten = false;
 
   function writeDirective() {
     if (directiveWritten || !directive) return;
-    store.appendStrict({ streamId: streamId, agentId: agentId, role: 'user', content: directive, sourceRunId: runId });
+    store.appendStrict({ streamId: streamId, agentId: agentId, role: 'user', content: directive, sourceRunId: runId, taint: taintNow() });
     directiveWritten = true;
   }
 
@@ -66,7 +69,7 @@ function makeRunTranscript(opts) {
   // unproven row (the compaction tiers rely on that: a failed drain leaves the history unfolded).
   function drain(messages) {
     writeDirective();
-    return Array.isArray(messages) ? store.appendNewStrict(streamId, agentId, messages, { sourceRunId: runId }) : 0;
+    return Array.isArray(messages) ? store.appendNewStrict(streamId, agentId, messages, { sourceRunId: runId, taint: taintNow() }) : 0;
   }
 
   function waitsForNextBoundary(phase, messages) {
