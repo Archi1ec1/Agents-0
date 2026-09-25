@@ -154,8 +154,9 @@ const oauthDevice = require('./providers/oauth-device.js');
 const oauthTokenStore = require('./providers/oauth-token-store.js');
 const { effectiveModel: resolveEffectiveModel, effectiveUsd, effectiveRunUsd } = require('./spend.js');
 const { makeEmitter } = require('../shared/emitter.js');
-const { redact, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
+const { redact, setKnownSecretSource, renderRecall, injectRecall, rank, makeContext, compactionMemoryBlock, compactionSummaryPrompt, RUN_CONTEXT_DEFAULTS, foldFreedEnough } = require('./context.js');
 const { makeSummarizer } = require('./compaction-summarizer.js');   // chunked context-compaction fold (Lane A)
+const { collectSecretValues } = require('./secret-values.js');   // feeds redact()'s known-value layer (see setKnownSecretSource)
 const WorkspaceReserved = require('./workspace-reserved.js');   // agent ids that name station-owned dirs (codex/, channels/ …)
 const { runRouteFailure } = require('./runroute.js');   // a failure escaping handleRun must never read as an empty 200
 const { json: respondJson, readJsonBody, isAgentId } = require('./respond.js');   // canonical json()/body/agent-id helpers — adopt incrementally, don't mass-migrate
@@ -4603,6 +4604,25 @@ let serviceKeys = loadServiceKeys();
 let serviceKeysOwnedEnv = {};   // env vars WE set (the applyEnv clobber guard) — rebuilt on every apply
 function applyServiceKeysEnv() { serviceKeysOwnedEnv = serviceKeysMod.applyEnv(serviceKeys, process.env, serviceKeysOwnedEnv, { reservedEnv: SERVICEKEYS_RESERVED_ENV }); }
 applyServiceKeysEnv();          // boot: persisted keys are live for the first run without any UI touch
+/* KNOWN-VALUE REDACTION (security audit 2026-09-25). redact() only knew vendor SHAPES, so a shapeless secret —
+   a service key the model was promised it would never see, a custom connector token, a Mistral key, a rotated
+   OAuth refresh token — went verbatim into tool results, transcripts, the bus and diagnostics the moment anything
+   printed it (`echo $MY_KEY`, a server echoing the key in an error body). Every redact() call now also scrubs the
+   exact values the sidecar holds RIGHT NOW (read live, so a rotated/added key is covered on the next call).
+   The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
+   URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
+setKnownSecretSource(() => collectSecretValues([
+  { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
+  { values: Object.values(runtimeKeys) },
+  { values: Object.values(runtimeKeyPools) },
+  { values: Object.values(channelTokenRuntime) },
+  { keyed: channelSecrets },
+  { keyed: codexTokens },
+  { keyed: Object.values(oauthProviders).map(p => p && p.tokens) },
+  { keyed: connectorOauth },
+  { keyed: connectorConfigs, allUnder: ['headers', 'env'] },
+  { keyed: serviceKeys }
+]));
 // Verified persist (secret-durability law): ok ONLY when a read-back proves the write reached disk. On
 // ok:false the in-memory list stays live but the route reports the failure — never a false "saved".
 function saveServiceKeys() {
