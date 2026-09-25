@@ -3178,29 +3178,34 @@
       "id": "W2-scoped-url-capabilities",
       "wave": "W2",
       "item": "Short-lived scoped Workshop/file/SSE URL capabilities with no reusable global query token.",
-      "verdict": "MISSING",
-      "disposition": "FIX",
+      "verdict": "SHIPPED",
+      "disposition": "PROVEN",
       "ownerWave": "W2",
-      "qualification": "SSE and file loads accept the global launch token in the query string.",
+      "qualification": "2026-09-25 (agent/sec-token-csp): file links, workshop runs, the event stream and the unload save beacon carry a per-resource HMAC ticket (sidecar/apitickets.js) with a server-capped lifetime (file 5 min, workshop 10 min, SSE/save single-use 2 min); the sidecar derives kind+scope from the request itself, and the master token in a query string is refused on every route. Covered by test/apitickets.test.js.",
       "authorityChecks": [
         {
           "kind": "contains",
           "path": "sidecar/apiauth.js",
-          "needle": "get('token')"
+          "needle": "apitickets.verify(token, claim.ticket, claim.kind, claim.scope"
+        },
+        {
+          "kind": "contains",
+          "path": "sidecar/apitickets.js",
+          "needle": "function apiTicketClaim"
         },
         {
           "kind": "absent",
           "path": "sidecar/apiauth.js",
           "needles": [
-            "scopedCapability",
-            "shortLivedCapability"
+            "get('token')"
           ]
         }
       ],
       "refsChecked": [
         "trunk@ef16fa087ad872f9d266ecde8b72ef813cb9ca82",
         "branches@agent/pp-url-token-elimination 200d75f9",
-        "worktrees@git-worktree-list audited 2026-07-12"
+        "worktrees@git-worktree-list audited 2026-07-12",
+        "branch@agent/sec-token-csp 4a3300166 (merged via agent/sec-0925)"
       ]
     },
     {
