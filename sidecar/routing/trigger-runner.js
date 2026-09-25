@@ -29,6 +29,7 @@ const T = require('./triggers.js');
 const Pipeline = require('../../frontend/app/pipeline.js');
 
 const MAX_PENDING = 5;   // work items waiting behind the one in flight, per trigger — a burst beyond this is refused
+const READ_BACKOFF_MS = 15000, READ_BACKOFF_MAX_MS = 10 * 60 * 1000;   // an unreadable folder file's retry backoff
 
 /* crewedDocksOnLine(plan, lineId?) -> the reached, crewed entry points of a line (lineId null = any line). Side-effect
    free and lane-choice-blind (plan.reach / plan.reachDock are BFS answers over every junction lane), so it can
@@ -69,7 +70,7 @@ function makeTriggerRunner(deps) {
 
   function stateOf(id) {
     let s = live.get(id);
-    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false, queuedKeys: new Set() }; live.set(id, s); }
+    if (!s) { s = { queue: [], busy: false, hub: null, current: null, pending: new Map(), scanning: false, queuedKeys: new Set(), readBackoff: new Map() }; live.set(id, s); }
     return s;
   }
   const get = id => records.find(t => t.id === id) || null;
@@ -362,10 +363,21 @@ function makeTriggerRunner(deps) {
           const c = canAccept(t.id);
           if (!c.ok) { if (c.code === 'refused' || c.code === 'rate') recordError(t.id, c.error); break; }   // the file waits in the folder
           if (s.queuedKeys.has(f.key)) continue;   // already admitted, waiting its turn (marked fired when it dispatches)
+          const bo = s.readBackoff.get(f.key);
+          if (bo && bo.until > now()) continue;    // it failed to read recently: wait out its backoff
           const body = await d.watcher.readItem(f.abs, f.name);
           // a file that could not be READ (EBUSY / locked by the app still holding it / a sync placeholder) did not
-          // fire: it stays unmarked so a later scan retries it, instead of recording it as fired and dropping it forever
-          if (!body.ok) { recordError(t.id, body.error); continue; }
+          // fire: it stays unmarked so a later scan retries it, instead of recording it as fired and dropping it forever.
+          // Each retry BACKS OFF (15 s doubling to 10 min, sweep 2026-09-25) so a file that stays unreadable is not
+          // re-opened on every 3 s poll forever.
+          if (!body.ok) {
+            const k = (bo ? bo.n : 0) + 1;
+            s.readBackoff.set(f.key, { n: k, until: now() + Math.min(READ_BACKOFF_MAX_MS, READ_BACKOFF_MS * Math.pow(2, k - 1)) });
+            if (s.readBackoff.size > 200) s.readBackoff.delete(s.readBackoff.keys().next().value);
+            recordError(t.id, body.error + ' — retrying it later');
+            continue;
+          }
+          if (bo) s.readBackoff.delete(f.key);
           const text = T.composeFolderItem({ name: t.name, task: t.config.task, filePath: f.abs, size: f.size,
             mtimeIso: new Date(f.mtimeMs).toISOString(), binary: body.binary, content: body.content, truncated: body.truncated });
           /* ADMITTED IS NOT FIRED (sweep 2026-09-25): the waiting queue is in memory, so a file is recorded as fired

@@ -150,6 +150,35 @@ function harness(opts) {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }
 
+  /* ---- 10. an UNREADABLE file backs off instead of churning every poll ---- */
+  {
+    let reads = 0, fail = true;
+    const watcher = {
+      scan: async (dir, seen, pending) => ({ ok: true, pending, ready: (seen && seen['k1']) ? [] : [{ name: 'locked.txt', abs: dir + '/locked.txt', size: 3, mtimeMs: 1, key: 'k1' }] }),
+      readItem: async () => { reads++; return fail ? { ok: false, error: 'cannot read locked.txt: EBUSY' } : { ok: true, binary: false, content: 'hi', truncated: false }; }
+    };
+    const H = harness({ watcher });
+    let seenWrites = 0;
+    const c = H.R.create({ kind: 'folder', lineId: 'L1', maxPerHour: 50, config: { path: 'C:/drops' } }, { baselineKeys: [] });
+    const id = c.trigger.id;
+    const before = JSON.stringify(H.disk.seen);
+    for (let i = 0; i < 10; i++) { await H.R.tickFolders(); H.advance(3000); }   // 30 s of 3 s polls
+    A.ok(reads >= 2 && reads <= 3, 'a file that stays unreadable is retried with backoff, not on all 10 polls: ' + reads + ' reads');
+    A.eq(JSON.stringify(H.disk.seen), before, 'a read failure writes nothing to the fired-file record (no mark/unmark churn)');
+    A.ok(/EBUSY — retrying it later/.test(H.R.view(id).lastError || ''), 'the failure is on record: ' + H.R.view(id).lastError);
+    for (let i = 0; i < 60; i++) { await H.R.tickFolders(); H.advance(10000); }   // 10 minutes
+    A.ok(reads <= 9, 'the backoff keeps doubling (capped) — ' + reads + ' reads in ~10.5 min');
+    fail = false;
+    H.advance(10 * 60 * 1000);
+    await H.R.tickFolders();
+    await tick();
+    A.eq(H.parked.length, 1, 'once the file reads, it fires');
+    A.ok(H.disk.seen[id] && H.disk.seen[id].k1, 'and is recorded as fired as it dispatches');
+    H.parked[0]();
+    await tick(20);
+    void seenWrites;
+  }
+
   /* ---- 3. a folder inside a line's working folder is refused (create AND every fire) ---- */
   {
     const fs = require('fs'), fsp = require('fs/promises'), os = require('os'), path = require('path');
