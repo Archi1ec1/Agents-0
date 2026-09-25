@@ -269,7 +269,7 @@ const settle = async (R, id) => { for (let i = 0; i < 50; i++) { await R.st.sett
     const R = rig(twoDock(), { research: () => (++n === 1 ? { text: '', error: 'provider 500' } : { text: 'ok now', usd: 0.01 }) });
     const r = R.st.start({ line: R.lineId, text: 'go' });
     let s = await settle(R, r.session.id);
-    A.eq(s.state, 'failed'); A.ok(/research failed: provider 500/.test(s.error), 'failed says why: ' + s.error);
+    A.eq(s.state, 'failed'); A.ok(/RESEARCH failed: provider 500/.test(s.error), 'failed says why: ' + s.error);
     A.eq(s.hops[0].error, s.error, 'the failed hop carries its error');
     A.ok(R.st.rerun(s.id).ok, 'a failed step can be re-run');
     s = await settle(R, s.id);
@@ -323,7 +323,7 @@ const settle = async (R, id) => { for (let i = 0; i < 50; i++) { await R.st.sett
     const st4 = R3.mk();   // restart while running
     const dead = st4.get(s3.id).session;
     A.eq(dead.state, 'failed', 'a session that was RUNNING comes back failed');
-    A.ok(/restarted while writer was working/.test(dead.error), 'with an honest error: ' + dead.error);
+    A.ok(/restarted while WRITER was working/.test(dead.error), 'with an honest error: ' + dead.error);
     A.eq(dead.running, null);
     A.ok(st4.rerun(s3.id).ok, 'the lost step can be re-run');
     await st4.settled(s3.id);
@@ -357,6 +357,19 @@ const settle = async (R, id) => { for (let i = 0; i < 50; i++) { await R.st.sett
     release();
     const s = await settle(R, r.session.id);
     A.eq(s.state, 'stopped'); A.ok(/E-STOP/.test(s.error), 'says E-STOP: ' + s.error);
+  }
+
+  /* ---- (sweep 2026-09-25) the owner reads display names, never raw agent ids ---- */
+  {
+    const noOut = twoDock();
+    noOut.props = noOut.props.filter(p => p.t !== 'outbox');
+    noOut.belts = noOut.belts.filter(b => b.x < 8);
+    const R = rig(noOut, {}, { });
+    const r = R.st.start({ line: R.lineId, text: 'go', pause: 'none' });
+    A.ok(r.ok, 'a line with no OUTBOX still starts: ' + r.error);
+    const s = await settle(R, r.session.id);
+    A.ok(/the belt from WRITER does not reach the OUTBOX/.test(s.ended || ''), 'the dead end names the agent by its label, not its id: ' + s.ended);
+    A.ok(!/the belt from writer /.test(s.ended || ''), 'the raw id is not what the owner reads');
   }
 
   A.report('routing.steptest');

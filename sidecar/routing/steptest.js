@@ -102,6 +102,9 @@ function makeStepTest(o) {
   const preflight = typeof o.preflight === 'function' ? o.preflight : function () { return null; };
   const newRunId = typeof o.newRunId === 'function' ? o.newRunId : null;   // the host's run id (persisted before the run starts)
   const runRow = typeof o.runRow === 'function' ? o.runRow : null;         // runId -> its run row { usd, spendUnknown } | null
+  // every sentence the OWNER reads names an agent by its display name, never its raw id (sweep 2026-09-25: "the belt
+  // from agent does not reach the OUTBOX") — the id stays in the machine fields (hops[].agentId, running.agentId)
+  const who = id => { let n = null; try { n = label(id); } catch (e) { failNote('steptest.label', e); } return n ? String(n) : String(id); };
 
   let sessions = [];                 // oldest first
   const inflight = new Map();        // sessionId -> { abort, superseded, halted, agentId } — halt.js-compatible (E-STOP)
@@ -122,7 +125,8 @@ function makeStepTest(o) {
       let changed = false;
       for (const s of sessions) {
         if (s.state === 'running') {
-          const who = (s.running && s.running.agentId) || (s._pending && s._pending.job && s._pending.job.agentId) || 'a dock';
+          const deadId = (s.running && s.running.agentId) || (s._pending && s._pending.job && s._pending.job.agentId) || null;
+          const whoDied = deadId ? who(deadId) : 'a dock';
           /* ITS SPEND IS NOT FORGOTTEN (sweep 2026-09-25): the step's cost used to be noted only after the run returned,
              so a restart mid-run dropped it from the session's LINE BUDGET and the line's day ledger. The running
              step persisted its run id; if that run's row recorded a cost, it is counted now. An interrupted run's
@@ -141,7 +145,7 @@ function makeStepTest(o) {
             costNote = ' What it spent before the restart is not known to this test.';
           }
           s.state = 'failed'; s.running = null; s.paused = null; s.updatedAt = now();
-          s.error = 'the sidecar restarted while ' + who + ' was working on this step — that run died with it and its result was lost. RE-RUN STEP runs ' + who + ' again.' + costNote;
+          s.error = 'the sidecar restarted while ' + whoDied + ' was working on this step — that run died with it and its result was lost. RE-RUN STEP runs ' + whoDied + ' again.' + costNote;
           changed = true;
         }
       }
@@ -203,7 +207,7 @@ function makeStepTest(o) {
     if (!target) {
       if (curDock ? call(plan.shipsToOutbox, cur, curDock) : call(plan.shipsToOutbox, cur)) return { next: { kind: 'outbox' }, text };
       const why = lineRefusalNote(plan.lineOf, cur, s.lineId, curDock)
-        || (call(plan.get) ? 'the belt from ' + cur + ' does not reach the OUTBOX — the line ends at this bay' : 'no work line is armed any more — the line ends at this bay');
+        || (call(plan.get) ? 'the belt from ' + who(cur) + ' does not reach the OUTBOX — the line ends at this bay' : 'no work line is armed any more — the line ends at this bay');
       return { next: { kind: 'end', reason: why }, text, end: why };
     }
     const loopHop = !!looping;
@@ -231,7 +235,7 @@ function makeStepTest(o) {
       finish(s, 'done', null); return null;
     }
     if (nx.next.kind === 'end') { s.ended = nx.end; finish(s, 'done', null); return null; }
-    if (nx.refusal) { finish(s, 'stopped', 'the test stopped before ' + nx.target + ': ' + nx.refusal); return null; }
+    if (nx.refusal) { finish(s, 'stopped', 'the test stopped before ' + who(nx.target) + ': ' + nx.refusal); return null; }
     const W = s._w;
     last.sent = edited ? editedText : nx.text; last.edited = edited;
     W.hop += 1;
@@ -264,7 +268,7 @@ function makeStepTest(o) {
       // $ and daily guards, the executor's own words.
       const lim = limitsNow(s);
       const refused = preHopRefusal({ visited: {}, target: job.agentId, loopHop: true, hop: 0, loopHops: 0, lim, spent: s._spent || 0, dayLedger: daySpend, lineId: s.lineId, text: job.input, cur: s._w.cur || job.agentId });
-      if (refused) { s._pending = null; finish(s, 'stopped', 'the test stopped before ' + job.agentId + ' ran: ' + refused + ' (this test has spent $' + (s._spent || 0).toFixed(2) + ', re-runs included)'); return; }
+      if (refused) { s._pending = null; finish(s, 'stopped', 'the test stopped before ' + who(job.agentId) + ' ran: ' + refused + ' (this test has spent $' + (s._spent || 0).toFixed(2) + ', re-runs included)'); return; }
 
       const W = s._w;
       const turn = job.entry ? String(job.input) : hopTurn({ handoffText: o.handoffPrompt, stageBrief: plan.stageBrief, loopGateAfter: plan.loopGateAfter,
@@ -295,7 +299,7 @@ function makeStepTest(o) {
       if (daySpend && usd) { try { daySpend.note(s.lineId, usd); } catch (e) { failNote('steptest.dayLedger', e); } }
       const output = typeof r.text === 'string' ? r.text : '';
       const stoppedBy = rec.halted ? 'E-STOP was pressed — the test stopped mid-run' : (s._stop ? 'stopped by you mid-run' : null);
-      const err = stoppedBy || (r.error ? job.agentId + ' failed: ' + r.error : (!output.trim() ? job.agentId + ' returned nothing' : null));
+      const err = stoppedBy || (r.error ? who(job.agentId) + ' failed: ' + r.error : (!output.trim() ? who(job.agentId) + ' returned nothing' : null));
       s.hops.push({
         i: s.hops.length, agentId: job.agentId, dockId: job.dockId || null, agentLabel: call(label, job.agentId) || null, pass,
         input: String(job.input), output, usd: round6(usd), ms: Math.max(0, (typeof r.ms === 'number' && isFinite(r.ms)) ? r.ms : now() - t0),
