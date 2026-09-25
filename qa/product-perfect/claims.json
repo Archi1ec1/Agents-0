@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "ecb330757065db4a9d319c74059ef02e7b9afee8",
+    "sourceCommit": "ceb4b33a4d499c3a94339e2b66b0968486bc3835",
     "pathSetSha256": "d91f1b06bebccc5e448b28a57d40221896ed47fcd5e7971039961a1429225852",
     "files": [
       {
@@ -1313,8 +1313,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 803240,
-        "sha256": "b6d3796173e0d02d89edea28e1561d2c5100bb83b7dc6fee1c7fa12fff3bf74c"
+        "bytes": 804012,
+        "sha256": "e83e6f1f3c3678e666777a98d63dc382f3d054c89225e452641f1677a577db66"
       },
       {
         "path": "frontend/app/worldlab.js",
@@ -1329,7 +1329,7 @@
       {
         "path": "frontend/app/worldmodel.js",
         "bytes": 184795,
-        "sha256": "03cf1840fb32790d1dfd1080137dc61f4457b1baf45b367757d0863a384366a9"
+        "sha256": "15b1ce071552f7108c9def308cd20b2daeb09993f4a2e3138d2e47ed98fbd2c5"
       },
       {
         "path": "frontend/app/worldrenderer.js",
@@ -1418,8 +1418,8 @@
       },
       {
         "path": "frontend/css/comms.css",
-        "bytes": 53016,
-        "sha256": "9b44ca49fc9eca851ce1a836a81c099796d7b1c35f1747a6b0832e8043b0197c"
+        "bytes": 52975,
+        "sha256": "64e9c4154f4092c5b255ac4754c8774d281324bdda439982d93b7c7973e6ba5f"
       },
       {
         "path": "frontend/css/glass-comms.css",
