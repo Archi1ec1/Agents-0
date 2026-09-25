@@ -452,7 +452,7 @@ const { note: failNote } = require('../../failopen');
     };
 
     /* READ-BEFORE-EDIT (2026-09-02, coding-tools lane). fs.edit used to accept a "find" the agent had never seen:
-       a guessed snippet against a file it never opened this session, or a file it read before someone else's
+       a guessed snippet against a file it never opened this run, or a file it read before someone else's
        change. The stamp ledger already records every file this agent observed (fs.read / its own writes), so
        an edit against a file with NO stamp is refused with the same machine-readable precondition the
        stale-write guard uses — the loop tells the model exactly which tool satisfies it. Cheap: one Map lookup.
@@ -460,14 +460,14 @@ const { note: failNote } = require('../../failopen');
        create-then-edit never trips. */
     function assertObserved(aid, abs, rel) {
       if (readStamps.has(stampKey(aid, abs))) return;
-      const error = new Error('edit refused: you have not read ' + rel + ' in this session — fs.read it first so your "find" matches the current content exactly.');
+      const error = new Error('edit refused: you have not read ' + rel + ' in this run — fs.read it first so your "find" matches the current content exactly.');
       error.precondition = { code: 'read_before_edit', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
       throw error;
     }
 
     const editTool = {
       name: 'fs.edit', capability: 'cabinet', scope: 'write', requiresConsent: true, timeoutMs: 10000,
-      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (this session). Prefer fs.patch for multi-line source edits.',
+      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (in this run). Prefer fs.patch for multi-line source edits.',
       schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' }, replace_all: { type: 'boolean' }, expected_count: { type: 'number' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
@@ -852,7 +852,9 @@ const { note: failNote } = require('../../failopen');
         else if (line.indexOf('\\!') === 0 || line.indexOf('\\#') === 0) line = line.slice(1);
         let dirOnly = false;
         if (line.length > 1 && line[line.length - 1] === '/') { dirOnly = true; line = line.slice(0, -1); }
-        if (line.indexOf('**/') === 0) line = line.slice(3);        // `**/foo` == `foo` (any depth)
+        // `**/foo` == `foo` (a basename at any depth). `**/foo/bar` is NOT `foo/bar`: stripping it made the rule
+        // anchored to the .gitignore's directory; kept whole it is a path rule whose leading `**/` matches any depth.
+        if (line.indexOf('**/') === 0 && line.indexOf('/', 3) < 0) line = line.slice(3);
         let anchored = line.indexOf('/') >= 0;
         if (line[0] === '/') line = line.slice(1);
         if (!line) continue;
@@ -1011,12 +1013,11 @@ const { note: failNote } = require('../../failopen');
         // glob (e.g. "src/" + star + ".js") matched nothing and returned a clean "0 matches" — indistinguishable
         // from "the text isn't there". Match on the same rule target:'files' already uses: a pattern containing
         // a slash is a PATH pattern, everything else is a name pattern.
-        let globRe = null, globPath = false, fgNorm = null;
+        let globRe = null, globPath = false;
         if (args.file_glob) {
           let fg = String(args.file_glob);
           globPath = fg.indexOf('/') >= 0;
           if (!globPath && fg.charAt(0) !== '*') fg = '*' + fg;
-          fgNorm = fg;
           globRe = globToRe(fg, ic);
         }
 
@@ -1029,7 +1030,10 @@ const { note: failNote } = require('../../failopen');
           if (!args.regex) argv.push('-F');
           if (ic) argv.push('-i');
           if (cx) argv.push('-C', String(cx));
-          if (fgNorm) { argv.push('-g', fgNorm); if (ic) argv.push('--glob-case-insensitive'); }
+          /* file_glob is NOT handed to rg as -g. rg matches -g relative to its cwd (the scoped `path`), so a path glob
+             meant something else once `path` was set, and an rg -g glob OVERRIDES ignore rules, so a glob could reach
+             .gitignored files the walker skips. Both engines now apply the same globRe in JS: a path glob against the
+             WORKSPACE-relative path (the base every result path uses), a name glob against the basename. */
           argv.push('-e', q);
           const byFile = new Map();   // rel -> hit
           let searched = null;
@@ -1042,6 +1046,7 @@ const { note: failNote } = require('../../failopen');
             if (!d.path || typeof d.path.text !== 'string' || !d.lines || typeof d.lines.text !== 'string') return;
             const rel = rgRel(d.path.text), idx = Number(d.line_number) - 1;
             if (!(idx >= 0)) return;
+            if (globRe && !globRe.test(globPath ? rel : rel.split('/').pop())) return;
             let h = byFile.get(rel);
             if (!h) { h = { rel, idxs: [], lines: {}, maxIdx: 0 }; byFile.set(rel, h); }
             h.lines[idx] = d.lines.text.replace(/\r?\n$/, '');

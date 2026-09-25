@@ -807,5 +807,20 @@
       _internals: { fireJob: fireJob, finishFire: finishFire, deliverFinalization: deliverFinalization } };
   }
 
-  return { makeCronDriver: makeCronDriver, SILENT_MARKER: SILENT_MARKER };
+  /* A routine script that THROWS (shell.exec's TIMEOUT / CANCELLED error) carries its whole captured output — up
+     to 64KB — in the message, which then rides the run record and the routine's error line. Clip it the same way the
+     non-zero-exit path clips its output (last SCRIPT_ERROR_TAIL chars), keeping the explanatory head intact. */
+  const SCRIPT_ERROR_TAIL = 4000;
+  function clipScriptError(message, max) {
+    const msg = String(message == null ? '' : message);
+    max = Number(max) > 0 ? Math.floor(Number(max)) : SCRIPT_ERROR_TAIL;
+    const MARK = 'Output captured before the kill:\n';
+    const at = msg.indexOf(MARK);
+    const head = at >= 0 ? msg.slice(0, at + MARK.length) : '';
+    const body = at >= 0 ? msg.slice(at + MARK.length) : msg;
+    const headClip = head.length > 1000 ? head.slice(0, 999) + '…' : head;
+    return headClip + (body.length > max ? '…' + body.slice(-max) : body);
+  }
+
+  return { makeCronDriver: makeCronDriver, SILENT_MARKER: SILENT_MARKER, clipScriptError: clipScriptError, SCRIPT_ERROR_TAIL: SCRIPT_ERROR_TAIL };
 });

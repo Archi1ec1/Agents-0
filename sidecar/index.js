@@ -225,7 +225,8 @@ const connectorStateMod = require('./connectorstate.js');   // one transactional
 const cron = require('./cron.js');                         // pure schedule math (parse/nextFire/planTick)
 const cronStore = require('./cron-store.js');              // pure CronJob lifecycle reducer
 const mintLedger = require('./mint-ledger.js');            // W6: pure dedup gate + per-agent mint ledger (never re-create what exists)
-const { makeCronDriver } = require('./cron-driver.js');    // the autonomous tick driver (ambient deps injected here)
+const cronDriverMod = require('./cron-driver.js');
+const { makeCronDriver } = cronDriverMod;    // the autonomous tick driver (ambient deps injected here)
 const loopjob = require('./loopjob.js');                   // LOOPS: pure gate + ledger digest for standing objectives
 const loopjobStore = require('./loopjob-store.js');        // LOOPS: pure LoopJob lifecycle reducer (iterations, verdicts)
 const { makeLoopDriver } = require('./loopjob-driver.js'); // LOOPS: the verdict-triggered tick driver
@@ -4134,7 +4135,15 @@ function cronScriptSpec(job) {
 async function executeCronScript(job, signal) {
   const spec = cronScriptSpec(job);
   if (!spec) return null;
-  const r = await cronScriptTool.run({ cmd: spec.cmd, cwd: spec.cwd, timeoutMs: Math.min(120000, Math.max(1000, Number(job.scriptTimeoutMs) || 30000)) }, { agentId: job.agentId, runId: job.id, callId: 'cron-script', signal, surface: 'autonomous', emit: () => {} });
+  let r;
+  try {
+    r = await cronScriptTool.run({ cmd: spec.cmd, cwd: spec.cwd, timeoutMs: Math.min(120000, Math.max(1000, Number(job.scriptTimeoutMs) || 30000)) }, { agentId: job.agentId, runId: job.id, callId: 'cron-script', signal, surface: 'autonomous', emit: () => {} });
+  } catch (e) {
+    // a TIMEOUT/CANCELLED throw carries up to 64KB of captured output: clip it like the non-zero-exit path below
+    const clipped = new Error(cronDriverMod.clipScriptError((e && e.message) || e));
+    if (e && e.toolSummary) clipped.toolSummary = e.toolSummary;
+    throw clipped;
+  }
   const content = String((r && r.content) || '');
   const m = content.match(/\n\[exit (-?\d+)[^\]]*\]\s*$/);
   const output = content.replace(/\n\[exit [^\]]*\]\s*$/, '').trim();
@@ -10190,6 +10199,17 @@ if (require.main === module) {
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGBREAK', () => gracefulShutdown('SIGBREAK'));   // Windows console Ctrl+Break (harmless elsewhere)
   } catch (_) {}
+  /* PARENT-REQUESTED GRACEFUL STOP over the IPC channel. Windows has no SIGTERM: a parent's child.kill() is
+     TerminateProcess, so the handlers above never run and background jobs / MCP / LSP children leak. A parent that
+     spawned us WITH an ipc channel (the `starnet` CLI) sends { type: 'starnet.shutdown' } first. No new attack
+     surface: the channel exists only between this process and the parent that created it (no port, no token). */
+  if (typeof process.send === 'function') {
+    try {
+      process.on('message', (m) => { if (m && m.type === 'starnet.shutdown') gracefulShutdown('IPC'); });
+      // the channel must never be what keeps the station alive (the HTTP server is)
+      if (process.channel && typeof process.channel.unref === 'function') process.channel.unref();
+    } catch (e) { failNote('shutdown.ipc', e); }
+  }
 }
 
 /* ---- SSE bridge: forward validated channel/work-item telemetry to the live station HUD ---- */

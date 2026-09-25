@@ -40,7 +40,7 @@
                    ledger?, processTable?, signalProcess?, killVerify? }) ->
        { start({agentId,cmd,cwd,isWin?}), status(agentId,bgId?), read(agentId,bgId,opts?),
          write(agentId,bgId,{input,submit?}), closeStdin(agentId,bgId), wait(agentId,bgId,{timeoutMs?,signal?}),
-         kill(agentId,bgId) -> Promise, killAll(agentId?), count(agentId), touchLedger() } */
+         kill(agentId,bgId) -> Promise, killAll(agentId?), count(agentId), touchLedger(), killBudgetMs } */
 'use strict';
 (function (root, factory) {
   const api = factory();
@@ -52,11 +52,25 @@
   const WIN = (typeof process !== 'undefined' && process.platform) === 'win32';
   const { StringDecoder } = require('node:string_decoder');
   const { note: bgFailNote } = require('./failopen.js');
-  const { ownedTree, confirmGone } = require('./proctree.js');
+  const { ownedTree, confirmGone, DEFAULT_TABLE_TIMEOUT_MS } = require('./proctree.js');
 
   const DEFAULT_WAIT_MS = 30000;
   const MAX_WAIT_MS = 600000;          // same ceiling as a foreground shell.exec
   const START_TOLERANCE_MS = 1000;     // see procledger.js: startedAt is stamped just after spawn returns
+  const DEFAULT_VERIFY_ATTEMPTS = 16, DEFAULT_VERIFY_POLL_MS = 250, DEFAULT_TASKKILL_MS = 10000;
+
+  /* The WORST-CASE wall time of one verified kill (killWin with a pre-kill snapshot, the longer path): snapshot +
+     taskkill + root-exit wait + confirm (one slow table read + its polls) + second-pass taskkill + second confirm.
+     shell.bg.kill sizes its registry timeout from this, so the backstop never cuts off the proof it waits for. */
+  function killBudgetMs(o) {
+    o = o || {};
+    const attempts = Number(o.attempts) > 0 ? Math.floor(Number(o.attempts)) : DEFAULT_VERIFY_ATTEMPTS;
+    const pollMs = o.pollMs != null ? Math.max(0, Number(o.pollMs) || 0) : DEFAULT_VERIFY_POLL_MS;
+    const taskkillMs = Number(o.taskkillMs) > 0 ? Number(o.taskkillMs) : DEFAULT_TASKKILL_MS;
+    const tableMs = Number(o.tableMs) > 0 ? Number(o.tableMs) : (DEFAULT_TABLE_TIMEOUT_MS || 15000);
+    const confirm = tableMs + (attempts - 1) * pollMs;
+    return tableMs + taskkillMs + attempts * pollMs + confirm + taskkillMs + confirm;
+  }
 
   // Launch taskkill and wait — bounded — for its verdict. Never rejects: { ok, code?, error? }.
   function runTaskkill(spawn, args, timeoutMs) {
@@ -125,9 +139,11 @@
     const signalProcess = typeof deps.signalProcess === 'function' ? deps.signalProcess
       : ((pid, sig) => process.kill(pid, sig));
     const KV = deps.killVerify || {};
-    const VERIFY_ATTEMPTS = Number(KV.attempts) > 0 ? Math.floor(Number(KV.attempts)) : 16;
-    const VERIFY_POLL_MS = KV.pollMs != null ? Math.max(0, Number(KV.pollMs) || 0) : 250;
-    const TASKKILL_MS = Number(KV.taskkillMs) > 0 ? Number(KV.taskkillMs) : 10000;
+    const VERIFY_ATTEMPTS = Number(KV.attempts) > 0 ? Math.floor(Number(KV.attempts)) : DEFAULT_VERIFY_ATTEMPTS;
+    const VERIFY_POLL_MS = KV.pollMs != null ? Math.max(0, Number(KV.pollMs) || 0) : DEFAULT_VERIFY_POLL_MS;
+    const TASKKILL_MS = Number(KV.taskkillMs) > 0 ? Number(KV.taskkillMs) : DEFAULT_TASKKILL_MS;
+    // this instance's own worst case (KV.tableMs: the injected process table's per-read bound, if not the default)
+    const KILL_BUDGET_MS = killBudgetMs({ attempts: VERIFY_ATTEMPTS, pollMs: VERIFY_POLL_MS, taskkillMs: TASKKILL_MS, tableMs: KV.tableMs });
     const sleep = typeof KV.sleep === 'function' ? KV.sleep : ((ms) => new Promise(resolve => setTimeout(resolve, ms)));
     const selfPid = (typeof process !== 'undefined' && Number(process.pid)) || 0;
     // a poll step always yields to the EVENT LOOP (a macrotask): the exit it waits for arrives as a process event,
@@ -137,8 +153,18 @@
     const procs = new Map();   // bgId -> rec
     let seq = 0;
 
-    // a kill-REQUESTED proc frees its cap slot immediately (it's being torn down; its 'close' just hasn't fired yet).
-    function count(agentId) { let n = 0; for (const p of procs.values()) if (p.agentId === agentId && p.running && !p.killRequested) n++; return n; }
+    /* An UNSETTLED kill: one whose verdict landed as "incomplete" or "unverified". It was not proven, so the record
+       stays retryable (kill() and killAll() run it again) instead of joining a stale verdict forever. */
+    function killUnsettled(p) { return p.killState === 'incomplete' || p.killState === 'unverified'; }
+    // Holds a cap slot: a running proc nobody has asked to kill, or an unsettled kill whose tree is still known to be
+    // alive (root still running, or named survivors). A kill IN FLIGHT ('pending') frees its slot immediately — its
+    // 'close' just hasn't fired yet — but a kill that FAILED must not free a slot for a tree that is still running.
+    function holdsSlot(p) {
+      if (p.killState === 'pending' || p.killState === 'verified') return false;
+      if (!p.killRequested) return !!p.running;
+      return killUnsettled(p) && (!!p.running || (Array.isArray(p.survivors) && p.survivors.length > 0));
+    }
+    function count(agentId) { let n = 0; for (const p of procs.values()) if (p.agentId === agentId && holdsSlot(p)) n++; return n; }
     function view(r) {
       return {
         bgId: r.bgId, pid: r.child && r.child.pid || null, cmd: r.cmd, running: r.running, exitCode: r.exitCode, killed: r.killed,
@@ -152,10 +178,11 @@
     /* FINISHED RECORDS ARE BOUNDED. Every record used to live forever (up to 256KB of output each), so a long
        session that started many short background jobs grew without limit. Running records are never touched;
        finished ones beyond MAX_FINISHED go, oldest exit first. A record whose kill is still being confirmed stays
-       until the verdict lands, so status can report it. */
+       until the verdict lands, so status can report it; one whose kill left named survivors stays too (it still holds a
+       cap slot and killAll must be able to retry it). */
     function pruneFinished() {
       const done = [];
-      for (const r of procs.values()) if (!r.running && r.killState !== 'pending') done.push(r);
+      for (const r of procs.values()) if (!r.running && r.killState !== 'pending' && !holdsSlot(r)) done.push(r);
       if (done.length <= MAX_FINISHED) return 0;
       done.sort((a, b) => (Number(a.endedAt) || 0) - (Number(b.endedAt) || 0));
       const drop = done.slice(0, done.length - MAX_FINISHED);
@@ -201,7 +228,7 @@
       const bgId = newId ? 'bg_' + String(newId()).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) : 'bg_' + (++seq);
       const pid = Number(child && child.pid) > 0 ? Number(child.pid) : 0;
       const rec = { bgId, agentId, cmd, child, pid, isWin, out: '', running: true, exitCode: null, killed: false, startedAt: now(), endedAt: null, dropped: 0, stdinClosed: false, outputPath: null, outputBytes: 0, outputSpillError: '',
-        killRequested: false, killState: null, killPromise: null, survivors: null, exitSeen: false, exitAt: null, rootCreated: 0, waiters: [], receiptReleased: false };
+        killRequested: false, killState: null, killPromise: null, survivors: null, survivorRows: null, exitSeen: false, exitAt: null, rootCreated: 0, waiters: [], receiptReleased: false };
       // record a REDACTED command to the on-disk ledger — a backgrounded command can carry a secret on its argv
       // (e.g. curl -H "Authorization: Bearer …"), and proc-ledger.json persists across sessions. Exact OS identity
       // below means boot cleanup never needs the plaintext command to recognize this child.
@@ -436,7 +463,11 @@
         try { targets = await readTree(await processTable()); }
         catch (e) { tableErr = String((e && e.message) || e); bgFailNote('shellbg.kill.snapshot', e); }
       }
-      const tk = await runTaskkill(spawn, ['/pid', String(pid), '/T', '/F'], TASKKILL_MS);
+      /* Once the root's exit has been OBSERVED its PID may already belong to a stranger (a RETRY of an unsettled kill
+         lands here), so it is never named to taskkill again: its orphans are reached only through the second pass,
+         by the (pid, creation) identity the table re-proves. */
+      const tk = r.exitSeen ? { ok: true, skipped: true }
+        : await runTaskkill(spawn, ['/pid', String(pid), '/T', '/F'], TASKKILL_MS);
       if (!tk.ok) {
         // taskkill could not take the tree: at least stop the root we hold, then let the table say what survived
         try { if (r.child && typeof r.child.kill === 'function') r.child.kill(); } catch (e) { bgFailNote('shellbg.kill.fallback', e); }
@@ -445,6 +476,12 @@
         // no pre-kill snapshot (killAll must not delay the kill): read the orphan window after the fact
         try { targets = await readTree(await processTable()); }
         catch (e) { tableErr = String((e && e.message) || e); bgFailNote('shellbg.kill.snapshot', e); }
+      }
+      if (targets && Array.isArray(r.survivorRows) && r.survivorRows.length) {
+        // a RETRY: the survivors an earlier pass named are targets by their exact identity — an orphan whose parent
+        // died is unreachable from the root's tree walk, and missing it would pass the retry as a false 'verified'
+        const have = new Set(targets.map(t => t.pid));
+        for (const s of r.survivorRows) if (s && s.pid > 0 && s.created > 0 && s.pid !== pid && !have.has(s.pid)) { targets.push(s); have.add(s.pid); }
       }
       const rootGone = await waitRootExit(r, VERIFY_ATTEMPTS);
       const tkNote = tk.ok ? '' : ' (taskkill: ' + (tk.error || ('exit ' + tk.code)) + ')';
@@ -483,7 +520,8 @@
       let groupKilled = false;
       try { signalProcess(-pid, 'SIGKILL'); groupKilled = true; }
       catch (e) { bgFailNote('shellbg.killTree.group', e); }   // no group (not detached / already gone) -> leader fallback below
-      if (!groupKilled) {
+      if (!groupKilled && !r.exitSeen) {
+        // (a leader whose exit was already observed is never signalled by bare PID: that PID may be a stranger's now)
         try { if (r.child && typeof r.child.kill === 'function') r.child.kill('SIGKILL'); } catch (e) { bgFailNote('shellbg.kill.leader', e); }
         try { signalProcess(pid, 'SIGKILL'); } catch (e) { bgFailNote('shellbg.kill.leaderpid', e); }
       }
@@ -503,8 +541,11 @@
       return { ok: true, verified: true, killedPids: [pid] };
     }
 
-    // One kill per record: a second request joins the first. The record is marked killed ONLY on proof, and the
-    // durable receipt is released only then; an unconfirmed kill keeps it for the next boot's sweep.
+    /* One kill IN FLIGHT per record: a second request joins it. The record is marked killed ONLY on proof, and the
+       durable receipt is released only then; an unconfirmed kill keeps it for the next boot's sweep. A verified
+       verdict is final (later requests get it back); an incomplete/unverified one clears killPromise so the NEXT
+       request — the agent retrying, E-STOP, shutdown — runs the kill again instead of re-reading a stale failure.
+       killRequested stays set: the harness did ask for this exit, so the root's close must not release the receipt. */
     function startKill(r, snapshotFirst) {
       if (r.killPromise) return r.killPromise;
       r.killRequested = true; r.killState = 'pending';
@@ -517,6 +558,7 @@
       r.killPromise = work.then((res) => {
         r.killState = res.verified ? 'verified' : (res.incomplete ? 'incomplete' : 'unverified');
         r.survivors = res.survivors || [];
+        r.survivorRows = Array.isArray(res.survivorRows) ? res.survivorRows.map(x => ({ pid: x.pid, ppid: x.ppid, created: x.created })) : [];
         if (res.verified) { r.killed = true; releaseReceipt(r); }
         else if (ledger && typeof ledger.record === 'function' && Array.isArray(res.survivorRows)) {
           // exact receipts for the survivors, so a sweep can kill them by identity even if the root is long gone
@@ -525,10 +567,12 @@
             try { ledger.record({ pid: s.pid, cmd: 'survivor of ' + redact(r.cmd), kind: 'shell.bg.survivor', created: s.created }); } catch (e) { bgFailNote('shellbg.ledger.survivor', e); }
           }
         }
+        if (!res.verified) r.killPromise = null;   // unsettled: the next request retries (see above)
         return Object.assign({ bgId: r.bgId }, res);
       }, (e) => {
         bgFailNote('shellbg.kill', e);
         r.killState = 'unverified';
+        r.killPromise = null;
         return { ok: false, unverified: true, bgId: r.bgId, survivors: [], error: 'kill failed: ' + ((e && e.message) || e) };
       });
       return r.killPromise;
@@ -542,12 +586,15 @@
     }
 
     // reap: an agent's procs (signal abort) or everything (sidecar shutdown / E-STOP). Synchronous count; the kill
-    // starts IMMEDIATELY (no pre-kill snapshot — shutdown has a 3s deadline) and is confirmed afterwards.
+    // starts IMMEDIATELY (no pre-kill snapshot — shutdown has a 3s deadline) and is confirmed afterwards. A record
+    // whose earlier kill was NOT proven (incomplete/unverified) is tried again — E-STOP must not skip a tree that
+    // survived the agent's own shell.bg.kill. A kill already in flight is joined, not restarted or counted.
     function killAll(agentId) {
       let n = 0;
       for (const r of procs.values()) {
         if (agentId != null && r.agentId !== String(agentId)) continue;
-        if (r.running && !r.killRequested) { startKill(r, false); n++; }
+        if (r.killState === 'pending' || r.killState === 'verified') continue;
+        if ((r.running && !r.killRequested) || (killUnsettled(r) && !r.killPromise)) { startKill(r, false); n++; }
       }
       return n;
     }
@@ -562,7 +609,7 @@
       try { return ledger.touch(pids) || 0; } catch (e) { bgFailNote('shellbg.ledger.touch', e); return 0; }
     }
 
-    return { start, status, read, write, closeStdin, wait, kill, killAll, count, touchLedger, _internals: { procs, view, own, pruneFinished, exitNoticeText } };
+    return { start, status, read, write, closeStdin, wait, kill, killAll, count, touchLedger, killBudgetMs: KILL_BUDGET_MS, _internals: { procs, view, own, pruneFinished, exitNoticeText } };
   }
 
   /* makeBgExitWaker({ steer, runs, runsMeta, log? }) -> (notice) => { delivered, runId?, status?, reason? }
@@ -599,5 +646,5 @@
     return wake;
   }
 
-  return { makeShellBg, makeBgExitWaker, exitNoticeText, _internals: { runTaskkill, sanitizeLine } };
+  return { makeShellBg, makeBgExitWaker, exitNoticeText, killBudgetMs, _internals: { runTaskkill, sanitizeLine } };
 });
