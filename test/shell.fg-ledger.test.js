@@ -128,5 +128,24 @@ function makeFakeSpawn(opts) {
     A.eq(L.events.filter(e => e[0] === 'release').length, 1, 'released once');
   }
 
+  // ---- 6. the DEFERRED exit stamp carries the instant the exit was observed, not the (later) write time ----
+  {
+    const { makeProcLedger } = require('../sidecar/procledger.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fgledger-'));
+    try {
+      let t = 100000;
+      const ledger = makeProcLedger({ fs, pathMod: path, file: path.join(dir, 'proc-ledger.json'), clock: { now: () => t }, isWin: false,
+        probe: async () => null, killTree: async () => ({ ok: true }) });
+      const tr = trackChild(ledger, 5151, { cmd: 'npm test', pinAfterMs: 100000, exitStampMs: 30 });
+      t = 200000; tr.exited();     // the root exits at t=200000
+      t = 201000;                  // …and the deferred stamp is written ~1s later
+      await delay(60);
+      const e = ledger.list().find(r => r.pid === 5151);
+      A.ok(e && e.exited, 'the receipt is marked exited');
+      A.eq(e && e.exitedAt, 200000, 'exitedAt is the observed exit instant (it used to be stamped at write time, 1s late)');
+      tr.done();
+    } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} }
+  }
+
   A.report('shell.fg-ledger.test');
 })().catch(e => { console.log('FAIL: shell.fg-ledger.test threw — ' + (e && e.stack || e)); process.exit(1); });
