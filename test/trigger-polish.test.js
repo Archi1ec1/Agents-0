@@ -84,8 +84,9 @@ function fakeStore() {
       load: () => JSON.parse(JSON.stringify(d2.triggers)), save: v => { d2.triggers = JSON.parse(JSON.stringify(v)); },
       seen: { load: () => JSON.parse(JSON.stringify(d2.seen)), save: v => { d2.seen = JSON.parse(JSON.stringify(v)); } },
       makeHub: () => ({ onInbound(m) { fired.push(m.text); return Promise.resolve(); }, close() {} }), plan: () => plan,
-      watcher, now: () => 1e12, newId: () => 'f' + (++n) + 'abcdef0123456789'
+      watcher, now: () => clk2, newId: () => 'f' + (++n) + 'abcdef0123456789'
     });
+    let clk2 = 1e12;
     const cf = R2.create({ kind: 'folder', lineId: 'p1', config: { path: os.tmpdir() } }, { baselineKeys: [] });
     A.ok(cf.ok, 'a folder trigger is created');
     await R2.tickFolders();
@@ -94,6 +95,9 @@ function fakeStore() {
     A.ok(!(d2.seen[cf.trigger.id] || {}).k1, '…not on disk either');
     A.ok(/EBUSY/.test(R2.view(cf.trigger.id).lastError || ''), 'the read failure is recorded honestly: ' + R2.view(cf.trigger.id).lastError);
     readOk = true;
+    await R2.tickFolders();
+    A.eq(reads, 1, '(sweep 2026-09-25) an unreadable file backs off — not re-opened on the very next 3 s poll');
+    clk2 += 20000;   // past the first backoff step
     await R2.tickFolders();
     await new Promise(r => setTimeout(r, 20));
     A.eq(reads, 2, 'the next scan retries the file');
