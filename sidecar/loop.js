@@ -1259,8 +1259,10 @@
       if (prevSummary) lines.push(prevSummary);
       lines.push('[compaction fallback — the summarizer was unavailable; ' + older.length + ' older messages reduced to one line each]');
       for (const m of older) {
-        // the user's own words are carried whole in the note's verbatim section (see summaryNote) — not clipped here too
-        if (fidelity.collectUserMessages([m]).length) { lines.push('- ' + (m.role === 'user' ? 'user' : 'steering note') + ': [carried word for word in the user messages section below]'); continue; }
+        // the user's own words ride the note's verbatim section (see summaryNote) — not clipped here too. That section
+        // is BUDGETED (compaction-fidelity mergeUserMessages): a long message is cut to its fair share and the oldest
+        // can be omitted, each marked there — so this line points at it and never promises it is whole.
+        if (fidelity.collectUserMessages([m]).length) { lines.push('- ' + (m.role === 'user' ? 'user' : 'steering note') + ': [see the user messages section below — it marks any message it had to trim or omit]'); continue; }
         // text, never bytes: an image part is "[image]", a data URL a sized marker (compaction-fidelity contentText)
         let c = fidelity.contentText(m && m.content);
         if (m && Array.isArray(m.tool_calls) && m.tool_calls.length) c = 'called ' + m.tool_calls.map(t => (t && t.function && t.function.name) || 'tool').join(', ') + (c ? ' — ' + c : '');

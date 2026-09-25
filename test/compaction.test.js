@@ -169,6 +169,9 @@ function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { 
     A.ok(drained > 0, 'the durable-transcript drain still ran for the fallback-folded slice');
     const note = messages.find(m => m.role === 'system' && /^<conversation_summary>/.test(String(m.content)));
     A.ok(note && /compaction fallback/.test(note.content) && /old-1/.test(note.content), 'the fallback note is a deterministic digest of the folded messages');
+    // the digest line for a user message points at the (budgeted) verbatim section; it never promises word for word
+    A.ok(note.content.indexOf('- user: [see the user messages section below — it marks any message it had to trim or omit]') >= 0, 'a user line points at the user messages section');
+    A.ok(!/carried word for word in the user messages section/.test(note.content), 'and no digest line claims the section carries it word for word');
     A.eq(messages[0], { role: 'user', content: 'd' }, 'directive still pinned');
   }
 
