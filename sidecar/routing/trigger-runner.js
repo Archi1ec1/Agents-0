@@ -220,7 +220,9 @@ function makeTriggerRunner(deps) {
       if (!saveSeen()) { delete mine[item.seenKey]; recordError(t.id, 'could not record fired files — paused to avoid refiring'); return null; }
     }
     s.current = { streamId, routed: null, resolved: null, lineOutcome: null, replies: [], turns: {} };
-    patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt }));
+    // the previous fire's outcome is cleared as this one starts: a fire that dies mid-run (a restart, a crash) must
+    // never leave the OLD "✓ reached the OUTBOX" standing beside the NEW lastFiredAt (sweep 2026-09-25)
+    patch(t.id, cur => ({ fires: cur.fires + 1, lastFiredAt: startedAt, lastOutcome: null }));
     const hub = hubFor(t.id, s);
     const settled = Promise.resolve(hub.onInbound({ chatId: 'trg-' + t.id, userId: 'trigger', text: item.text, chatType: 'dm' }))
       .catch(e => ({ error: (e && e.message) || String(e) }));

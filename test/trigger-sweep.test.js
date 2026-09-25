@@ -150,6 +150,26 @@ function harness(opts) {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }
 
+  /* ---- 6. a new fire clears the previous outcome (a fire that dies never leaves a stale ✓) ---- */
+  {
+    const H = harness();
+    const c = H.R.create({ kind: 'webhook', lineId: 'L1', maxPerHour: 10 }, { secretHash: T.hashSecret('k') });
+    const id = c.trigger.id;
+    H.R.enqueue(id, { text: 'one' }); await tick(); H.parked[0](); await tick(20);
+    A.ok(H.R.view(id).lastOutcome && H.R.view(id).lastOutcome.ok === true, 'fire one reached the OUTBOX');
+    H.advance(1000);
+    H.R.enqueue(id, { text: 'two' }); await tick();
+    const mid = H.R.view(id);
+    A.eq(mid.lastOutcome, null, 'while fire two runs there is no outcome claimed');
+    A.ok(mid.running === true, 'the row says it is running');
+    // the process dies here: a new runner over the same disk must not show fire one's ✓ for fire two
+    const R2 = require('../sidecar/routing/trigger-runner.js').makeTriggerRunner({ load: () => JSON.parse(JSON.stringify(H.disk.triggers)), save: () => {},
+      makeHub: () => ({ onInbound: () => Promise.resolve(), close() {} }), plan: () => H.plan, now: () => H.now(), newId: () => 'x0123456789abcdef0000' });
+    const after = R2.view(id);
+    A.ok(after.lastFiredAt && after.lastOutcome === null, 'after a restart mid-fire: last fired is stated, no stale outcome');
+    H.parked[1](); await tick(20);
+  }
+
   /* ---- 10. an UNREADABLE file backs off instead of churning every poll ---- */
   {
     let reads = 0, fail = true;
