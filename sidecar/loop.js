@@ -1598,7 +1598,9 @@
         if (signal.aborted) break;                   // a cancel mid-stream: fall through to the cancel check below
         // classify so `transient` is honest, and so the shouldCompress / shouldFallback / shouldRotateCredential
         // hints drive recovery instead of being discarded.
-        const cls = classifyApiError(streamErr, { model: model, approxTokens: currentApproxTokens(), contextLimit: contextLimit });
+        // approxTokens = the run-start size; liveApproxTokens = the prompt now, trusted by the classifier's overflow
+        // ratio only for a 400 that names no specific cause (an "invalid base64" on a long run is not an overflow).
+        const cls = classifyApiError(streamErr, { model: model, approxTokens: approxTokens, liveApproxTokens: currentApproxTokens(), contextLimit: contextLimit });
         // An adapter that exhausted its own pre-stream retries already spent rungs of THIS ladder: advance the rung
         // index and the patience clock by exactly that spend, so continuing never multiplies it.
         const spent = preStreamSpend(streamErr);
