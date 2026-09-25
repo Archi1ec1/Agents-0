@@ -101,6 +101,12 @@ async function contract(tools, label) {
     A.ok(I.gitignored(stack, 'q1.md', false) && !I.gitignored(stack, 'q12.md', false), '? is exactly one character');
     const nested = [{ baseRel: '', rules: I.parseGitignore('*.log\n') }, { baseRel: 'src', rules: I.parseGitignore('!keep.log\n') }];
     A.ok(I.gitignored(nested, 'src/a.log', false) && !I.gitignored(nested, 'src/keep.log', false), 'a nested negation re-includes within its own subtree (last match wins)');
+    const deepPath = [{ baseRel: '', rules: I.parseGitignore('**/foo/bar' + String.fromCharCode(10)) }];
+    A.ok(I.gitignored(deepPath, 'src/foo/bar', false), '**/foo/bar matches foo/bar under any directory (it was stripped to an anchored foo/bar)');
+    A.ok(I.gitignored(deepPath, 'foo/bar', false) && I.gitignored(deepPath, 'a/b/foo/bar', false), '…including at the root and at depth');
+    A.ok(!I.gitignored(deepPath, 'src/foo/baz', false) && !I.gitignored(deepPath, 'bar', false), '…and nothing else');
+    const nestedDeep = [{ baseRel: 'pkg', rules: I.parseGitignore('**/foo/bar' + String.fromCharCode(10)) }];
+    A.ok(I.gitignored(nestedDeep, 'pkg/x/foo/bar', false) && I.gitignored(nestedDeep, 'pkg/foo/bar', false), 'a nested **/foo/bar matches at any depth under its own directory');
   }
 
   // ---- 4. the rg engine: same rows, when the machine has ripgrep ----

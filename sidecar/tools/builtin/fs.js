@@ -852,7 +852,9 @@ const { note: failNote } = require('../../failopen');
         else if (line.indexOf('\\!') === 0 || line.indexOf('\\#') === 0) line = line.slice(1);
         let dirOnly = false;
         if (line.length > 1 && line[line.length - 1] === '/') { dirOnly = true; line = line.slice(0, -1); }
-        if (line.indexOf('**/') === 0) line = line.slice(3);        // `**/foo` == `foo` (any depth)
+        // `**/foo` == `foo` (a basename at any depth). `**/foo/bar` is NOT `foo/bar`: stripping it made the rule
+        // anchored to the .gitignore's directory; kept whole it is a path rule whose leading `**/` matches any depth.
+        if (line.indexOf('**/') === 0 && line.indexOf('/', 3) < 0) line = line.slice(3);
         let anchored = line.indexOf('/') >= 0;
         if (line[0] === '/') line = line.slice(1);
         if (!line) continue;
