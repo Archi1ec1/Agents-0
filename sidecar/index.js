@@ -193,6 +193,8 @@ const telegramOwnerPairing = require('./channels/owner-pairing.js');
 const { makeChannelStore } = require('./channels/store.js');
 const { makeChannelHub, menuCommands, dockSystem } = require('./channels/hub.js');
 const { makeWebhookVerifier } = require('./channels/webhook-auth.js');
+const { admitRelayMessage } = require('./channels/relay-admission.js');   // relay bodies cross the adapter's own owner/group admission
+const { hostPowerWithheldFor } = require('./run-origin.js');   // Full Power follows the owner, not the chat (non-owner channel senders never inherit it)
 const { makePromptRegistry } = require('./channels/prompts.js');   // C6: the bounded token→meaning map behind inline keyboards
 const { makeOpenAiCompat } = require('./openai-compat.js');   // /v1/* OpenAI-compatible surface (external harness ingress)
 const { makeChannelRegistry, wireChannel } = require('./channels/registry.js');   // H6.2: channel descriptors + generic wire-up
@@ -5106,7 +5108,7 @@ function liveChannelFor(channel) {
   if (channel === 'dev') {
     if (!DEV_MODE) return null;
     const hub = getDevHub();
-    return { hub: hub, adapter: { send: (chatId, text) => devCaptureReply(chatId, text) } };
+    return { hub: hub, adapter: { ownerSurface: true, send: (chatId, text) => devCaptureReply(chatId, text) } };
   }
   if (channel === 'discord') return discord;
   if (typeof channel === 'string' && channel.indexOf('telegram:') === 0) return telegramBots.get(channel.slice('telegram:'.length)) || null;
@@ -8477,6 +8479,9 @@ function startTelegram(token, key, model, agentCfg) {
     // claims it. A token-reachable group member therefore stays an ordinary channel caller.
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
       && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
+    // the paired owner in ANY chat (owner-only control commands; see hub.js COMMANDS `owner`) — same adapter-minted id
+    isOwner: (msg) => !!(adapterRef && adapterRef._internals && msg
+      && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
     send: (chatId, text, opts) => adapterRef ? adapterRef.send(chatId, text, opts) : Promise.resolve({ ok: false, error: 'no adapter' }),
     // typing indicator: the hub's keep-alive loop refreshes Telegram's "typing…" bubble while a run is in flight
     chatAction: (chatId, actionOpts) => adapterRef ? adapterRef.chatAction(chatId, actionOpts) : Promise.resolve({ ok: false, error: 'no adapter', retryable: false }),
@@ -8739,6 +8744,9 @@ function startTelegramBot(botId) {
     userCommandNames: () => userCommandEntries().map(c => c.name),
     ownerTrusted: (msg) => !!(adapterRef && adapterRef._internals && msg && msg.chatType === 'dm'
       && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
+    // the paired owner in ANY chat (owner-only control commands; see hub.js COMMANDS `owner`) — same adapter-minted id
+    isOwner: (msg) => !!(adapterRef && adapterRef._internals && msg
+      && adapterRef._internals.owner && String(msg.userId || '') === String(adapterRef._internals.owner)),
     send: (chatId, text, opts) => adapterRef ? adapterRef.send(chatId, text, opts) : Promise.resolve({ ok: false, error: 'no adapter' }),
     chatAction: (chatId, actionOpts) => adapterRef ? adapterRef.chatAction(chatId, actionOpts) : Promise.resolve({ ok: false, error: 'no adapter', retryable: false }),
     // live per-message read (same contract as the station bot). THE BOT IS ITS AGENT: identity (system prompt),
@@ -8985,6 +8993,7 @@ function getDevHub() {
   if (devHub) return devHub;
   devHub = makeChannelHub({
     channel: 'dev', maxMessageLength: 4000, agentPrefix: 'dev_', textBatchWaitMs: 0,
+    ownerSurface: true,   // DEV_MODE-only local route behind the launch token: every inbound is the Commander
     runSlash: (input, sctx) => runSlashForChannel(input, sctx),   // shared slash registry — identical answers to the desktop
     userCommandNames: () => userCommandEntries().map(c => c.name),
     runOnce: runOnce, store: channelStore,
@@ -10415,6 +10424,7 @@ function getSampleHub() {
   if (sampleHub) return sampleHub;
   sampleHub = makeChannelHub({
     channel: 'sample', maxMessageLength: 4000, agentPrefix: 'smp_', textBatchWaitMs: 0,
+    ownerSurface: true,   // the Commander's own sample-crate route behind the launch token
     runOnce: runOnce, store: channelStore,
     historyFor: (streamId) => transcriptStore.reconstruct(streamId, { limit: 100 }),
     /* THE SAMPLE IS UNADDRESSED, EVERY TIME. This route's whole claim is "a REAL run on the REAL UNADDRESSED
@@ -10636,6 +10646,8 @@ const triggerFolderPolicy = makeFolderPolicy({
 function makeTriggerHub(hooks) {
   return makeChannelHub({
     channel: 'trigger', maxMessageLength: 4000, agentPrefix: 'trg_', textBatchWaitMs: 0,
+    // no chat senders: runs keep the owner-configured line's posture; a payload's /commands are refused (no owner)
+    untrustedSenders: false,
     runOnce: runOnce,
     // the channel store for chat/outbox bookkeeping, but per-agent TURN HISTORY is this fire's own (hooks.turns): a
     // trigger fire is one standalone job, so a later fire's hops never inherit an earlier fire's handoffs
@@ -16145,17 +16157,27 @@ async function runOnceCore(o) {
   // is already paused on its first permission card: selecting Full Access must suppress the next call in THIS
   // run, every later run/surface, and every run after restart. None of these switches mints the separate
   // physical-desktop lease above.
-  const agentFullAccessNow = () => ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
+  /* FULL POWER FOLLOWS THE OWNER, NOT THE CHAT (2026-09-25, sec-owner-gates). Full Access / master bypass is the
+     Commander's standing authority. A run a chat-channel SENDER started inherits it only when that sender is the
+     bound owner in a direct chat (host-minted by the hub: `channelSender` + `channelSenderOwner`, never from
+     text). A group member, an allowed non-owner, or a relay-asserted stranger runs at the ordinary unattended
+     floor even on a Full Access agent. The restriction rides into delegated workers through the host-context
+     connectorAuthority, so a non-owner cannot launder it through team.delegate to a Full Access specialist.
+     Every other origin (the app, routines/loops/cron, triggers, dev/sample hubs) is unchanged: DECISIONS.md
+     "FULL POWER MEANS THE WHOLE LOCAL COMPUTER" and the tested "Full Access follows the agent to its routine". */
+  const hostPowerWithheld = hostPowerWithheldFor(o);
+  const agentFullAccessNow = () => !hostPowerWithheld && ((agentRoster.get(String(agentId || '')) || {}).approvalMode === 'full');
+  const stationBypassNow = () => !hostPowerWithheld && (FULL_ACCESS || masterBypassOn());
   // One central, host-minted meaning for "Full Power": station-wide env/master bypass or this agent's
   // persisted Full Access posture. Every downstream policy seam reads this source instead of inventing a
   // niche exception. It is live so a flip or revocation affects the next tool call.
-  const unrestrictedHostNow = () => FULL_ACCESS || masterBypassOn() || agentFullAccessNow();
+  const unrestrictedHostNow = () => stationBypassNow() || agentFullAccessNow();
   // The execution profile is snapshotted for this run's tool projection. Approval remains live and revocable
   // through agentFullAccessNow(); the profile never mints the separate physical-desktop lease.
   const agentExecutionProfileNow = () => {
     const rec = agentRoster.get(String(agentId || '')) || {};
     return executionProfiles.resolve(rec.executionProfile, {
-      approvalMode: rec.approvalMode,
+      approvalMode: hostPowerWithheld ? 'ask' : rec.approvalMode,
       backendId: executionEnvironment.backendIdFor(agentId),
       physicalDesktopLease: remoteDesktopAuthorized
     });
@@ -16163,7 +16185,7 @@ async function runOnceCore(o) {
   const executionProfile = agentExecutionProfileNow();
   const userControlAuthority = makeRunAuthority({
     surface, isTask, environment: executionEnvironment.forAgent(agentId), confirm: o.prompt, unattendedGrants, ownerTrusted,
-    remoteDesktopAuthorized, masterBypass: FULL_ACCESS || masterBypassOn(), fullAccess: agentFullAccessNow,
+    remoteDesktopAuthorized, masterBypass: stationBypassNow(), fullAccess: agentFullAccessNow,
     connectorAuthority: o.connectorAuthority
   });
   const prompt = o.prompt;
@@ -16618,7 +16640,7 @@ async function runOnceCore(o) {
     // the wrong one whenever the two postures differ. Hand orchestration the EFFECTIVE posture so the delegated
     // prompt states what will actually happen. A thunk read off the live roster: computed at dispatch time, and
     // deliberately NOT reusing `agentFullAccess` (declared further down) so this stays order-independent.
-    approvalPosture: () => (FULL_ACCESS || ((agentRoster.get(agentId) || {}).approvalMode === 'full')) ? 'full' : 'ask',
+    approvalPosture: () => (!hostPowerWithheldFor(o) && (FULL_ACCESS || ((agentRoster.get(agentId) || {}).approvalMode === 'full'))) ? 'full' : 'ask',
     perWorker: ORCH_PER_WORKER, workerMaxIters: ORCH_WORKER_MAX_ITERS, newId: () => crypto.randomUUID(),
     dispatchTimeoutMs: ORCH_DISPATCH_TIMEOUT_MS,   // minutes, not the 30s fast-tool cap (see constant)
     // Saved session metadata is available headlessly; visual delivery still uses
@@ -17177,6 +17199,8 @@ async function runOnceCore(o) {
       authorize: (call, tool) => signal?.aborted ? { ok: false, reason: 'delegating run cancelled' } : userControlAuthority.authorize(call, tool),
       prompt: typeof prompt === 'function' ? (call, tool) => signal?.aborted ? 'deny' : prompt(call, tool) : null,
       fullAccess: () => !signal?.aborted && unrestrictedHostNow(),
+      // host-minted, never tool-supplied: a worker delegated from a non-owner channel run stays below Full Power
+      withholdHostPower: hostPowerWithheld,
       taintedBy: () => execution.taintedBy() || (typeof o.connectorAuthority?.taintedBy === 'function' ? o.connectorAuthority.taintedBy() : null)
     },
     // HOOKS reach the tool boundary through the dispatch ctx. registry.js consults them AFTER the authority,
@@ -17632,14 +17656,14 @@ async function runOnceCore(o) {
       && typeof o.connectorAuthority?.fullAccess === 'function' && o.connectorAuthority.fullAccess() === true;
     let postTaint = revokedByTaint.boundary(liveTool, {
       taintedBy: taintSource, surface: effectSurface, hasPrompt: typeof effectPrompt === 'function',
-      fullAccess: FULL_ACCESS || masterBypassOn() || agentFullAccessNow() || connectorFullAccess
+      fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
     });
     if (postTaint.needsConfirmation) {
       let decision = 'deny';
       try { decision = await effectPrompt(c, liveTool); } catch (_) {}
       postTaint = revokedByTaint.boundary(liveTool, {
         taintedBy: taintSource, surface: effectSurface, hasPrompt: true, decision,
-        fullAccess: FULL_ACCESS || masterBypassOn() || agentFullAccessNow() || connectorFullAccess
+        fullAccess: stationBypassNow() || agentFullAccessNow() || connectorFullAccess
       });
     }
     const postTaintConfirmed = postTaint.oneShot;
@@ -21944,9 +21968,12 @@ async function handleChannelWebhook(req, res) {
   let body; try { body = JSON.parse(raw) || {}; } catch (_) { return json(400, { error: 'bad json' }); }
   const live = liveChannelFor(channel);
   if (!(live && live.hub && typeof live.hub.onInbound === 'function')) return json(409, { error: channel + ' is not connected' });
-  const msg = body.message || body;
-  if (!msg.chatId || (!msg.text && !(Array.isArray(msg.media) && msg.media.length))) return json(400, { error: 'message payload is incomplete' });
-  await live.hub.onInbound(Object.assign({}, msg, { chatId: String(msg.chatId), userId: String(msg.userId || ''), chatType: msg.chatType === 'group' ? 'group' : 'dm' }));
+  // The HMAC proves the operator's relay sent this body, not which platform user wrote it: bind the claimed
+  // sender to the live adapter's own admission (paired owner for a DM, allowlist for a group) and copy only
+  // platform fields — see channels/relay-admission.js.
+  const admitted = admitRelayMessage(body.message || body, live.adapter);
+  if (!admitted.ok) return json(admitted.code || 403, { error: admitted.error });
+  await live.hub.onInbound(admitted.message);
   json(202, { ok: true, accepted: true, channel, nonce: verdict.nonce });
 }
 
