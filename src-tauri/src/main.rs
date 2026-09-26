@@ -2852,6 +2852,9 @@ fn build_main_window(
                         }
                     }
                 }
+                // Covers start-minimized and a reload while parked in the tray: a document that
+                // loads into a hidden window must not render at full rate.
+                sync_webview_on_screen(&window);
             }
         });
     // Windows: drop the stock titlebar/border — the frontend draws its own themed
@@ -2904,6 +2907,12 @@ fn build_main_window(
     {
         let app_handle = app.clone();
         main_window.on_window_event(move |event| {
+            // Minimize / restore arrive as a resize (WM_SIZE); keep the page's hidden state honest.
+            if let WindowEvent::Resized(_) = event {
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    sync_webview_on_screen(&win);
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 reveal_rebuilt.store(false, Ordering::SeqCst);
                 if let Some(state) = app_handle.try_state::<AppState>() {
@@ -2913,6 +2922,7 @@ fn build_main_window(
                 api.prevent_close();
                 if let Some(win) = app_handle.get_webview_window("main") {
                     let _ = win.hide();
+                    set_webview_on_screen(&win, false); // parked in the tray: stop rendering
                 }
                 let app2 = app_handle.clone();
                 std::thread::spawn(move || {
@@ -3195,11 +3205,32 @@ fn schedule_main_window_rebuild(app: AppHandle, why: &'static str) {
     });
 }
 
+/// Tell WebView2 whether its page is actually on screen. Tauri's `hide()`/minimize only hide the
+/// NATIVE window: the WebView2 controller keeps `IsVisible = true`, so the page never becomes
+/// `document.hidden` and every rAF loop (the world renderer) keeps drawing at full rate with no
+/// window (2026-09-25 report: ~a full core burned while parked in the tray). The controller's
+/// visibility is what makes Chromium mark the page hidden and pause rAF + throttle timers.
+#[cfg(windows)]
+fn set_webview_on_screen(win: &tauri::WebviewWindow, on_screen: bool) {
+    let _ = win.with_webview(move |platform| {
+        let _ = unsafe { platform.controller().SetIsVisible(on_screen) };
+    });
+}
+#[cfg(not(windows))]
+fn set_webview_on_screen(_win: &tauri::WebviewWindow, _on_screen: bool) {}
+
+/// Re-derive the page's on-screen state from the native window (shown AND not minimized).
+fn sync_webview_on_screen(win: &tauri::WebviewWindow) {
+    let on_screen = win.is_visible().unwrap_or(true) && !win.is_minimized().unwrap_or(false);
+    set_webview_on_screen(win, on_screen);
+}
+
 /// Reveal + focus the main window (from a hidden/close-to-tray state or a minimized one).
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.unminimize();
+        set_webview_on_screen(&win, true);
         let _ = win.set_focus();
     }
 }
@@ -4593,6 +4624,7 @@ fn main() {
             if let Some(win) = win {
                 let _ = win.show(); // the window may be hidden in the tray — a relaunch should reveal it
                 let _ = win.unminimize();
+                set_webview_on_screen(&win, true);
                 let _ = win.set_focus();
             } else if action == webview_recovery::SecondLaunch::Wait {
                 // Starting up (a slow boot under memory pressure) or rebuilding after a WebView2

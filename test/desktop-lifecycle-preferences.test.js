@@ -56,5 +56,11 @@ const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
   A.ok(!/if !spawn_sidecar_with_retry\((?:app\.handle\(\),\s*)?&state\) \{\s*return Err/.test(main), 'startup Cancel never returns a setup Err (release panic=abort turns it into a crash)');
   A.ok(/sidecar_startup::spawn/.test(main) && /!listening && exited.is_none\(\)[\s\S]{0,150}sidecar_startup::stop_timed_out/.test(main), 'the desktop uses tracked spawning and reaps a timed-out attempt');
   A.ok(/startup_reveal.is_pending\(\)/.test(main) && /report_window_startup_failure/.test(main), 'a hidden stalled window gets a native diagnostic');
+  // A hidden native window does NOT hide the WebView2 page: without SetIsVisible(false) the world's rAF loop kept
+  // rendering at full rate while parked in the tray (2026-09-25 report, ~a full core).
+  A.ok(/fn set_webview_on_screen[\s\S]{0,300}?controller\(\)\.SetIsVisible\(on_screen\)/.test(main), 'the page visibility follows the native window through the WebView2 controller');
+  A.ok(/let _ = win\.hide\(\);\s*set_webview_on_screen\(&win, false\)/.test(main), 'close-to-tray marks the page hidden so rendering pauses');
+  A.ok(/fn show_main_window[\s\S]{0,300}?set_webview_on_screen\(&win, true\)/.test(main) && /reveal it\s*let _ = win\.unminimize\(\);\s*set_webview_on_screen\(&win, true\)/.test(main), 'every tray/relaunch reveal marks the page visible again');
+  A.ok(/WindowEvent::Resized\(_\)[\s\S]{0,200}?sync_webview_on_screen/.test(main) && /PageLoadEvent::Finished[\s\S]{0,1200}?sync_webview_on_screen\(&window\)/.test(main), 'minimize/restore and a load into a hidden window re-sync page visibility');
   A.report('desktop-lifecycle-preferences');
 })().catch(error => { console.error(error); process.exit(1); });
