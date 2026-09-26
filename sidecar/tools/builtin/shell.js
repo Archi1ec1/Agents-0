@@ -342,7 +342,45 @@
   const NATIVE_INPUT_RE = /\b(?:SetCursorPos|mouse_event|SendInput|keybd_event|ClipCursor|BlockInput|SetCapture|SetWindowsHookEx|RegisterHotKey|RegisterRawInputDevices|SetForegroundWindow|SwitchToThisWindow|AttachThreadInput|SetWindowPos|SetSystemCursor|SendKeys(?:\.SendWait)?|pyautogui|pynput|robotjs|nut\.js|xdotool|ydotool|xte|evemu|uinput|CGEventPost|CGWarpMouseCursorPosition|XTestFake|XGrabPointer|XGrabKeyboard|XWarpPointer)\b|\/dev\/uinput/i;
   const USER_SESSION_RE = /\b(?:LockWorkStation|ExitWindowsEx|InitiateSystemShutdown|SetSuspendState|ChangeDisplaySettings|SetDisplayConfig|SetMonitorBrightness|WmiMonitorBrightnessMethods|SystemParametersInfo|SetClipboardData|OpenClipboard|Set-Clipboard|pbcopy|xclip|xsel|DisplaySwitch|xrandr|xinput|xset|chvt|loginctl|ddcutil|pactl|amixer|osascript)\b/i;
   const OPAQUE_LAUNCH_RE = /\b(?:Invoke-Expression|iex|Invoke-Command|DownloadString|FromBase64String|Reflection\.Assembly|ShellExecute|os\.startfile|Process\.Start)\b/i;
-  const GUI_RUNTIME_RE = /\b(?:electron|nwjs|cargo\s+run|dotnet\s+run|java\s+-jar|rundll32|wscript|cscript|mshta|notepad|wordpad|mspaint|calc|write)\b/i;
+  // GUI/native runtimes are judged as PROGRAMS, never as words (issue #50: a `// ...before each write` comment and
+  // `process.stdout.write()` both used to refuse a plain Node script). `write`/`calc` are also ordinary English and
+  // identifiers, so they count only as a command head or an explicit launch; the distinctive names count anywhere a
+  // command token or a quoted launch string starts with them.
+  const GUI_PROGRAMS = new Set(['electron', 'nw', 'nwjs', 'rundll32', 'wscript', 'cscript', 'mshta', 'notepad', 'wordpad', 'mspaint', 'calc', 'write']);
+  const GUI_AMBIGUOUS = new Set(['calc', 'write', 'nw']);
+  const GUI_PAIR_RE = /^(?:cargo(?:\.exe)?\s+run|dotnet(?:\.exe)?\s+run|javaw?(?:\.exe)?\s+-jar)(?:\s|$)/i;
+  const GUI_DISTINCT = 'electron|nwjs|rundll32|wscript|cscript|mshta|notepad|wordpad|mspaint';
+  // a quoted string whose first word is the program: spawn('notepad'), execSync(`electron .`), ["mshta", ...], 'C:\\x\\notepad.exe'
+  const GUI_CODE_STRING_RE = new RegExp('["\'`]\\s*(?:[^"\'`\\s]*[\\\\/])?(?:(?:' + GUI_DISTINCT + ')(?:\\.exe)?|(?:calc|write)\\.exe)(?=["\'`\\s])' +
+    '|["\'`]\\s*(?:cargo(?:\\.exe)?\\s+run|dotnet(?:\\.exe)?\\s+run|javaw?(?:\\.exe)?\\s+-jar)\\b', 'i');
+  // the ambiguous names only as the direct target of a process-launch call: os.system("calc"), spawn('write', ...)
+  const GUI_CODE_CALL_RE = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|execa|execaSync|execCommand|system|popen|Popen|call|check_call|check_output|run|Command::new|Command|Start-Process)\s*\(?\s*\[?\s*["'`](?:[^"'`\s]*[\\/])?(?:calc|write)(?:\.exe)?["'`\s]/i;
+  const INERT_HEADS = new Set(['echo', 'rem', 'printf', 'write-host', 'write-output', 'write-verbose', 'write-information', 'type', 'cat', 'more', 'less', 'grep', 'rg', 'findstr', 'select-string', 'git']);
+  const INLINE_EVAL_HEAD_RE = /^(?:node|python\d*|py|ruby|php|bun|deno|perl)(?:\.exe)?$/i;
+  const INLINE_EVAL_FLAG_RE = /^(?:-e|-c|-p|-r|--eval|--print|eval)$/i;
+  function bareProgram(value) { return exeName(String(value == null ? '' : value).trim().split(/\s+/)[0]).replace(/\.(?:exe|com|cmd|bat)$/i, ''); }
+  function guiRuntimeInCommand(text, dialect) {
+    for (const head of commandHeads(text, dialect)) {
+      const tokens = headTokens(head);
+      if (!tokens.length) continue;
+      const verb = bareProgram(tokens[0].value);
+      if (INERT_HEADS.has(verb)) continue;
+      if (GUI_PROGRAMS.has(verb)) return true;
+      const values = tokens.map(t => String(t.value));
+      if (GUI_PAIR_RE.test(values.join(' '))) return true;
+      // launchers and wrappers put the real program later: `npx electron .`, `cross-env X=1 electron .`,
+      // `concurrently "vite" "electron ."`, `wait-on :3000 && cargo run`
+      for (let i = 1; i < values.length; i++) {
+        const prog = bareProgram(values[i]);
+        if (GUI_PROGRAMS.has(prog) && !GUI_AMBIGUOUS.has(prog)) return true;
+        if (GUI_PAIR_RE.test(values[i]) || GUI_PAIR_RE.test(values.slice(i).join(' '))) return true;
+      }
+      // inline interpreter code (`node -e "...exec('notepad')"`) is code, not a list of arguments
+      if (INLINE_EVAL_HEAD_RE.test(verb) && tokens.slice(1).some(t => INLINE_EVAL_FLAG_RE.test(t.value)) && guiRuntimeInCode(head.text)) return true;
+    }
+    return false;
+  }
+  function guiRuntimeInCode(text) { return GUI_CODE_STRING_RE.test(text) || GUI_CODE_CALL_RE.test(text); }
   const LOCAL_PROGRAM_RE = /^(?:"|')?(?:(?:\.\\|\.\/)[^\s"']+|[^\s"']+\.exe)(?:"|'|\s|$)/i;
   const CODE_FILE_RE = /\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat|rs|cs|c|cc|cpp)$/i;
   const SCAN_SKIP_RE = /^(?:node_modules|\.git|dist|build|coverage|\.cache|\.vite|target)$/i;
@@ -360,11 +398,23 @@
     if ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'")) return s.slice(1, -1);
     return s;
   }
-  function commandSources(cmd, opts) {
+  // Each source records what it IS: `shell` text (the command, npm scripts, .cmd/.bat/.sh/.ps1 files) is judged
+  // by the programs its command heads launch; `code` text (a referenced .mjs/.py/...) is judged only by launch
+  // strings inside it. A word in a code comment is not a process launch (issue #50: "// ...before each write").
+  function sourceKindOf(rel) {
+    if (/\.(?:cmd|bat)$/i.test(rel)) return { kind: 'shell', dialect: 'cmd' };
+    if (/\.ps1$/i.test(rel)) return { kind: 'shell', dialect: 'powershell' };
+    if (/\.(?:sh|bash)$/i.test(rel)) return { kind: 'shell', dialect: 'posix' };
+    return { kind: 'code', dialect: null };
+  }
+  function commandSources(cmd, opts) { return commandSourceEntries(cmd, opts).map(e => e.text); }
+  function commandSourceEntries(cmd, opts) {
     opts = opts || {};
     const fs = opts.fs, P = opts.pathMod, cwd = opts.cwd, dialect = opts.dialect;
-    const queue = [{ text: String(cmd || ''), baseDir: cwd }], out = [], seen = new Set(), packageCache = new Map();
-    function enqueue(text, baseDir) { if (text != null && String(text)) queue.push({ text: String(text), baseDir }); }
+    const queue = [{ text: String(cmd || ''), baseDir: cwd, kind: 'shell', dialect: dialect }], out = [], seen = new Set(), packageCache = new Map();
+    function enqueue(text, baseDir, kind, srcDialect) {
+      if (text != null && String(text)) queue.push({ text: String(text), baseDir, kind: kind || 'shell', dialect: srcDialect || dialect });
+    }
     function packageAt(baseDir) {
       const projectRoot = projectScanRoot(baseDir, fs, P);
       const key = String(projectRoot || '');
@@ -380,7 +430,7 @@
       const text = String(entry.text || ''), baseDir = entry.baseDir || cwd;
       const seenKey = String(baseDir || '') + '\0' + text;
       if (!text || seen.has(seenKey)) continue;
-      seen.add(seenKey); out.push(text);
+      seen.add(seenKey); out.push({ text: text, kind: entry.kind || 'shell', dialect: entry.dialect || dialect });
       for (const parsedHead of commandHeads(text, dialect)) {
         const head = (parsedHead && parsedHead.text != null ? parsedHead.text : String(parsedHead || '')).replace(/^\s*@/, '');
         let m = head.match(/^(?:npm|npm\.cmd)\s+(?:--[A-Za-z0-9_-]+(?:=[^\s]+)?\s+)*(?:run\s+)?([A-Za-z0-9:_-]+)\b/i);
@@ -410,7 +460,7 @@
           // nested scan silently goes blind to the referenced script (CI-linux gate escape, 2026-07-20).
           // Retry with separators normalized so the isolation floor sees the same files on every host.
           if (!src && rel.indexOf('\\') >= 0) src = readSmall(fs, P.resolve(baseDir, rel.replace(/\\/g, '/')), 2 << 20);
-          if (src) enqueue(src, baseDir);
+          if (src) { const k = sourceKindOf(rel); enqueue(src, baseDir, k.kind, k.dialect); }
         }
       }
     }
@@ -456,7 +506,8 @@
     if (heads.some(h => BROWSER_NAMES.has(exeName((headTokens(h)[0] || {}).value)))) {
       return 'launches a browser outside StarNet\'s synthetic-input CDP sandbox — use browser.test_navigate/browser.test_input';
     }
-    const sources = commandSources(c, opts);
+    const entries = commandSourceEntries(c, opts);
+    const sources = entries.map(e => e.text);
     const expanded = sources.join('\n');
     const activeHead = heads.some(h => {
       const text = canonicalHead(h);
@@ -467,7 +518,7 @@
     }
     if (sources.some(s => /(?:^|\s)--open(?:[=\s]|$)/i.test(s))) return 'opens a framework/browser window on the user\'s screen — keep dev servers headless';
     if (BROWSER_AUTOMATION_RE.test(expanded)) return 'runs browser automation outside StarNet\'s owned pointer-lock emulator — use browser.test_*';
-    if (GUI_RUNTIME_RE.test(expanded) || heads.some(h => LOCAL_PROGRAM_RE.test(h && h.text != null ? h.text : String(h || '')))) return 'launches a GUI/native runtime on the user\'s interactive desktop';
+    if (entries.some(e => e.kind === 'code' ? guiRuntimeInCode(e.text) : guiRuntimeInCommand(e.text, e.dialect)) || heads.some(h => LOCAL_PROGRAM_RE.test(h && h.text != null ? h.text : String(h || '')))) return 'launches a GUI/native runtime on the user\'s interactive desktop';
     return null;
   }
 
