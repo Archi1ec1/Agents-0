@@ -251,7 +251,7 @@
      created team doesn't have any credits yet. You can purchase credits on https://console.x.ai/…") or
      "…has either used all available credits or reached its monthly spending limit". The plain status read called
      that `auth`, and the user was told no model was connected. */
-  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?/;
+  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?/;
 
   function classify400(low, code, ctx) {
     const c = String(code || '').toLowerCase();

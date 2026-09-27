@@ -295,6 +295,11 @@ for (const raw of [
   A.eq(kindOf('sidecar HTTP 429 — rate limited, slow down').kind, 'rate_limit', 'BROWSER: a bare 429 is unchanged');
   A.eq(kindOf('sidecar HTTP 429 — openai: insufficient_quota').kind, 'billing',
     'BROWSER: an out-of-money account is billing, not a busy provider');
+  // StarNet's OWN spend-ledger errors say 'continuing with spending limits'; they are not a provider out of credit
+  for (const own of ['Spend history is unavailable or not durably saved. Restore the ledger and restart StarNet before continuing with spending limits.',
+    'An interrupted run has unsettled spend; reconcile its provider usage before continuing with spending limits.']) {
+    A.ok(kindOf(own).kind !== 'billing', 'BROWSER: a local spend-ledger error is not told to top up the provider: ' + own.slice(0, 40));
+  }
   A.eq(kindOf("codex: You've hit your usage limit. Resets in 3 days", 429).kind, 'quota_exhausted',
     'BROWSER: the explicit status argument works too');
   // the shared table and the fallback must agree, or the two halves drift again

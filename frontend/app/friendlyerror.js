@@ -246,7 +246,7 @@
      answers a bad key with HTTP 400 "Incorrect API key provided", and a team with no prepaid credits with 403
      "…doesn't have any credits yet. You can purchase credits on https://console.x.ai/…" (2026-09-27). */
   const REJECTED_KEY_RE = /incorrect api key|invalid api key|api key (?:is )?(?:invalid|not valid|incorrect)|invalid x-api-key/;
-  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?/;
+  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?/;
   // the ONE sentence both classifier paths use for "no model is picked": the sidecar guard and the page preflight
   const NO_MODEL_RE = /\bno model selected\b/;
   /* WHICH grok failures mean "this account can't use Grok sign-in" (the allowlist yank)? Only ones that carry the
