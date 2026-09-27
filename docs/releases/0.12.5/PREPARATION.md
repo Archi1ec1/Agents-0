@@ -66,15 +66,53 @@ is refused; build-mode ESC needs a second press; save-conflict snapshots are pru
 `npm start`/CLI users must `npm install` after updating (new dependency `undici`); the headless CLI (`bin/`) is a
 source-checkout tool, not part of the desktop app.
 
-## Still owed before Publish (need the owner)
+## Owner decisions (2026-09-27)
 
-- Push the candidate and run the non-publishing CI: `fast-gate` on Linux (the train gate's OS; ~50 new tests have
-  only run on Windows), `desktop-build` (signed Windows + both Macs, notarization, Intel installed acceptance) and
-  `t0-clean-install-proof` with `build_run_id` + `installer_sha256` + `baseline_tag=v0.12.4` (clean install and
-  upgrade on a hosted Windows VM). This is also the only installed-app smoke this machine can produce (WebView2 CDP
-  does not bind here), so `qa:ready` cannot read READY without it.
-- Installed-build checks nothing local can prove: the pinned CSP inside real WebView2/WKWebView, `code.run` from the
-  bundled resources path, the Slack/Matrix keychain migration, WebView2 crash recovery.
-- 48-hour installed soak: waived for 0.12.4 by the owner; needs the same explicit decision for 0.12.5.
-- After Publish: deploy the website (fallback version → 0.12.5, plus four undeployed site commits); answer/close the
-  GitHub issues this release fixes (#50, #19, #24 ask for a retest, #40, #28 partial, #6, #31/#32/#26/#25 shipped).
+- Push the candidate branch (not trunk, no tag) and run the non-publishing CI: approved.
+- 48-hour installed soak: **waived**, as for 0.12.4.
+- $25 spend rail: keep the merged behavior (five budget stops pause a routine); heads-up in the notes; revisit next release.
+- macOS build-mode cursor offset (customer report 09-26, root cause proven): next release. Workaround: Settings > TEXT SIZE 100%.
+
+## Validation of the candidate (`8cdb98267`: fixes + bump + notes + claims re-lock)
+
+| Check | Result |
+| --- | --- |
+| Guardian cycle `20260927-033601`, pinned to the candidate | GREEN, all seven gates: fast 948/948, HTTP 155/155, saboteur 527 attacks across 240 routes, UI screenshot sweep, golden frames, behavioral audit 49/49, journeys 139/139 |
+| Customer journeys (the train gate's second step) | 38/38 |
+| Beginner Run (UI-only) | PASS |
+| Credential-free eval gate | PASS (contract, quality, fault, offline parity 32/32) |
+| Desktop Rust tests (Windows) | 74 passed, 2 ignored |
+| `fast-gate` on Linux, run 36300551769 | green |
+| `desktop-build`, run 36300555783 (`publish-test=false`, `require_signed_mac=true`) | green: signed Windows NSIS, macOS arm64 + x64 built and notarized, Linux, Intel macOS installed acceptance |
+| Windows installer | `StarNet_0.12.5_x64-setup.exe`, 382,048,280 bytes (0.12.4: 640,524,832), SHA-256 `323c7c44ff83ab0f88b550f33c7f8ab9257cdd972f35099ad2ddeea4a4761605`; Authenticode Valid (Andrew Sims, timestamped); updater signature verified against the baked public key |
+| `t0-clean-install-proof`, run 36336468910 (that installer, `baseline_tag=v0.12.4`, static level on) | green: silent clean install, first launch with the packaged UI up over CDP, shell close/reopen, a populated v0.12.4 station upgraded with its data preserved, installed provider fallback, delegated connectors and session continuity |
+| `secret-history` (full reachable history, run 36336596755) | green |
+
+The Guardian's 14 stale open P0/P1 detector findings in the integration tree's local ledger (09-20 to 09-24) were
+reconciled against this cycle, assertion by assertion (`releaseResolution`, kind `current-scenario-recovered`,
+evidence copied to `.bugloops/release-0125-evidence/`); the ledger reads 0 open P0/P1.
+
+Corrections made after the first CI pass (test and CI configuration only, no product change):
+
+- The first `t0` run (36335835317) failed on one difference: the fixture's second agent had no saved colour, and
+  0.12.5 roster hydration (security audit `97a7b612e`) gave it a crew palette colour. The upgrade verifier now permits
+  exactly that (a missing or non-hex colour may become an app `SUITS` colour; a valid colour must survive unchanged),
+  mirroring the 0.12.4 correction for neutral project defaults. The re-run passed on the same signed installer.
+- The first full-history secret scan of the branch flagged five deliberately token-shaped test fixtures; they are
+  allowlisted by exact fingerprint (and the comment that briefly quoted one).
+
+## Still owed
+
+- **Before tagging:** the `qa:ready` installed check re-hashes the installed executable on this machine, so the hosted
+  smoke receipt must be imported with the executable extracted from the verified installer (0.12.4 did the same).
+- **After the tag push** (fires the release train; it stages a DRAFT only): watch the train, review the draft, run
+  `t0-clean-install-proof` and `g1-packaged-lifecycle` against the draft, then the owner publishes; then
+  `release:verify-host --expect-version 0.12.5` and an update canary.
+- Not performed for this release: real-account sign-in, the attended 48-hour soak (waived), an Apple Silicon installed UI
+  journey, and installed-build proof of the pinned CSP inside WKWebView, `code.run` from the bundled path, the
+  Slack/Matrix keychain migration and WebView2 crash recovery.
+- **After Publish:** deploy the website (the `FALLBACK_VERSION` bump waits until 0.12.5 is the public latest, plus four
+  undeployed site commits); answer/close the GitHub issues this release fixes (#50, #19, #24 ask for a retest, #40,
+  #28 partial, #6, #31/#32/#26/#25 shipped).
+- Follow-ups: exempt cross-run budget stops from the routine auto-pause streak; a migration for agents with reserved
+  ids; the Workflow panel copy lost from PR #29; the macOS build-mode cursor offset.
