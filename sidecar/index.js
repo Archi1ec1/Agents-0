@@ -20961,7 +20961,9 @@ function publicModel(m) {
     supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters : [],
     reasoningEfforts: Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : [],
     // the provider's own default level, when its catalog names one (xAI: capabilities.default_reasoning_effort)
-    defaultReasoningLevel: m.defaultReasoningLevel || null
+    defaultReasoningLevel: m.defaultReasoningLevel || null,
+    // why a model's dial is what it is, when a profile documents it (gpt-5.6 on Chat Completions: OFF with tools)
+    reasoningNote: (typeof m.reasoningNote === 'string' && m.reasoningNote) ? m.reasoningNote : null
   };
 }
 

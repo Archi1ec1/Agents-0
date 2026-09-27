@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "aaccd0cc3f4de784570d738dbfa9c421d80ee209",
+    "sourceCommit": "1e718e5054b5f5c0d00793c81193b0069967250f",
     "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
@@ -528,8 +528,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 85046,
-        "sha256": "68049883ad2c3de9969a51b34fe51bb150c844738cf722e6b02048a8d3c5a878"
+        "bytes": 85138,
+        "sha256": "a4dd1e6666196822cb7ef83113a151d9f70531791fd8164f9899e099cda29933"
       },
       {
         "path": "frontend/app/hint.js",
@@ -643,8 +643,8 @@
       },
       {
         "path": "frontend/app/modeldock.js",
-        "bytes": 47677,
-        "sha256": "1622ff94a16bf365754d74243b17ca9388fde3d9dca669823c168b0003acd868"
+        "bytes": 48197,
+        "sha256": "8c18692b969aaeb89181c133905cb727fa6bcb5ee53160da368fe1db5c7abbf0"
       },
       {
         "path": "frontend/app/modelpicker.js",

@@ -60,18 +60,43 @@
     for (const v of raw) { const e = canonicalEffort(v); if (e && out.indexOf(e) < 0) out.push(e); }
     return out.sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
   }
-  // Send a level the model DECLARED: the request itself when it is one, else the nearest weaker level, else the
-  // nearest stronger one. OFF the model does not offer is omitted (the model's own default applies) rather than
-  // replaced by an invented level. '' = send nothing.
-  function clampToDeclared(requested, declared) {
+  // Send a level the model DECLARED. The request itself when it is one. Past either end of the model's range: that
+  // end (max on a model topping out at xhigh -> xhigh). Inside the range but not a level of it: the model's own
+  // declared default when it has one — the way vendors map it themselves (DeepSeek: medium -> high, xhigh -> high)
+  // — else the nearest weaker level. OFF the model does not offer is omitted (its own default applies) rather than
+  // replaced by an invented level; a model whose ONLY declared value is 'none' gets 'none' explicitly (gpt-5.6 with
+  // tools on Chat Completions: omitting it means its default, medium, and that 400s). '' = send nothing.
+  function clampToDeclared(requested, declared, defaultLevel) {
     const want = canonicalEffort(requested);
     if (!want || !declared || !declared.length) return '';
     if (declared.indexOf(want) >= 0) return want;
-    if (want === 'none') return '';
-    const at = EFFORT_ORDER.indexOf(want);
-    for (let i = at - 1; i >= 1; i--) if (declared.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
-    for (let i = at + 1; i < EFFORT_ORDER.length; i++) if (declared.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
-    return '';
+    const levels = declared.filter(e => e !== 'none').map(e => EFFORT_ORDER.indexOf(e));
+    if (want !== 'none' && levels.length) {
+      const at = EFFORT_ORDER.indexOf(want), lo = Math.min.apply(null, levels), hi = Math.max.apply(null, levels);
+      if (at < lo) return EFFORT_ORDER[lo];
+      if (at > hi) return EFFORT_ORDER[hi];
+      const def = canonicalEffort(defaultLevel);
+      if (def && def !== 'none' && declared.indexOf(def) >= 0) return def;
+      for (let i = at - 1; i >= lo; i--) if (declared.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
+    }
+    return (declared.length === 1 && declared[0] === 'none') ? 'none' : '';
+  }
+  /* OpenAI names what a model DOES take when it refuses a level: "Unsupported value: 'reasoning_effort' does not
+     support 'minimal' with this model. Supported values are: 'low', 'medium', and 'high'." That sentence is the
+     endpoint's own truth, newer than any table, so it is learned (see learnedByEndpoint) and the request resent. */
+  function supportedEffortsFrom(detail) {
+    const text = String(detail || '');
+    if (!/reasoning[_ .]?effort/i.test(text)) return null;
+    const m = text.match(/supported values are:?\s*([^.\n]*)/i);
+    if (!m) return null;
+    const list = declaredEffortList((m[1].match(/'[^']+'|"[^"]+"/g) || []).map(s => s.slice(1, -1)));
+    return (list && list.length) ? list : null;
+  }
+  // "Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use function
+  // tools, use /v1/responses or set reasoning_effort to 'none'." With tools on this wire that model takes ONLY none,
+  // and the refusal comes even when no effort was sent (its default is medium).
+  function toolsForceNone(detail) {
+    return /function tools with reasoning[_ ]effort are not supported/i.test(String(detail || ''));
   }
   // Declared levels outlive one adapter instance. A run builds a fresh provider, and its first request leaves
   // before that instance's own catalog arrives. The catalog the model dock already loaded from the SAME endpoint
@@ -80,13 +105,70 @@
   const declaredByEndpoint = new Map();
   function rememberDeclared(endpoint, models) {
     const byId = new Map();
-    for (const m of models) if (m && m.reasoningEffortsDeclared) byId.set(m.id, m.reasoningEfforts.slice());
+    for (const m of models) {
+      if (m && m.reasoningEffortsDeclared) byId.set(m.id, { levels: m.reasoningEfforts.slice(), defaultLevel: m.defaultReasoningLevel || null });
+    }
     declaredByEndpoint.set(endpoint, byId);   // a fresh load REPLACES the endpoint's facts (nothing stale survives)
   }
   function recallDeclared(endpoint, id) {
     const byId = declaredByEndpoint.get(endpoint);
     const hit = byId && byId.get(String(id || ''));
+    return hit ? { levels: hit.levels.slice(), defaultLevel: hit.defaultLevel } : null;
+  }
+  // What an endpoint TOLD us at request time outranks every catalog and table, and a catalog reload never erases it.
+  const learnedByEndpoint = new Map();   // endpoint -> Map(modelId -> levels)
+  function rememberLearned(endpoint, id, levels) {
+    let byId = learnedByEndpoint.get(endpoint);
+    if (!byId) { byId = new Map(); learnedByEndpoint.set(endpoint, byId); }
+    byId.set(String(id || ''), levels.slice());
+  }
+  function recallLearned(endpoint, id) {
+    const byId = learnedByEndpoint.get(endpoint);
+    const hit = byId && byId.get(String(id || ''));
     return hit ? hit.slice() : null;
+  }
+  // Models this endpoint has been SEEN streaming reasoning_content for (DeepSeek thinking mode). Proof a model
+  // thinks even when its catalog entry declares nothing (the legacy deepseek-reasoner alias).
+  const reasoningEmitters = new Map();   // endpoint -> Set(modelId)
+  function noteEmitter(endpoint, id) {
+    let ids = reasoningEmitters.get(endpoint);
+    if (!ids) { ids = new Set(); reasoningEmitters.set(endpoint, ids); }
+    ids.add(String(id || ''));
+  }
+  function emitsReasoning(endpoint, id) {
+    const ids = reasoningEmitters.get(endpoint);
+    return !!(ids && ids.has(String(id || '')));
+  }
+  /* REASONING_CONTENT RIDES BACK (DeepSeek thinking mode, api-docs.deepseek.com/guides/thinking_mode, 2026-09).
+     "For requests carrying the tools parameter, the reasoning_content must be fully passed back to the API in all
+     subsequent requests — even for turns where the model did not perform a tool call", else 400 "The
+     reasoning_content in the thinking mode must be passed back to the API". Every StarNet run carries tools, so a
+     V4 model thinking by default (high) failed on its second request. The adapter parks each turn's text as an
+     opaque { type:'reasoning_content' } block on the turn (provider.js contract) and hands it back here. A turn
+     with no captured text (history the page kept, a sidecar restart) gets '' — the shape the fix other harnesses
+     shipped (Hermes, OpenCode). StarNet's own `reasoning` parking field never rides the wire. */
+  function reasoningTextOf(blocks) {
+    if (!Array.isArray(blocks)) return null;
+    let text = null;
+    for (const b of blocks) if (b && b.type === 'reasoning_content' && typeof b.text === 'string') text = (text || '') + b.text;
+    return text;
+  }
+  function replayReasoningContent(messages, thinking, withTools) {
+    if (!Array.isArray(messages)) return messages;
+    let changed = false;
+    const out = messages.map(msg => {
+      if (!msg || msg.role !== 'assistant') return msg;
+      const text = reasoningTextOf(msg.reasoning);
+      const owed = thinking && (text != null || withTools);
+      if (msg.reasoning === undefined && !owed && msg.reasoning_content === undefined) return msg;
+      const copy = Object.assign({}, msg);   // never mutate the durable transcript
+      delete copy.reasoning;
+      if (!thinking) delete copy.reasoning_content;
+      else if (owed && copy.reasoning_content == null) copy.reasoning_content = text != null ? text : '';
+      changed = true;
+      return copy;
+    });
+    return changed ? out : messages;
   }
 
   // NO default endpoint. This adapter used to fall back to https://api.openai.com/v1 on an empty baseUrl,
@@ -161,12 +243,17 @@
     if (!id) return null;
     const params = Array.isArray(m.supported_parameters) ? m.supported_parameters.slice() : [];
     // Declared levels: StarNet's own non-empty `reasoningEfforts` (static rosters, the managed proxy), else a
-    // vendor `capabilities` block (xAI). An xAI entry that carries capabilities but no levels is a DECLARED
-    // "no dial" ([]). An empty StarNet list keeps its old meaning (unknown), so no existing catalog changes.
+    // vendor block — xAI `capabilities.reasoning_effort` / `default_reasoning_effort`, DeepSeek
+    // `effort.supported_levels` / `default_level` (api-docs.deepseek.com, GET /models). An xAI entry that carries
+    // capabilities but no levels is a DECLARED "no dial" ([]). An empty StarNet list keeps its old meaning (unknown).
     const caps = (m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities)) ? m.capabilities : null;
+    const effortBlock = (m.effort && typeof m.effort === 'object' && Array.isArray(m.effort.supported_levels)) ? m.effort : null;
     const own = declaredEffortList(m.reasoningEfforts);
-    const declared = (own && own.length) ? own : (caps ? (declaredEffortList(caps.reasoning_effort) || []) : null);
-    const defaultLevel = canonicalEffort(m.defaultReasoningLevel || (caps && caps.default_reasoning_effort));
+    const declared = (own && own.length) ? own
+      : caps ? (declaredEffortList(caps.reasoning_effort) || [])
+      : effortBlock ? declaredEffortList(effortBlock.supported_levels)
+      : null;
+    const defaultLevel = canonicalEffort(m.defaultReasoningLevel || (caps && caps.default_reasoning_effort) || (effortBlock && effortBlock.default_level));
     return {
       id,
       name: m.name || id,
@@ -229,10 +316,44 @@
     const priceFamily = (typeof opts.priceFamily === 'string' && opts.priceFamily.trim()) ? opts.priceFamily.trim() : null;
     const listPrices = (prices && typeof prices.priceOf === 'function') ? prices : null;
     const defaultEffort = String(opts.reasoningEffort || '');
+    /* PROFILE-DOCUMENTED LEVELS (registry `reasoningModels`) for endpoints whose catalog publishes none — OpenAI's
+       /v1/models carries only id/created/owned_by. First match wins; a model no rule matches stays unknown. A
+       catalog declaration, when the endpoint makes one, still wins, and so does what the endpoint says at request
+       time (learnedByEndpoint). */
+    const reasoningRules = (Array.isArray(opts.reasoningModels) ? opts.reasoningModels : []).map(r => {
+      if (!r || !r.match) return null;
+      let re; try { re = r.match instanceof RegExp ? r.match : new RegExp(String(r.match), 'i'); } catch (_) { return null; }
+      return { re, efforts: declaredEffortList(r.efforts) || [], defaultLevel: canonicalEffort(r.default),
+        supportsReasoning: typeof r.supportsReasoning === 'boolean' ? r.supportsReasoning : null,
+        note: (typeof r.note === 'string' && r.note) ? r.note : null };
+    }).filter(Boolean);
+    function ruleFor(id) { const s = String(id || ''); return reasoningRules.find(r => r.re.test(s)) || null; }
+    // OFF that an endpoint documents OUTSIDE its declared lists: DeepSeek's catalog lists low/high/max, and its API
+    // reference adds that reasoning_effort 'none' disables thinking. Only 'none' is meaningful here.
+    const offEffort = canonicalEffort(opts.reasoningOffEffort) === 'none' ? 'none' : '';
+    function withOff(list) { return (offEffort && list.length && list.indexOf(offEffort) < 0) ? [offEffort].concat(list) : list; }
+    // Opt-in (registry `replayReasoningContent`): capture streamed reasoning_content and hand it back next request.
+    const replayReasoning = opts.replayReasoningContent === true;
+    function declare(m) {
+      if (!m) return m;
+      if (!m.reasoningEffortsDeclared) {
+        const r = ruleFor(m.id);
+        if (r) {
+          m.reasoningEfforts = r.efforts.slice();
+          m.reasoningEffortsDeclared = true;
+          if (r.defaultLevel && r.efforts.indexOf(r.defaultLevel) >= 0) m.defaultReasoningLevel = r.defaultLevel;
+          if (r.supportsReasoning !== null) m.supportsReasoning = r.supportsReasoning;
+          else if (m.supportsReasoning == null && r.efforts.some(e => e !== 'none')) m.supportsReasoning = true;
+          if (r.note) m.reasoningNote = r.note;
+        }
+      }
+      if (m.reasoningEffortsDeclared) m.reasoningEfforts = withOff(m.reasoningEfforts);
+      return m;
+    }
     // Static catalog fallback for endpoints with no usable /models (e.g. Perplexity, whose
     // /v1/models lists Agent-API models, not its chat-completions roster). Used only when the
     // live endpoint yields nothing — a real catalog always wins.
-    const staticModels = Array.isArray(opts.staticModels) ? opts.staticModels.map(normalizeModel).filter(Boolean) : [];
+    const staticModels = Array.isArray(opts.staticModels) ? opts.staticModels.map(normalizeModel).filter(Boolean).map(declare) : [];
     const droppedParams = new Map();   // model -> Set(param) learned from unsupported-param 400s
     let catalog = null;
     let catalogPromise = null;
@@ -308,9 +429,10 @@
       // the provider profile documents it, and effort 'none' means omit it entirely.
       const requestedEffort = req.reasoningEffort || defaultEffort;
       const known = findModel(req.model);
-      const declared = known ? (known.reasoningEffortsDeclared ? known.reasoningEfforts : null) : recallDeclared(baseUrl, req.model);
+      const declaration = declarationFor(req.model);
+      const declared = declaration ? declaration.levels : null;
       if (declared) {
-        const pick = clampToDeclared(requestedEffort, declared);
+        const pick = clampToDeclared(requestedEffort, declared, declaration.defaultLevel);
         if (pick && !skip('reasoning_effort')) body.reasoning_effort = pick;
       } else {
         const effort = wireEffort(requestedEffort);
@@ -318,6 +440,14 @@
           const modelReasons = !!(known && (known.supportsReasoning === true || (Array.isArray(known.reasoningEfforts) && known.reasoningEfforts.length)));
           if (modelReasons || sendReasoningEffort) body.reasoning_effort = effort;
         }
+      }
+      if (replayReasoning) {
+        // THINKING is on unless this request turns it off ('none'): an omitted effort means the endpoint default
+        // (DeepSeek V4: thinking at high). Only a model KNOWN to think owes the field — one that declares levels,
+        // or one this endpoint has been seen streaming reasoning_content for.
+        const thinking = body.reasoning_effort !== 'none'
+          && ((declared && declared.some(e => e !== 'none')) || emitsReasoning(baseUrl, req.model));
+        body.messages = replayReasoningContent(body.messages, thinking, !!body.tools);
       }
       let res;
       try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }
@@ -365,6 +495,16 @@
         if (data === '[DONE]') return { done: true };
         try { return { json: JSON.parse(data) }; } catch (_) { return null; }
       }
+      // This turn's reasoning_content (replayReasoning endpoints only), parked on the turn as ONE block just before
+      // the terminal event, so the next request can hand it back (see replayReasoningContent).
+      let reasoningText = '';
+      function* flushReasoning() {
+        if (!replayReasoning || !reasoningText) return;
+        noteEmitter(baseUrl, req.model);
+        const block = { type: 'reasoning_content', text: reasoningText };
+        reasoningText = '';
+        yield { type: 'reasoning', block };
+      }
       function* emitFrom(j) {
         if (j.error) {
           const err = new Error((j.error && (j.error.message || j.error.code)) || 'provider stream error');
@@ -376,6 +516,7 @@
         const choice = j.choices && j.choices[0];
         if (!choice) return;
         const d = choice.delta || choice.message || {};
+        if (replayReasoning && typeof d.reasoning_content === 'string' && d.reasoning_content) reasoningText += d.reasoning_content;
         if (typeof d.content === 'string' && d.content) yield { type: 'text', delta: d.content };
         if (Array.isArray(d.tool_calls)) {
           for (const tc of d.tool_calls) {
@@ -389,6 +530,7 @@
           }
         }
         if (choice.finish_reason && !doneEmitted) {
+          yield* flushReasoning();
           doneEmitted = true;
           yield { type: 'done', finishReason: normalizeFinish(choice.finish_reason), truncated: false };
         }
@@ -424,7 +566,7 @@
         // cannot otherwise tell it apart from a finished answer — so it shipped the fragment as a completed,
         // $0 delivery. Requiring only ONE of the two signals keeps this correct for the local OpenAI-compatible
         // servers (Ollama, LM Studio) that send a finish_reason but omit the sentinel.
-        if (!doneEmitted) yield { type: 'done', finishReason: null, truncated: !sawSentinel };
+        if (!doneEmitted) { yield* flushReasoning(); yield { type: 'done', finishReason: null, truncated: !sawSentinel }; }
       } catch (e) {
         if (isAbort(e, req.signal)) return;
         throw e;
@@ -436,6 +578,7 @@
       // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
       const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
       let waited = 0;
+      let healedEffort = false, healedReasoning = false;   // each request self-heals each of these at most once
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
         let res;
@@ -461,6 +604,28 @@
         if (res.ok && res.body) return res;
         const upstreamError = await responseErrorDetail(res);
         let detail = upstreamError.detail;
+        // The endpoint NAMED the levels this model takes (or, for gpt-5.6 with tools on Chat Completions, that only
+        // 'none' works): learn them for the model and resend a level it accepts. Checked BEFORE the generic drop
+        // below, which would otherwise delete the param and silently run the model at its own default instead.
+        if (!healedEffort && (res.status === 400 || res.status === 422)) {
+          const onlyNone = toolsForceNone(detail);
+          const supported = onlyNone ? ['none'] : (body.reasoning_effort !== undefined ? supportedEffortsFrom(detail) : null);
+          if (supported) {
+            healedEffort = true;
+            rememberLearned(baseUrl, body.model, supported);
+            const next = onlyNone ? 'none' : clampToDeclared(body.reasoning_effort, supported);
+            if (next) body.reasoning_effort = next; else delete body.reasoning_effort;
+            attempt--; continue;
+          }
+        }
+        // DeepSeek thinking mode refused a history without reasoning_content (a turn this process never saw, e.g.
+        // after a restart): hand every assistant turn its field and resend, and remember the model thinks.
+        if (replayReasoning && !healedReasoning && res.status === 400 && /reasoning_content/i.test(detail) && /passed back/i.test(detail)) {
+          healedReasoning = true;
+          noteEmitter(baseUrl, body.model);
+          body.messages = replayReasoningContent(body.messages, true, true);
+          attempt--; continue;
+        }
         // Compatibility self-heal: providers behind the "OpenAI-compatible" label reject different optional
         // params. Strip the named param and retry immediately (remembered per model, so later turns in the
         // run never pay the extra round-trip). Does not consume a transient-retry attempt.
@@ -511,7 +676,7 @@
             if (!res.ok) return [];
             const j = await res.json();
             const raw = Array.isArray(j.data) ? j.data : (Array.isArray(j.models) ? j.models : []);
-            const list = raw.map(normalizeModel).filter(Boolean);
+            const list = raw.map(normalizeModel).filter(Boolean).map(declare);
             rememberDeclared(baseUrl, list);   // live catalog only; the static fallback roster never feeds the memo
             return list;
           } catch (_) { return []; }
@@ -529,11 +694,36 @@
     async function listModels() {
       return (await loadCatalog()).map(m => {
         const copy = Object.assign({}, m);
+        // what the endpoint said at request time outranks the catalog/table, so the picker shows it too
+        const learned = recallLearned(baseUrl, copy.id);
+        if (learned) {
+          copy.reasoningEfforts = learned;
+          copy.reasoningEffortsDeclared = true;
+          if (copy.defaultReasoningLevel && learned.indexOf(copy.defaultReasoningLevel) < 0) copy.defaultReasoningLevel = null;
+          if (copy.supportsReasoning == null && learned.some(e => e !== 'none')) copy.supportsReasoning = true;
+        }
         if (!copy.pricing && priceFamily && listPrices && typeof listPrices.pricingBlock === 'function') copy.pricing = listPrices.pricingBlock(priceFamily, copy.id);
         return copy;
       });
     }
     function findModel(id) { return catalog ? catalog.find(m => m.id === id) : null; }
+    // The levels a model accepts (+ its declared default), most authoritative first: what the endpoint TOLD us
+    // (learned) > this instance's catalog (vendor block or profile rule) > the same endpoint's catalog another
+    // instance loaded (memo) > the profile rule by id. null = nothing declared anywhere (generic behaviour).
+    function declarationFor(id) {
+      const m = findModel(id);
+      const learned = recallLearned(baseUrl, id);
+      if (learned) {
+        const def = m && m.defaultReasoningLevel;
+        return { levels: learned, defaultLevel: (def && learned.indexOf(def) >= 0) ? def : null };
+      }
+      if (m) return m.reasoningEffortsDeclared ? { levels: m.reasoningEfforts, defaultLevel: m.defaultReasoningLevel || null } : null;
+      const memo = recallDeclared(baseUrl, id);
+      if (memo) return memo;
+      const r = ruleFor(id);
+      return r ? { levels: withOff(r.efforts.slice()), defaultLevel: r.defaultLevel || null } : null;
+    }
+    function declaredFor(id) { const d = declarationFor(id); return d ? d.levels : null; }
     function contextLimit(id) { const m = findModel(id); return (m && m.context_length) || defaultContext; }
     function catalogPriceOf(id) {
       const m = findModel(id);
@@ -558,7 +748,7 @@
     function reasoningEfforts(id) {
       const m = findModel(id);
       // declared levels are exact; a declared "no dial" offers only 'none' (= send nothing)
-      const declared = m ? (m.reasoningEffortsDeclared ? m.reasoningEfforts : null) : recallDeclared(baseUrl, id);
+      const declared = declaredFor(id);
       if (declared) return declared.length ? declared.slice() : ['none'];
       if (m && Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length) return m.reasoningEfforts.slice();
       if ((m && m.supportsReasoning === true) || sendReasoningEffort) return ['none'].concat(WIRE_EFFORTS);
@@ -568,5 +758,5 @@
     return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts };
   }
 
-  return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField, clampToDeclared, canonicalEffort, paramNamed } };
+  return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField, clampToDeclared, canonicalEffort, paramNamed, supportedEffortsFrom, toolsForceNone, replayReasoningContent } };
 });
