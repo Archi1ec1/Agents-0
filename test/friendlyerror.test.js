@@ -376,6 +376,13 @@ for (const raw of [
   A.ok(/No XAI API key is connected yet/.test(noKey.userMessage), 'the missing-key copy names XAI (got: ' + noKey.userMessage + ')');
   A.ok(!/chatgpt/i.test(noKey.userMessage), 'a keyed provider miss does not mention ChatGPT');
   A.eq(actionButton(noKey).label, '＋ Add a key', 'the keyed door is still the key field');
+  // a provider whose label already ends in API ("OPENAI API") must not read "OPENAI API API key"
+  const openaiKey = friendlyError(new Error('sidecar HTTP 400 — missing key/model — connect a OPENAI API API key'));
+  A.ok(/No OPENAI API key is connected yet/.test(openaiKey.userMessage) && !/API API/.test(openaiKey.userMessage),
+    'the missing-key copy never doubles API (got: ' + openaiKey.userMessage + ')');
+  // an endpoint with no base URL says so, not the generic "No model is connected yet"
+  const noBase = friendlyError(new Error('sidecar HTTP 400 — missing key/model — configure the CUSTOM base URL'));
+  A.ok(/CUSTOM endpoint has no base URL yet/.test(noBase.userMessage), 'a missing base URL is named (got: ' + noBase.userMessage + ')');
   // a connected provider with no model picked
   const noModel = friendlyError(new Error('sidecar HTTP 400 — no model selected — pick a model for GROK OAUTH first'));
   A.eq(noModel.kind, 'no_model', 'no model -> no_model');

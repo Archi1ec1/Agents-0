@@ -433,8 +433,8 @@
       const userMessage = !nm ? k.msg
         : !signedOut ? ('Your ' + nm + ' sign-in expired — reconnect it (or add a provider key instead).')
         : provider === 'grok'
-          ? "Grok isn't signed in yet — sign in with your SuperGrok or X Premium+ account under SETTINGS → PROVIDERS → GROK OAUTH, or add an xAI API key instead."
-          : "Kimi isn't signed in yet — sign in with your Kimi account under SETTINGS → PROVIDERS → KIMI OAUTH, or add a provider key instead.";
+          ? "Grok isn't signed in yet — sign in with your SuperGrok or X Premium+ account under SETTINGS → PROVIDERS → GROK (XAI), or add an xAI API key instead."
+          : "Kimi isn't signed in yet — sign in with your Kimi account under SETTINGS → PROVIDERS → KIMI FOR CODING, or add a provider key instead.";
       return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, provider: provider, signedOut: signedOut, raw: raw };
     }
     // auth: say WHICH credential is missing, or that the provider REJECTED one. "No model is connected yet" is only
@@ -444,9 +444,11 @@
       const named = raw.match(/connect an? (.+?) api key\b/i);   // the sidecar guard: providerCredentialError()
       let userMessage = k.msg;
       if (/link this station to a starnet account/.test(low)) {
-        userMessage = "This station isn't linked to StarNet credits yet — link it under SETTINGS → STARNET, or connect your own provider key.";
+        userMessage = "This station isn't linked to StarNet credits yet — link it under SETTINGS → PROVIDERS → STARNET MANAGED, or connect your own provider key.";
       } else if (named) {
-        userMessage = 'No ' + named[1].trim() + ' API key is connected yet — add it under SETTINGS → PROVIDERS, or pick a model from a provider you have already connected.';
+        userMessage = 'No ' + named[1].trim().replace(/\s+api$/i, '') + ' API key is connected yet — add it under SETTINGS → PROVIDERS, or pick a model from a provider you have already connected.';
+      } else if (/configure the (.+?) base url/i.test(raw)) {
+        userMessage = 'The ' + raw.match(/configure the (.+?) base url/i)[1].trim() + ' endpoint has no base URL yet — set it under SETTINGS → PROVIDERS.';
       } else if (!/sidecar http|chatgpt|codex/.test(low) && (REJECTED_KEY_RE.test(low) || /\bhttp (?:400|401|403)\b/.test(low))) {
         userMessage = 'The provider rejected the API key — check it, or paste a new one under SETTINGS → PROVIDERS.';
       }
