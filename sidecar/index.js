@@ -1281,6 +1281,15 @@ const PROCESS_START = Date.now();
 if (process.env.STARNET_FAILOPEN_SELFTEST === '1') {
   Promise.reject(new Error('failopen selftest (STARNET_FAILOPEN_SELFTEST=1)')).catch(swallow('diag.failopen.selftest'));
 }
+// Credential files an older build wrote 0644 stay 0644 until their next write; tighten them once at boot
+// (macOS/Linux only). See sidecar/secret-file-modes.js.
+{
+  const modes = require('./secret-file-modes.js').tightenSecretFileModes({
+    fs, path, root: WORKSPACES, platform: process.platform,
+    note: (tag, e, rel) => console.warn('[' + tag + '] ' + rel + ': ' + ((e && e.code) || (e && e.message) || e)),
+  });
+  if (modes.tightened.length) console.warn('[secret-modes] made ' + modes.tightened.length + ' credential file(s) owner-only (0600): ' + modes.tightened.join(', '));
+}
 const DIAG_ERR_RING = [];             // [{ ts, message }] newest-last, bounded
 const DIAG_ERR_MAX = 8;
 // 2026-07-07 escape: a multi-agent run failed, the user restarted, and diagnostics said "(none recorded
@@ -1288,18 +1297,31 @@ const DIAG_ERR_MAX = 8;
 // Persist the ring (already-redacted messages only, never transcript content) so a post-restart bug report
 // still carries the last few run errors. Best-effort on both paths: a diag write must never break a run.
 const DIAG_ERR_FILE = path.join(WORKSPACES, 'diag.errors.json');
+// A build before the masked-key rule could have persisted part of a key; re-redact the loaded tail and, if that
+// changed anything, rewrite the file so the fragment does not sit on disk until the ring rotates it out.
+let diagLoadedDirty = false;
 try {
   const saved = JSON.parse(fs.readFileSync(DIAG_ERR_FILE, 'utf8'));
   if (Array.isArray(saved)) for (const e of saved.slice(-DIAG_ERR_MAX)) {
-    if (e && e.message) DIAG_ERR_RING.push({ ts: num(e.ts) || 0, message: String(e.message), runId: /^[a-zA-Z0-9_-]{1,80}$/.test(e.runId || '') ? e.runId : '' });
+    if (!e || !e.message) continue;
+    const raw = String(e.message), clean = redact(raw);
+    if (clean !== raw) diagLoadedDirty = true;
+    DIAG_ERR_RING.push({ ts: num(e.ts) || 0, message: clean, runId: /^[a-zA-Z0-9_-]{1,80}$/.test(e.runId || '') ? e.runId : '' });
   }
 } catch (_) {}   // no file yet / unreadable -> empty ring (first boot)
+function persistDiagErrors() {
+  // writeFileDurable creates the file 0600 and renames it over the old one, so a 0644 file from an older build
+  // is tightened too (the error tail is redacted, but it is still diagnostics about the owner's runs).
+  try { writeFileDurable({ fs: fs, path: path }, DIAG_ERR_FILE, JSON.stringify(DIAG_ERR_RING)); }
+  catch (e) { if (!e || e.code !== 'UPDATE_MUTATIONS_FROZEN') console.warn('[diag] could not persist the error tail:', (e && e.message) || e); }
+}
+if (diagLoadedDirty) persistDiagErrors();
 function recordDiagError(message, ts, runId) {
   const msg = String(message == null ? '' : message).trim();
   if (!msg) return;
   DIAG_ERR_RING.push({ ts: num(ts) || Date.now(), message: redact(msg), runId: /^[a-zA-Z0-9_-]{1,80}$/.test(runId || '') ? runId : '' });   // redact on WRITE (context.js always-on scrubber)
   while (DIAG_ERR_RING.length > DIAG_ERR_MAX) DIAG_ERR_RING.shift();
-  try { fs.writeFileSync(DIAG_ERR_FILE, JSON.stringify(DIAG_ERR_RING)); } catch (_) {}   // survives restarts; tiny + rare
+  persistDiagErrors();   // survives restarts; tiny + rare
 }
 const diagnostics = makeDiagnostics({ redact });   // pure assembler; redact injected for the second sanitization backstop
 /* Which proxy env vars are set, HOST ONLY (see diagnostics.proxyHostOnly — credentials are stripped there before
