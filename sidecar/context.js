@@ -130,6 +130,12 @@
   // run first; the broad `sk-` catch-all and `Bearer` run last. All replacements are length-shrinking,
   // so a single pass per pattern fully scrubs (no pattern reintroduces a matchable shape).
   const SECRET_PATTERNS = [
+    // A MASKED or TRUNCATED key is still part of a key. OpenAI's 401 echoes `Incorrect API key provided:
+    // sk-proj-Ab12****…Wx9Z`, and a truncated log line ends `sk-or-v1-abc…`. The mask characters break every
+    // full-key pattern below, so the visible head/tail went into diag.errors.json verbatim (reported against
+    // 0.12.4). Any vendor-prefixed token that contains a mask run (** / •• / … / ...) is scrubbed whole.
+    // The prefix needs its separator, so prose like "skip..." is never touched.
+    [/\b(?:(?:sk|pk|rk|xai|pplx|glpat|xox[abeprs])-|sk_(?:live|test)_|(?:gsk|hf|gh[pousr]|whk|ntn|lin_api)_|AIza|ya29\.)[-_.A-Za-z0-9]*?(?:[*•]{2,}|…|\.{3})(?:[-_A-Za-z0-9*•…]|\.{3})*/g, '[redacted-key]'],
     [/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----/g, '[redacted-private-key]'],
     [/sk-or-v1-[A-Za-z0-9_\-]{8,}/g, '[redacted-key]'],                 // OpenRouter
     [/sk-ant-[A-Za-z0-9_\-]{8,}/g, '[redacted-key]'],                   // Anthropic
