@@ -569,9 +569,11 @@ const Harness = (() => {
       pricing: (m && m.pricing) || null,
       context_length: (m && +m.context_length) || 0,
       supportsTools: (m && typeof m.supportsTools === 'boolean') ? m.supportsTools : (params.length ? params.indexOf('tools') >= 0 : true),
-      supportsReasoning: !!(m && m.supportsReasoning),
+      // unknown stays unknown (null) — false would lock the model dock to reasoning OFF (sidecar publicModel, same law)
+      supportsReasoning: (m && typeof m.supportsReasoning === 'boolean') ? m.supportsReasoning : null,
       supported_parameters: params,
-      reasoningEfforts: Array.isArray(m && m.reasoningEfforts) ? m.reasoningEfforts.slice() : []
+      reasoningEfforts: Array.isArray(m && m.reasoningEfforts) ? m.reasoningEfforts.slice() : [],
+      defaultReasoningLevel: (m && m.defaultReasoningLevel) || null
     };
   }
 

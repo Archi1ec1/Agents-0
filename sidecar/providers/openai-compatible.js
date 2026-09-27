@@ -20,6 +20,14 @@
   // them. `tools` is deliberately NOT in this list: silently removing tools would let a task run proceed
   // without the capability it needs (the run must fail honestly instead).
   const DROPPABLE_PARAMS = ['stream_options', 'parallel_tool_calls', 'tool_choice', 'reasoning_effort', 'max_tokens'];
+  // A provider may name a param in its OWN spelling. xAI refuses an effort a model cannot take with "Model
+  // grok-4-1-fast does not support parameter reasoningEffort." (camelCase) or "Invalid reasoning effort" (spaced);
+  // matching only the snake_case name let that 400 kill the run instead of retrying without the optional field.
+  const PARAM_ALIASES = { reasoning_effort: ['reasoningeffort', 'reasoning effort', 'reasoning.effort'] };
+  function paramNamed(text, param) {
+    if (text.indexOf(param) >= 0) return true;
+    return (PARAM_ALIASES[param] || []).some(alias => text.indexOf(alias) >= 0);
+  }
   // The chat-completions wire accepts this effort scale; StarNet's wider scale (xhigh/max) clamps into it.
   const WIRE_EFFORTS = ['minimal', 'low', 'medium', 'high'];
   function wireEffort(value) {
@@ -28,6 +36,57 @@
     if (v === 'xhigh' || v === 'max' || v === 'extrahigh') return 'high';
     if (v === 'min') return 'minimal';
     return WIRE_EFFORTS.indexOf(v) >= 0 ? v : 'medium';
+  }
+  /* PROVIDER-DECLARED EFFORTS (2026-09-27, Grok user report: "none of my grok models have reasoning on").
+     Some catalogs state exactly which reasoning levels each model takes: xAI's /v1/models carries
+     `capabilities.reasoning_effort` (e.g. ["low","medium","high","xhigh"]) and `capabilities.default_reasoning_effort`.
+     That list, not the generic wire scale above, is the truth for that model. It can include xhigh (which
+     wireEffort folds to high) and it can omit OFF (grok-4.5+ cannot stop reasoning). A model whose entry declares
+     capabilities but no levels has no dial at all: sending the param there is a 400. A catalog that says nothing
+     about a model keeps the generic behaviour. */
+  const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  function canonicalEffort(value) {
+    const v = String(value == null ? '' : value).trim().toLowerCase().replace(/[\s_-]+/g, '');
+    if (!v) return '';
+    if (v === 'off' || v === 'no' || v === 'disabled') return 'none';
+    if (v === 'min') return 'minimal';
+    if (v === 'med' || v === 'mid') return 'medium';
+    if (v === 'extra' || v === 'xtra' || v === 'extrahigh') return 'xhigh';
+    return EFFORT_ORDER.indexOf(v) >= 0 ? v : '';   // a level StarNet has no name for is dropped, never coerced
+  }
+  function declaredEffortList(raw) {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (const v of raw) { const e = canonicalEffort(v); if (e && out.indexOf(e) < 0) out.push(e); }
+    return out.sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b));
+  }
+  // Send a level the model DECLARED: the request itself when it is one, else the nearest weaker level, else the
+  // nearest stronger one. OFF the model does not offer is omitted (the model's own default applies) rather than
+  // replaced by an invented level. '' = send nothing.
+  function clampToDeclared(requested, declared) {
+    const want = canonicalEffort(requested);
+    if (!want || !declared || !declared.length) return '';
+    if (declared.indexOf(want) >= 0) return want;
+    if (want === 'none') return '';
+    const at = EFFORT_ORDER.indexOf(want);
+    for (let i = at - 1; i >= 1; i--) if (declared.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
+    for (let i = at + 1; i < EFFORT_ORDER.length; i++) if (declared.indexOf(EFFORT_ORDER[i]) >= 0) return EFFORT_ORDER[i];
+    return '';
+  }
+  // Declared levels outlive one adapter instance. A run builds a fresh provider, and its first request leaves
+  // before that instance's own catalog arrives. The catalog the model dock already loaded from the SAME endpoint
+  // is what lets that first request send the declared level instead of guessing. Capability facts only
+  // (endpoint -> model id -> levels): no key or token is ever stored here. The newest catalog load wins.
+  const declaredByEndpoint = new Map();
+  function rememberDeclared(endpoint, models) {
+    const byId = new Map();
+    for (const m of models) if (m && m.reasoningEffortsDeclared) byId.set(m.id, m.reasoningEfforts.slice());
+    declaredByEndpoint.set(endpoint, byId);   // a fresh load REPLACES the endpoint's facts (nothing stale survives)
+  }
+  function recallDeclared(endpoint, id) {
+    const byId = declaredByEndpoint.get(endpoint);
+    const hit = byId && byId.get(String(id || ''));
+    return hit ? hit.slice() : null;
   }
 
   // NO default endpoint. This adapter used to fall back to https://api.openai.com/v1 on an empty baseUrl,
@@ -101,6 +160,13 @@
     const id = (m && (m.id || m.name || m.model)) ? String(m.id || m.name || m.model) : '';
     if (!id) return null;
     const params = Array.isArray(m.supported_parameters) ? m.supported_parameters.slice() : [];
+    // Declared levels: StarNet's own non-empty `reasoningEfforts` (static rosters, the managed proxy), else a
+    // vendor `capabilities` block (xAI). An xAI entry that carries capabilities but no levels is a DECLARED
+    // "no dial" ([]). An empty StarNet list keeps its old meaning (unknown), so no existing catalog changes.
+    const caps = (m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities)) ? m.capabilities : null;
+    const own = declaredEffortList(m.reasoningEfforts);
+    const declared = (own && own.length) ? own : (caps ? (declaredEffortList(caps.reasoning_effort) || []) : null);
+    const defaultLevel = canonicalEffort(m.defaultReasoningLevel || (caps && caps.default_reasoning_effort));
     return {
       id,
       name: m.name || id,
@@ -109,8 +175,12 @@
       pricing: m.pricing || null,
       supported_parameters: params,
       supportsTools: typeof m.supportsTools === 'boolean' ? m.supportsTools : (params.length ? params.indexOf('tools') >= 0 : null),
-      supportsReasoning: typeof m.supportsReasoning === 'boolean' ? m.supportsReasoning : null,
-      reasoningEfforts: Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts.slice() : []
+      // A declared dial proves the model reasons. No dial proves nothing either way (a model can reason with no
+      // dial), so that stays null. Unknown is never flattened to false.
+      supportsReasoning: typeof m.supportsReasoning === 'boolean' ? m.supportsReasoning : ((declared && declared.some(e => e !== 'none')) ? true : null),
+      reasoningEfforts: declared ? declared : (Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts.slice() : []),
+      reasoningEffortsDeclared: !!declared,
+      defaultReasoningLevel: (defaultLevel && declared && declared.indexOf(defaultLevel) >= 0) ? defaultLevel : null
     };
   }
 
@@ -182,7 +252,7 @@
       const text = String(detail || '').toLowerCase();
       for (const p of DROPPABLE_PARAMS) {
         if (body[p] === undefined) continue;
-        if (text.indexOf(p) >= 0) { delete body[p]; rememberDrop(body.model, p); return p; }
+        if (paramNamed(text, p)) { delete body[p]; rememberDrop(body.model, p); return p; }
       }
       return null;
     }
@@ -233,13 +303,21 @@
            means an endpoint that 400s on it never sees it ('parallel_tool_calls' stays in DROPPABLE_PARAMS only
            for saved drop-state from older builds). */
       }
-      // reasoning_effort goes on the wire only when the model provably reasons (catalog) or the provider
-      // profile documents the param; effort 'none' means omit it entirely.
-      const effort = wireEffort(req.reasoningEffort || defaultEffort);
-      if (effort && !skip('reasoning_effort')) {
-        const m = findModel(req.model);
-        const modelReasons = !!(m && (m.supportsReasoning === true || (Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length)));
-        if (modelReasons || sendReasoningEffort) body.reasoning_effort = effort;
+      // reasoning_effort: a model whose catalog DECLARES its levels gets one of those levels, or nothing when it
+      // declares no dial. Otherwise the param goes on the wire only when the model provably reasons (catalog) or
+      // the provider profile documents it, and effort 'none' means omit it entirely.
+      const requestedEffort = req.reasoningEffort || defaultEffort;
+      const known = findModel(req.model);
+      const declared = known ? (known.reasoningEffortsDeclared ? known.reasoningEfforts : null) : recallDeclared(baseUrl, req.model);
+      if (declared) {
+        const pick = clampToDeclared(requestedEffort, declared);
+        if (pick && !skip('reasoning_effort')) body.reasoning_effort = pick;
+      } else {
+        const effort = wireEffort(requestedEffort);
+        if (effort && !skip('reasoning_effort')) {
+          const modelReasons = !!(known && (known.supportsReasoning === true || (Array.isArray(known.reasoningEfforts) && known.reasoningEfforts.length)));
+          if (modelReasons || sendReasoningEffort) body.reasoning_effort = effort;
+        }
       }
       let res;
       try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }
@@ -433,7 +511,9 @@
             if (!res.ok) return [];
             const j = await res.json();
             const raw = Array.isArray(j.data) ? j.data : (Array.isArray(j.models) ? j.models : []);
-            return raw.map(normalizeModel).filter(Boolean);
+            const list = raw.map(normalizeModel).filter(Boolean);
+            rememberDeclared(baseUrl, list);   // live catalog only; the static fallback roster never feeds the memo
+            return list;
           } catch (_) { return []; }
         })();
       }
@@ -477,6 +557,9 @@
     }
     function reasoningEfforts(id) {
       const m = findModel(id);
+      // declared levels are exact; a declared "no dial" offers only 'none' (= send nothing)
+      const declared = m ? (m.reasoningEffortsDeclared ? m.reasoningEfforts : null) : recallDeclared(baseUrl, id);
+      if (declared) return declared.length ? declared.slice() : ['none'];
       if (m && Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length) return m.reasoningEfforts.slice();
       if ((m && m.supportsReasoning === true) || sendReasoningEffort) return ['none'].concat(WIRE_EFFORTS);
       return ['none'];
@@ -485,5 +568,5 @@
     return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts };
   }
 
-  return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField } };
+  return { makeOpenAICompatibleProvider, _internals: { normalizeModel, cleanBaseUrl, responseErrorDetail, safeErrorField, clampToDeclared, canonicalEffort, paramNamed } };
 });
