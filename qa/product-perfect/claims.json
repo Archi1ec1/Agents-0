@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "229c5ea9e8770fecfb0d08e563a32767d849952e",
+    "sourceCommit": "0f0635ae875da7ed333fea6f8101ee7b2b4d46d9",
     "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
@@ -38,8 +38,8 @@
       },
       {
         "path": "RELEASE_NOTES.md",
-        "bytes": 7503,
-        "sha256": "918d90294641c0af628d0c2782ee18a4d79b28843bba72bc88b058736503cbbc"
+        "bytes": 8708,
+        "sha256": "de6120e0ee80ad658131c0954ca6002a0c73d50c9139d3e0c83139aab10735ca"
       },
       {
         "path": "TERMS.md",
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 388762,
-        "sha256": "f52248f290fac4e552e08383200cc281acb73aac1777227dfd6e50fd294ae693"
+        "bytes": 392382,
+        "sha256": "e54e67cc184d8add8beb92b8b3d74abb2ce44cd2e85a960c76e91db5496e398a"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -473,8 +473,8 @@
       },
       {
         "path": "frontend/app/friendlyerror.js",
-        "bytes": 49609,
-        "sha256": "046d20542b3e5bc5a8d9b3197511bc367a3611a7899d90d7018aa13028edc70d"
+        "bytes": 49934,
+        "sha256": "94a042463d22a6e6bf8967238e8e4a4afacf75753a753a564bbe48fd09ef36ff"
       },
       {
         "path": "frontend/app/fullscreen.js",
@@ -528,8 +528,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 85138,
-        "sha256": "a4dd1e6666196822cb7ef83113a151d9f70531791fd8164f9899e099cda29933"
+        "bytes": 85921,
+        "sha256": "2687e7386b4bc8209b663b04b557e987e466dca9c3a1cf370b34f199f728b681"
       },
       {
         "path": "frontend/app/hint.js",
@@ -1073,8 +1073,8 @@
       },
       {
         "path": "frontend/app/stationui.js",
-        "bytes": 737534,
-        "sha256": "5c7244f2a7e3081f6ddc6cef7d135ba6d39432037e77e56a5d81349644c66fdd"
+        "bytes": 737739,
+        "sha256": "54eafb79d484178035be7a286a0de9f6667c803a147befc40170e46282e03f48"
       },
       {
         "path": "frontend/app/study.js",
