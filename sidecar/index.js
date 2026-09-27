@@ -13301,7 +13301,9 @@ async function handleCronRun(req, res) {
       postconditions: (job.meta && job.meta.postconditions != null) ? job.meta.postconditions : undefined,
       preloadSkills: Array.isArray(job.skills) ? job.skills.slice() : [], requiredPreloads: true, cronScript: job.script || null,
       scriptTimeoutMs: job.scriptTimeoutMs,
-      noAgent: job.noAgent === true, runsLine: job.runsLine === true, dockId: job.dockId || undefined, workdir: job.workdir || null,
+      // dockId comes from the crate above (placeCronWorkitem resolves job.dockId, else the agent's entry bay), exactly
+      // like the scheduled fire's wrapper — a second dockId key here silently overrode it with undefined.
+      noAgent: job.noAgent === true, runsLine: job.runsLine === true, workdir: job.workdir || null,
       enabledToolsets: Array.isArray(job.enabledToolsets) ? job.enabledToolsets.slice() : null,
       initialTaint: !!(job.contextFrom && job.contextFrom.length)
     });
@@ -18614,6 +18616,9 @@ async function runOnceCore(o) {
     // the whole budget and let full-size results back into a prompt still at the window's edge (audit probe 09-22).
     if (name === 'agent.compact' && foldFreedEnough(payload)) execution.resetToolBytes();
     execution.observeToolEvent(name, payload);
+    // LINE WATCH: the loop's own run.start is the normal path's — it must name the bay/crate like every early-exit
+    // start above does, or the floor pairs a multi-bay agent's run with its OLDEST crate and lights the wrong bay.
+    if (name === 'agent.run.start' && payload && payload.runId === runId && (runStartExtra.dockId || runStartExtra.workitemId)) payload = Object.assign({}, payload, runStartExtra);
     if (((taskBrief || imageTask) || o.postconditions != null) && name === 'agent.run.end' && payload && payload.runId === runId && payload.reason === 'done') {
       bufferedTaskEnd = payload; return;
     }
