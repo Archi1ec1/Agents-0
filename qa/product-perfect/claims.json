@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "6a9320b96da5d3f0abbe25d21a69e529acd0857a",
+    "sourceCommit": "aaccd0cc3f4de784570d738dbfa9c421d80ee209",
     "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
@@ -473,8 +473,8 @@
       },
       {
         "path": "frontend/app/friendlyerror.js",
-        "bytes": 44607,
-        "sha256": "2cc5ce2f73e303a67ea40244b3bcd5725c435ae6517a08c751640dc429e39e98"
+        "bytes": 49609,
+        "sha256": "046d20542b3e5bc5a8d9b3197511bc367a3611a7899d90d7018aa13028edc70d"
       },
       {
         "path": "frontend/app/fullscreen.js",
@@ -528,8 +528,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 84806,
-        "sha256": "bdd1f46f527f2dd11d76d86c04c656044ad55f9eef2730188f83cc18b71d69fe"
+        "bytes": 85046,
+        "sha256": "68049883ad2c3de9969a51b34fe51bb150c844738cf722e6b02048a8d3c5a878"
       },
       {
         "path": "frontend/app/hint.js",
@@ -643,8 +643,8 @@
       },
       {
         "path": "frontend/app/modeldock.js",
-        "bytes": 46379,
-        "sha256": "a74badaef4ece5c0d92978e6f05be22cb7d7bbc8104a3e4b30b8080b20bb1b2f"
+        "bytes": 47677,
+        "sha256": "1622ff94a16bf365754d74243b17ca9388fde3d9dca669823c168b0003acd868"
       },
       {
         "path": "frontend/app/modelpicker.js",
