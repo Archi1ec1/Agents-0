@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "61b81a695943c60e6c4a11a782c06b66794ac38a",
+    "sourceCommit": "229c5ea9e8770fecfb0d08e563a32767d849952e",
     "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 386632,
-        "sha256": "345cac22d7c04b22b43f58306d096ecb0d776d69da36c36c1c09579badfe6df0"
+        "bytes": 388762,
+        "sha256": "f52248f290fac4e552e08383200cc281acb73aac1777227dfd6e50fd294ae693"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -473,8 +473,8 @@
       },
       {
         "path": "frontend/app/friendlyerror.js",
-        "bytes": 44607,
-        "sha256": "2cc5ce2f73e303a67ea40244b3bcd5725c435ae6517a08c751640dc429e39e98"
+        "bytes": 49609,
+        "sha256": "046d20542b3e5bc5a8d9b3197511bc367a3611a7899d90d7018aa13028edc70d"
       },
       {
         "path": "frontend/app/fullscreen.js",
@@ -528,8 +528,8 @@
       },
       {
         "path": "frontend/app/harness.js",
-        "bytes": 84806,
-        "sha256": "bdd1f46f527f2dd11d76d86c04c656044ad55f9eef2730188f83cc18b71d69fe"
+        "bytes": 85138,
+        "sha256": "a4dd1e6666196822cb7ef83113a151d9f70531791fd8164f9899e099cda29933"
       },
       {
         "path": "frontend/app/hint.js",
@@ -643,8 +643,8 @@
       },
       {
         "path": "frontend/app/modeldock.js",
-        "bytes": 46379,
-        "sha256": "a74badaef4ece5c0d92978e6f05be22cb7d7bbc8104a3e4b30b8080b20bb1b2f"
+        "bytes": 48197,
+        "sha256": "8c18692b969aaeb89181c133905cb727fa6bcb5ee53160da368fe1db5c7abbf0"
       },
       {
         "path": "frontend/app/modelpicker.js",
