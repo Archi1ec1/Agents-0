@@ -497,6 +497,7 @@ test/model-catalog-truth.test.js
 test/agent-model-select.test.js
 test/station-default-wire.test.js
 test/model-reasoning-presets.test.js
+test/grok-reasoning-truth.test.js
 test/provider-connections-ui.test.js
 test/newhero-reset.test.js
 test/harness-internal.test.js
