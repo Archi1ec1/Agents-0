@@ -15840,7 +15840,11 @@ async function handleRun(req, res) {
   // via /api/key). The browser build still sends body.key, which wins.
   const baseUrl = providerRuntimeBaseUrl(runProvider, body && (body.baseUrl || body.base_url));
   const key = providerRuntimeKey(runProvider, body && body.key);
-  if (!model || !providerHasCredential(runProvider, key, baseUrl)) { res.writeHead(400); return res.end('missing key/model'); }
+  // The refusal NAMES what is missing and for which provider. A bare "missing key/model" reached a SuperGrok user
+  // signed out of GROK OAUTH as "add a provider key (or sign in with ChatGPT)": wrong provider, wrong door
+  // (2026-09-27). The "missing key/model" prefix stays; older pages and tests classify on it.
+  if (!model) { res.writeHead(400); return res.end('no model selected — pick a model for ' + oauthLabel(runProvider) + ' first'); }
+  if (!providerHasCredential(runProvider, key, baseUrl)) { res.writeHead(400); return res.end('missing key/model — ' + providerCredentialError(runProvider)); }
 
   // Consume a continuation before opening the response stream or doing provider/tool work. The durable start
   // record is intentionally one-way: losing this response may require another review, but retrying cannot run
@@ -20955,9 +20959,16 @@ function publicModel(m) {
     max_completion_tokens: m.max_completion_tokens || null,
     pricing: m.pricing || null,
     supportsTools: m.supportsTools !== false,
-    supportsReasoning: !!m.supportsReasoning,
+    // UNKNOWN stays unknown (null). A catalog with no capability data proves neither "reasons" nor "doesn't";
+    // flattening it to false made the model dock lock every such model (all of xAI's, OpenAI's, DeepSeek's) to
+    // reasoning OFF while they went on reasoning at their own default (2026-09-27 Grok user report).
+    supportsReasoning: typeof m.supportsReasoning === 'boolean' ? m.supportsReasoning : null,
     supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters : [],
-    reasoningEfforts: Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : []
+    reasoningEfforts: Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : [],
+    // the provider's own default level, when its catalog names one (xAI: capabilities.default_reasoning_effort)
+    defaultReasoningLevel: m.defaultReasoningLevel || null,
+    // why a model's dial is what it is, when a profile documents it (gpt-5.6 on Chat Completions: OFF with tools)
+    reasoningNote: (typeof m.reasoningNote === 'string' && m.reasoningNote) ? m.reasoningNote : null
   };
 }
 
