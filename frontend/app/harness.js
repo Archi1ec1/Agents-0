@@ -573,7 +573,8 @@ const Harness = (() => {
       supportsReasoning: (m && typeof m.supportsReasoning === 'boolean') ? m.supportsReasoning : null,
       supported_parameters: params,
       reasoningEfforts: Array.isArray(m && m.reasoningEfforts) ? m.reasoningEfforts.slice() : [],
-      defaultReasoningLevel: (m && m.defaultReasoningLevel) || null
+      defaultReasoningLevel: (m && m.defaultReasoningLevel) || null,
+      reasoningNote: (m && typeof m.reasoningNote === 'string' && m.reasoningNote) || null
     };
   }
 

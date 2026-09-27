@@ -218,6 +218,7 @@ const ModelDock = (() => {
     if (dl) out.defaultReasoningLevel = normalizeEffort(dl);
     const desc = item && (item.reasoningLevelDescriptions || item.reasoning_level_descriptions);
     if (desc && typeof desc === 'object') out.reasoningLevelDescriptions = desc;
+    if (item && typeof item.reasoningNote === 'string' && item.reasoningNote) out.reasoningNote = item.reasoningNote;
     return out;
   }
 
@@ -464,8 +465,11 @@ const ModelDock = (() => {
       } else if (typeof Harness !== 'undefined' && Harness.listModels) {
         if (!providerEnabled(p)) return disconnected();
         try {
-          const q = (p === 'custom' && typeof Harness !== 'undefined' && Harness.getBaseUrl && Harness.getBaseUrl(p))
-            ? ('?baseUrl=' + encodeURIComponent(Harness.getBaseUrl(p))) : '';
+          // The catalog must describe the SAME endpoint this provider's runs hit: a per-provider base URL rides every
+          // run body (harness.js chat), so listing the default endpoint instead showed models — and reasoning dials —
+          // for a host the runs never reach. starnet's endpoint is its link, never a page override.
+          const override = (p !== 'starnet' && typeof Harness !== 'undefined' && Harness.getBaseUrl) ? Harness.getBaseUrl(p) : '';
+          const q = override ? ('?baseUrl=' + encodeURIComponent(override)) : '';
           const r = await apiFetch('/api/models/' + encodeURIComponent(p) + q, { cache: 'no-store' });
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const j = await r.json();
@@ -582,8 +586,8 @@ const ModelDock = (() => {
     } else {
       const note = document.createElement('div');
       note.className = 'model-dock-reasoning-note';
-      note.textContent = dialLess(item)
-        ? 'No reasoning dial for this model — it runs at its own default.'
+      note.textContent = item.reasoningNote ? item.reasoningNote
+        : dialLess(item) ? 'No reasoning dial for this model — it runs at its own default.'
         : 'This model has no adjustable reasoning.';
       wrap.appendChild(note);
     }
