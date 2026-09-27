@@ -247,10 +247,15 @@
     // `effort.supported_levels` / `default_level` (api-docs.deepseek.com, GET /models). An xAI entry that carries
     // capabilities but no levels is a DECLARED "no dial" ([]). An empty StarNet list keeps its old meaning (unknown).
     const caps = (m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities)) ? m.capabilities : null;
+    // Only an xAI-shaped block declares the dial: one that names reasoning levels, xAI's empty no-dial `{}`, or an
+    // xAI-owned entry. Other vendors publish capability blocks too (Mistral: completion_chat, function_calling, ...)
+    // that say nothing about reasoning; reading those as "no dial" silently dropped their reasoning_effort.
+    const capsDeclare = !!caps && ('reasoning_effort' in caps || 'default_reasoning_effort' in caps
+      || Object.keys(caps).length === 0 || String(m.owned_by || '').toLowerCase() === 'xai');
     const effortBlock = (m.effort && typeof m.effort === 'object' && Array.isArray(m.effort.supported_levels)) ? m.effort : null;
     const own = declaredEffortList(m.reasoningEfforts);
     const declared = (own && own.length) ? own
-      : caps ? (declaredEffortList(caps.reasoning_effort) || [])
+      : capsDeclare ? (declaredEffortList(caps.reasoning_effort) || [])
       : effortBlock ? declaredEffortList(effortBlock.supported_levels)
       : null;
     const defaultLevel = canonicalEffort(m.defaultReasoningLevel || (caps && caps.default_reasoning_effort) || (effortBlock && effortBlock.default_level));

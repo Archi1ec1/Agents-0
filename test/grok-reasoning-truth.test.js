@@ -56,6 +56,13 @@ module.exports = (async () => {
     A.eq(byId['grok-4.20-0309-reasoning'].reasoningEfforts, [], 'a capabilities block with no levels = no dial');
     A.eq(byId['grok-4.20-0309-reasoning'].supportsReasoning, null, 'no dial proves nothing about reasoning (it may reason anyway)');
     A.eq(byId['grok-build-0.1'].supportsReasoning, null, 'a silent entry stays unknown');
+    // Only an xAI-shaped capabilities block declares the dial. Mistral's catalog publishes a capabilities block about
+    // chat/tools/vision; reading it as "no dial" dropped Mistral's reasoning_effort once its catalog loaded.
+    const norm = require('../sidecar/providers/openai-compatible.js')._internals.normalizeModel;
+    const mistral = norm({ id: 'magistral-medium-latest', owned_by: 'mistralai', capabilities: { completion_chat: true, function_calling: true, vision: false } });
+    A.eq(mistral.reasoningEffortsDeclared, false, 'a non-xAI capabilities block leaves reasoning unknown (not a declared no-dial)');
+    A.eq(norm({ id: 'grok-x', capabilities: {} }).reasoningEffortsDeclared, true, 'xAI\'s empty capabilities block still declares no dial');
+    A.eq(norm({ id: 'grok-y', owned_by: 'xai', capabilities: { vision: true } }).reasoningEfforts, [], 'an xAI-owned entry without levels still declares no dial');
     A.eq(p.reasoningEfforts('grok-4.7'), ['low', 'medium', 'high', 'xhigh'], 'reasoningEfforts(id) reports the declared levels exactly');
     A.eq(p.reasoningEfforts('grok-4.20-0309-reasoning'), ['none'], 'a declared no-dial model offers only "send nothing"');
   }
