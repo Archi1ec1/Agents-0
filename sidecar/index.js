@@ -2343,9 +2343,15 @@ function channelRunConfigFor(agentId, candidate) {
   const id = String(agentId || '').trim();
   const ident = id ? agentRoster.get(id) : null;
   if (!ident) return { ok: false, error: 'target agent ' + (id || '(missing)') + ' is not in the live roster' };
-  const provider = normalizeProvider(ident.provider);
-  const model = String(ident.model || '').trim();
-  if (!model) return { ok: false, error: 'target agent ' + id + ' has no roster model' };
+  // An agent with no model pin ("Follow station default") runs on the STATION DEFAULT: the Overseer's roster
+  // model, provider and effort, exactly what COMMS resolves (frontend app.js stationDefaultWire). Refusing the
+  // empty pin here broke workflow line hops, RUN A SAMPLE and chat channels for every unpinned specialist once
+  // the empty choice started surviving reloads.
+  const hero = id !== 'agent' && !String(ident.model || '').trim() ? agentRoster.get('agent') : null;
+  const followsStation = !!(hero && String(hero.model || '').trim());
+  const provider = normalizeProvider(followsStation ? (hero.provider || ident.provider) : ident.provider);
+  const model = String((followsStation ? hero.model : ident.model) || '').trim();
+  if (!model) return { ok: false, error: 'target agent ' + id + ' has no roster model' + (id !== 'agent' ? ' and the station default (the Overseer) has none' : '') };
   /* A browser build may hand the channel route a candidate key/base URL that has not entered the desktop
      runtime store. Accept it ONLY when the caller says it belongs to the SAME provider as the roster. This is
      the seam that used to validate the globally focused provider during bot setup, then silently switch to the
@@ -2358,7 +2364,7 @@ function channelRunConfigFor(agentId, candidate) {
   if (!providerHasCredential(provider, key, baseUrl)) return { ok: false, error: providerCredentialError(provider) + ' for target agent ' + id };
   return {
     ok: true, key, model, provider, baseUrl,
-    reasoningEffort: resolveReasoningEffort(provider, ident.reasoningEffort),
+    reasoningEffort: resolveReasoningEffort(provider, followsStation ? hero.reasoningEffort : ident.reasoningEffort),
     system: ident.system || ''
   };
 }
