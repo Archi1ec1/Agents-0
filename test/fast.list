@@ -497,6 +497,7 @@ test/model-provider-reconcile.test.js
 test/model-catalog-truth.test.js
 test/agent-model-select.test.js
 test/station-default-wire.test.js
+test/reasoning-migration-0125.test.js
 test/model-reasoning-presets.test.js
 test/grok-reasoning-truth.test.js
 test/reasoning-dials.test.js

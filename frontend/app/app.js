@@ -697,6 +697,40 @@ const App = (() => {
   }
   // A save's top-level `prov` used to record the FOCUSED agent's pin; the hero's own provider is the station's truth.
   function savedStationProv(saved) { return (saved && saved.agent && saved.agent.provider) || (saved && saved.prov) || ''; }
+  /* 0.12.5 REASONING MIGRATION, once per save (persist() writes `reasoningMigrated` on every save from the first
+     0.12.5 persist, so an explicit 0.12.5 choice is never touched). 0.12.4's model dock could not read a reasoning
+     dial for OpenAI-API, xAI/Grok, DeepSeek or StarNet Managed models: it showed them locked at OFF and saved that,
+     while the adapter sent no reasoning_effort at all. 0.12.5 reads their real dials and sends the saved level, which
+     would silently change what an upgraded station runs:
+       - OpenAI-API / xAI / Grok / DeepSeek ran at the MODEL's default reasoning. The inherited 'none' would now turn it
+         off, so it is dropped and the provider default applies (the dock clamps it to a level the model accepts).
+       - StarNet Managed sent nothing. The Overseer's onboarding MEDIUM would now switch paid thinking on, so a Managed
+         pin keeps OFF (nothing is sent) until someone picks a level. */
+  const REASONING_MIGRATION = '0125';
+  const LEGACY_DIAL_LOCKED = ['openai', 'xai', 'grok', 'deepseek'];
+  function migrateLegacyReasoning(saved) {
+    if (!saved || typeof saved !== 'object' || saved.reasoningMigrated === REASONING_MIGRATION) return false;
+    const station = normalizeProviderId(savedStationProv(saved) || 'openrouter');
+    const settle = (prov, effort) => {
+      const p = normalizeProviderId(prov || station);
+      const e = String(effort || '').trim().toLowerCase();
+      if (LEGACY_DIAL_LOCKED.indexOf(p) >= 0) return (e === 'none' || e === 'off') ? null : (effort || null);
+      if (p === 'starnet') return 'none';
+      return effort || null;
+    };
+    const fix = a => { if (a && typeof a === 'object' && a.model) a.reasoningEffort = settle(a.provider, a.reasoningEffort); };
+    fix(saved.agent);
+    if (Array.isArray(saved.agents)) saved.agents.forEach(fix);
+    if (saved.reasoningEffort != null) {
+      const top = settle(station, saved.reasoningEffort);
+      if (top == null) delete saved.reasoningEffort; else saved.reasoningEffort = top;
+    }
+    // the page's own per-provider wire (localStorage) inherited the same OFF from 0.12.4's locked dock
+    if (typeof Harness !== 'undefined' && Harness.clearLegacyReasoningOff) Harness.clearLegacyReasoningOff(LEGACY_DIAL_LOCKED);
+    if (typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort('none', 'starnet');
+    saved.reasoningMigrated = REASONING_MIGRATION;
+    return true;
+  }
   function focusWire(a) {
     const station = stationDefaultWire();
     if (!(a && a.model)) return station;
@@ -1523,7 +1557,7 @@ const App = (() => {
     const worksignal = (typeof WorkSignalStore !== 'undefined') ? WorkSignalStore.serialize() : undefined;   // the capability-usage histogram (adaptive recruitment)
     const roster = liveAgents();
     const dossier = (typeof DossierStore !== 'undefined') ? DossierStore.serialize() : undefined;   // the station-wide Commander model
-    const doc = Save.write(Object.assign({ _saveDirty: true, _saveRevision: typeof CloudSave !== 'undefined' && CloudSave.revision ? CloudSave.revision() : 0, agent: hero, agents: roster.length > 1 ? roster.map(serializeAgentLite) : undefined, usage: Harness.totals(), prov, reasoningEffort, station: station ? station.serialize() : undefined, stationStats, profile, worksignal, dossier }, Workstreams.serialize()));
+    const doc = Save.write(Object.assign({ _saveDirty: true, _saveRevision: typeof CloudSave !== 'undefined' && CloudSave.revision ? CloudSave.revision() : 0, agent: hero, agents: roster.length > 1 ? roster.map(serializeAgentLite) : undefined, usage: Harness.totals(), prov, reasoningEffort, reasoningMigrated: REASONING_MIGRATION, station: station ? station.serialize() : undefined, stationStats, profile, worksignal, dossier }, Workstreams.serialize()));
     if (doc && typeof CloudSave !== 'undefined') CloudSave.push(doc);   // durable write-through to the sidecar (debounced, best-effort)
     if (rosterPushFailed) pushRoster();   // a prior roster POST failed — retry it opportunistically on this persist
     if (!doc) {
@@ -2702,6 +2736,7 @@ const App = (() => {
     if (Save.isFuture && Save.isFuture()) { showFutureSaveGate(Save.loadStatus().version); return; }
     const saved = Save.has() ? Save.load() : null;
     if (saved && saved.agent) {
+      migrateLegacyReasoning(saved);   // before any saved effort reaches the wire (0.12.5 reasoning migration)
       if (savedStationProv(saved) && Harness.setProv) Harness.setProv(savedStationProv(saved));
       if (saved.reasoningEffort && Harness.setReasoningEffort) Harness.setReasoningEffort(saved.reasoningEffort);
       if (Harness.getKey() || (Harness.configured && Harness.configured()) || Harness.getProv() === 'codex') {
@@ -5222,6 +5257,7 @@ const App = (() => {
     }
     // restore the provider BEFORE the credential check so a codex agent (tokens server-side) jumps straight
     // in after a wipe/origin-reset instead of being misrouted to an OpenRouter key prompt.
+    if (saved && saved.agent) migrateLegacyReasoning(saved);   // before any saved effort reaches the wire (0.12.5 reasoning migration)
     if (saved && savedStationProv(saved) && Harness.setProv) Harness.setProv(savedStationProv(saved));
     if (saved && saved.reasoningEffort && Harness.setReasoningEffort) Harness.setReasoningEffort(saved.reasoningEffort);
     if (saved && saved.agent) {

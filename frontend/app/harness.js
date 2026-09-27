@@ -486,6 +486,18 @@ const Harness = (() => {
   }
   const getReasoningEffort = provider => normalizeReasoningEffort(readScoped(LS.effort, provider) || defaultReasoningEffortForProvider(provider));
   const setReasoningEffort = (e, provider) => writeScoped(LS.effort, provider || getProv(), normalizeReasoningEffort(e));
+  // 0.12.5 reasoning migration (App calls it once per save, see app.js migrateLegacyReasoning): drop an inherited OFF
+  // for providers whose 0.12.4 dock locked every model at OFF while the adapter sent nothing, so the provider default
+  // applies again instead of 0.12.5 sending reasoning_effort 'none'.
+  function clearLegacyReasoningOff(providers) {
+    for (const raw of (Array.isArray(providers) ? providers : [])) {
+      const p = normalizeProviderId(raw);
+      try {
+        const stored = localStorage.getItem(providerSlot(LS.effort, p));
+        if (stored && normalizeReasoningEffort(stored) === 'none') localStorage.removeItem(providerSlot(LS.effort, p));
+      } catch (_) { /* storage unavailable: nothing inherited to clear */ }
+    }
+  }
 
   /* per-million pricing for a model id, if known from the catalog */
   function priceOf(id) {
@@ -1283,7 +1295,7 @@ const Harness = (() => {
   return {
     pingEngine,
     isDesktop: () => DESKTOP,   // lets the UI tell a desktop keychain-store failure (token saved locally) from a browser no-op
-    getSelectionRevision, getKey, setKey, setKeyPool, validateAndSetKeyPool, keyPoolSize, storeChannelToken, getModel, setModel, getProv, setProv, getBaseUrl, setBaseUrl, getReasoningEffort, setReasoningEffort, normalizeReasoningEffort, init, configured, refreshCreditsConfigured, hasStoredCredential, setDesktopConfigured,
+    getSelectionRevision, getKey, setKey, setKeyPool, validateAndSetKeyPool, keyPoolSize, storeChannelToken, getModel, setModel, getProv, setProv, getBaseUrl, setBaseUrl, getReasoningEffort, setReasoningEffort, clearLegacyReasoningOff, normalizeReasoningEffort, init, configured, refreshCreditsConfigured, hasStoredCredential, setDesktopConfigured,
     listModels, probeProvider, validateAndSetKey, priceOf, contextLimitOf, contextState, chat, cancel, haltAll, consent, consentAck, consentAnswer, summonAck, notebook,
     runRecoveries, prepareAutomaticRecovery, resolveRunRecovery, prepareReviewedRecovery,
     memoryProposals, memoryTurnin, memoryVeto, memoryReset, memoryRecords, memoryDeclined, memoryRestore, memoryPending, memoryPin, memoryEdit, memoryForget,
