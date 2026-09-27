@@ -205,6 +205,7 @@ test/sidecar-fixture.test.js
 test/sidecar.security.test.js
 test/agent-color-escape.test.js
 test/tauri.hardening.test.js
+test/desktop-csp-inline-scan.test.js
 test/finish-line-doctrine.test.js
 test/manual.test.js
 test/permissions.test.js
