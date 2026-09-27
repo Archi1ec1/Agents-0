@@ -66,4 +66,26 @@ A.ok(/const prov = \(hero && hero\.provider\) \|\|/.test(appjs), 'persist saves 
 A.eq((appjs.match(/Harness\.setProv\(saved\.prov\)/g) || []).length, 0, 'no resume path restores the raw top-level saved.prov');
 A.eq((appjs.match(/Harness\.setProv\(savedStationProv\(saved\)\)/g) || []).length, 3, 'all three resume paths restore the station provider');
 
+// SETTINGS -> PROVIDERS moves the station default (the Overseer's pin), so unpinned agents follow the switch instead
+// of the provider the station just left (a StarNet-credits station switched to a BYOK key kept sending `starnet`).
+{
+  const calls = [];
+  const src2 = ['stationDefaultWire', 'focusWire', 'setStationProvider'].map(lift).join('\n');
+  const roster = new Map([
+    ['agent', { id: 'agent', model: 'anthropic/claude-sonnet-5', provider: 'starnet', reasoningEffort: 'medium' }],
+    ['scout', { id: 'scout', model: null, provider: null, reasoningEffort: null }]
+  ]);
+  const f = new Function('agents', 'normalizeProviderId', 'pushRoster', 'persist', src2 + '\nreturn { focusWire, setStationProvider };')(
+    roster, p => String(p).trim().toLowerCase(), () => calls.push('roster'), () => calls.push('persist'));
+  A.eq(f.focusWire(roster.get('scout')).provider, 'starnet', 'before the switch an unpinned agent follows the Overseer');
+  A.eq(f.setStationProvider('openrouter'), true, 'the Settings pick moves the station default');
+  A.eq(f.focusWire(roster.get('scout')).provider, 'openrouter', 'an unpinned agent follows the Settings switch, not the provider the station left');
+  A.eq(f.focusWire(roster.get('scout')).model, 'anthropic/claude-sonnet-5', 'the station model is kept (the dock reconciles an invalid one)');
+  A.eq(calls, ['roster', 'persist'], 'unpinned roster rows and the save are rewritten');
+  A.eq(f.setStationProvider('openrouter'), false, 'a repeat pick is a no-op');
+}
+const stationui = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'stationui.js'), 'utf8');
+A.ok(/h\.setProv\(p\);\s*\n\s*\/\/[^\n]*\n\s*if \(typeof App !== 'undefined' && App\.setStationProvider\) App\.setStationProvider\(p\);/.test(stationui),
+  'the Settings provider card moves the station default too');
+
 A.report('station-default-wire.test');

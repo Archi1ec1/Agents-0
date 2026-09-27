@@ -702,6 +702,20 @@ const App = (() => {
     if (!(a && a.model)) return station;
     return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '' };
   }
+  // SETTINGS -> PROVIDERS picks the STATION's provider, and the station default IS the Overseer's pin
+  // (stationDefaultWire). The card used to move only the global wire, so the Overseer kept the provider the station
+  // had just left: unpinned agents, their roster rows and a restore all followed it (the #24 "Out of managed credit"
+  // symptom through a Settings switch from StarNet credits to a BYOK key). An invalid model under the new provider is
+  // reconciled by the dock the next time the Overseer is focused, exactly as a dock provider pick is.
+  function setStationProvider(p) {
+    const hero = agents.get('agent');
+    const next = p ? normalizeProviderId(p) : '';
+    if (!hero || !next || hero.provider === next) return false;
+    hero.provider = next;
+    pushRoster();
+    persist();
+    return true;
+  }
   function applyWire(w) {
     if (typeof Harness === 'undefined') return;
     if (w.model && Harness.setModel) Harness.setModel(w.model);
@@ -5269,5 +5283,6 @@ const App = (() => {
     // Model-facing edits wait for the same roster write used by the Dossier UI.
     configSynced: () => lastRosterPush,
     setApproval: setAgentApproval,
-    setExecutionProfile: setAgentExecutionProfile };
+    setExecutionProfile: setAgentExecutionProfile,
+    setStationProvider: setStationProvider };
 })();
