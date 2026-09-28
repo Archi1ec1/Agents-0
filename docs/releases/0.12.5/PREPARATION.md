@@ -1,8 +1,8 @@
 # StarNet 0.12.5 — release preparation
 
-Prepared 2026-09-26/27 on `agent/release-0125`, forked from trunk `003a63ee8` (the last merge before the cut:
-masked-key redaction). Baseline: public `v0.12.4` (`f00aa04df`, published 2026-09-20). Scope: every trunk merge in
-`v0.12.4..003a63ee8` (555 commits, 440 non-merge). Nothing here pushes, tags, publishes or deploys.
+Prepared 2026-09-26/27 on `agent/release-0125`, forked from trunk `003a63ee8`, then synced with trunk `3912c8d57` (three
+merges on 09-27, see "Final round"). Baseline: public `v0.12.4` (`f00aa04df`, published 2026-09-20). Scope: every trunk
+merge in `v0.12.4..3912c8d57` plus the fixes made in this lane. Final product candidate: `cde296a42`.
 
 ## How the candidate was audited
 
@@ -73,7 +73,7 @@ source-checkout tool, not part of the desktop app.
 - $25 spend rail: keep the merged behavior (five budget stops pause a routine); heads-up in the notes; revisit next release.
 - macOS build-mode cursor offset (customer report 09-26, root cause proven): next release. Workaround: Settings > TEXT SIZE 100%.
 
-## Validation of the candidate (`8cdb98267`: fixes + bump + notes + claims re-lock)
+## Validation of the first candidate (`8cdb98267`, before the 09-27 merges; historical)
 
 | Check | Result |
 | --- | --- |
@@ -101,10 +101,53 @@ Corrections made after the first CI pass (test and CI configuration only, no pro
 - The first full-history secret scan of the branch flagged five deliberately token-shaped test fixtures; they are
   allowlisted by exact fingerprint (and the comment that briefly quoted one).
 
+## Final round (2026-09-27 evening): today's merges, reviewed and fixed
+
+Andrew merged three more lanes, then asked for the release to be executed ("report back before publishing"): `606ab9646`
+(#24: unpinned agents follow the station default), `a2df6e174` (Grok reasoning levels from xAI's catalog; Grok
+sign-in/missing-key/no-credit errors), `3912c8d57` (OpenAI-API + DeepSeek reasoning dials; DeepSeek thinking with tools).
+They were merged into the lane (`229c5ea9e`) and reviewed twice (provider wire regression across every OpenAI-compatible
+profile, 7,632 request bodies compared against 0.12.4; consistency/upgrade/notes). Not included: `agent/hud-mode` (a new,
+unmerged feature) and `agent/openai-tools-effort-0927` (superseded by the reasoning-dials merge's explicit `none` for
+gpt-5.6 with tools).
+
+Defects found in those merges and fixed in this lane, each with a regression test that fails without its fix:
+
+| Commit | Defect |
+| --- | --- |
+| `e55dac774` | A specialist set to Follow station default was refused ("has no roster model") in workflow line hops, RUN A SAMPLE and chat channels; it now resolves the station default like COMMS. |
+| `27ba92fa3` | A Settings provider switch left the Overseer (the station default) on the old provider, so unpinned agents and their roster rows kept following it (#24 symptom via StarNet credits -> own key). Proven live in the real page: without the fix the Overseer and the unpinned roster row stayed stale; with it both follow. |
+| `50547192d`, `031e5d325` | Upgrade migration: 0.12.4 showed OpenAI-API/xAI/Grok/DeepSeek/StarNet Managed models locked at OFF while sending nothing. Without the migration 0.12.5 would have turned their reasoning OFF (OpenAI/xAI/DeepSeek) and switched paid thinking ON (Managed, from the onboarding MEDIUM). A one-time, save-marked migration keeps what each station actually ran. Proven live on a 0.12.4-shaped save. |
+| `18039e4e4` | StarNet's own spend-ledger errors ("...before continuing with spending limits") were shown as "your provider account is out of credit". |
+| `40c58b406` | Setup-error copy pointed at Settings cards that do not exist and read "No OPENAI API API key"; a missing base URL fell back to the generic message. |
+| `894cdca6f` | Any catalog `capabilities` block without reasoning levels read as "no dial", silently dropping Mistral's reasoning_effort once its catalog loaded. |
+
+The Linux fast gate caught one regression from these fixes before any build (`persist()` referenced a const that
+lifted-source tests do not see; `031e5d325`).
+
+Still owed after publication (not blockers): run headers record the REQUESTED effort, not the one sent; the #24 reporter
+must re-save Follow station default once (0.12.5 cannot clean a pin 0.12.4 saved); new StarNet Managed stations start at
+the onboarding MEDIUM reasoning (0.12.4 never sent it) — a product default to review.
+
+## Validation of the final candidate (`cde296a42`)
+
+| Check | Result |
+| --- | --- |
+| Guardian cycle `20260928-000418`, pinned to the candidate | GREEN, all seven gates: fast 952/952, HTTP 155/155, saboteur 527 attacks across 240 routes, UI screenshot sweep, golden frames, behavioral audit 49/49, journeys 139/139 |
+| Customer journeys (the train gate's second step) | 38/38 |
+| Beginner Run (UI-only) / credential-free eval gate | PASS / PASS |
+| Desktop Rust tests | 74 passed, 2 ignored (Rust sources unchanged since `8cdb98267`) |
+| `fast-gate` on Linux, run 36360793008 | green |
+| `secret-history` (full reachable history), run 36360794483 | green |
+| `desktop-build`, run 36361499855 (`publish-test=false`, `require_signed_mac=true`) | green: signed Windows NSIS, macOS arm64 + x64 built and notarized, Linux, Intel macOS installed acceptance |
+| Windows installer | `StarNet_0.12.5_x64-setup.exe`, 382,175,192 bytes, SHA-256 `a13fca01e81680d25701c69f9f65540161fdea2a784e683a0d5f6d0439b2a94b`; Authenticode Valid (timestamped); updater signature verified against the baked public key. The installed `skynet-desktop.exe` is 10,194,696 bytes (0.12.4: 274 MB), SHA-256 `78f3e8ad…778f`, Authenticode Valid |
+| `t0-clean-install-proof`, run 36364223578 (that installer, `baseline_tag=v0.12.4`, static level on) | green: clean install, first launch with the packaged UI up over CDP, shell close/reopen, a populated v0.12.4 station upgraded with its data preserved, installed provider fallback, delegated connectors and session continuity, installed smoke GREEN |
+| `qa:ready`, pinned to the candidate (`ready.json`) | **READY**: ledger 0 P0/P1, bug register 0 P0/P1, Guardian GREEN on the exact head, journeys 139/139, Beginner PASS, installed smoke GREEN (imported from run 36364223578, only the artifact path relocated: `installed-receipt-import.json`) |
+
+The tagged head adds only the final notes, this record and the claims re-lock to `cde296a42` (no product source).
+
 ## Still owed
 
-- **Before tagging:** the `qa:ready` installed check re-hashes the installed executable on this machine, so the hosted
-  smoke receipt must be imported with the executable extracted from the verified installer (0.12.4 did the same).
 - **After the tag push** (fires the release train; it stages a DRAFT only): watch the train, review the draft, run
   `t0-clean-install-proof` and `g1-packaged-lifecycle` against the draft, then the owner publishes; then
   `release:verify-host --expect-version 0.12.5` and an update canary.
