@@ -496,6 +496,33 @@
     return { mine, live, sentences };
   }
 
+  /* ---------- what STARTS a line: every trigger fact, composed ONCE (2026-09-28) ----------
+     The Workflow panel and the lead's station.layout tool both read a line's starts through THIS, so the two can
+     never disagree about what runs a line. facts = { lt: GET /api/routing/triggers, lineKey, cron: GET /api/cron,
+     chans: GET /api/channels/status, agents: the roster, human: a routine's display -> words }; a fact that was
+     not read is simply absent (its list stays empty). Entry docks = the routed column-0 docks of the compiled flow. */
+  const entryDocksOf = flow => flow ? flow.order.filter(p => { const d = flow.docks[p]; return d.agentId && d.col === 0 && d.routed; }) : [];
+  const entryAgentsOf = flow => entryDocksOf(flow).map(p => flow.docks[p].agentId);
+  const dockAgentsOf = flow => flow ? flow.order.map(p => flow.docks[p].agentId).filter(Boolean) : [];
+  function lineStarts(flow, facts) {
+    const x = facts || {}, out = { schedules: [], channels: [], routines: [], chanRows: [], events: [] };
+    if (!flow) return out;
+    // LINE TRIGGERS: only the ones the server reports enabled with nothing blocking them start the line
+    if (x.lt) out.events = lineEventTriggers(x.lt.triggers, x.lineKey).sentences;
+    if (x.cron && Array.isArray(x.cron.jobs)) {
+      out.routines = lineRoutines(x.cron.jobs, dockAgentsOf(flow), entryAgentsOf(flow), entryDocksOf(flow));
+      const armed = !!(x.cron.enabled && !x.cron.halted);
+      for (const r of out.routines) if (r.startsLine && armed) out.schedules.push(x.human ? x.human(r.display) : String(r.display == null ? '' : r.display));
+    }
+    if (x.chans) {
+      out.chanRows = channelFeeds(x.chans, entryAgentsOf(flow), x.agents);
+      for (const c of out.chanRows) if (c.feeds === true && c.connected && out.channels.indexOf(c.label.split(' ')[0]) < 0) out.channels.push(c.label.split(' ')[0]);
+    }
+    return out;
+  }
+  // howItRuns' segments as the plain sentence the panel paints (for a reader with no DOM — the lead's tool)
+  const sentenceText = segs => (Array.isArray(segs) ? segs : []).map(s => (s && s.s) || '').join('');
+
   /* ---------- LINE TRIGGERS: repaint only what changed (2026-09-24) ----------
      The panel re-reads the trigger list every 5 s while an INBOX is open. Rebuilding the whole card on each read
      remounted the WHEN picker (the picked schedule snapped back to daily 9:00), replaced an ARMED two-click
@@ -542,5 +569,6 @@
   const isLive = s => !!s && !TERMINAL[s.state];
 
   return { ROLE, GENERIC, roleInfo, starters, lineFlow, physicalOrder, neighbours, howItRuns, readiness, pillText,
-    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
+    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, lineStarts, entryDocksOf, entryAgentsOf, dockAgentsOf, sentenceText,
+    triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
 });

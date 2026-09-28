@@ -133,7 +133,175 @@ const StationCommands = (() => {
     return { folded: true, session: ws.title || 'General', agentId: who, resolvedBy: hit.resolvedBy };
   }
 
+  /* ---------- station.layout: THE FLOOR AS THE LEAD READS IT (2026-09-28; builds on PR #48 by @mvanhorn) ----------
+     Asked to explain or fix a workflow, the lead could not see the floor, so it guessed. This answers from the live
+     WorldModel through the Workflow panel's OWN readers, never a second derivation: WorkflowLine.lineFlow (the run
+     order, keyed by BAY, so one agent crewing two Bays is two steps), readiness + pillText (what blocks the line,
+     the workstation gate included), howItRuns (the sentence), and lineStarts (schedules, channels, folder and
+     webhook triggers, from the same three reads the panel makes). So the lead says what the panel shows, and a
+     panel fix is a lead fix. A brief is the text the agent RECEIVES (the compiled dockBays brief = brief + HANDS
+     OFF). Routing is the plan poster's own verdict (World.planStatus), and one blocking error switches routing off
+     for the WHOLE floor, which the answer says outright. A fact that could not be read is reported as unread,
+     never as "nothing". ⛔ READ-ONLY: nothing here assigns, edits, saves, or posts a plan. */
+  const LAYOUT_BRIEF_CAP = 400;   // the overview cuts a long brief here; `line` returns one line with full briefs
+  const LAYOUT_FACT_MS = 2500;    // each server read gets this long (the bridge itself gives up at 6 s)
+  async function readFact(url) {
+    let timer = null;
+    try {
+      const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (ctl) timer = setTimeout(() => ctl.abort(), LAYOUT_FACT_MS);
+      const r = await fetch(url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+      return r && r.ok ? await r.json() : null;
+    } catch (_) { return null; } finally { if (timer) clearTimeout(timer); }
+  }
+  // the three reads the Workflow panel makes for a line's starts (workflowpanel.js refreshServerFacts + ltRefresh)
+  async function layoutFacts() {
+    const [cron, chans, lt] = await Promise.all([readFact('/api/cron'), readFact('/api/channels/status'), readFact('/api/routing/triggers')]);
+    const f = { cron: cron && Array.isArray(cron.jobs) ? cron : null,
+      chans: chans && typeof chans === 'object' && !Array.isArray(chans) ? chans : null,
+      lt: lt && Array.isArray(lt.triggers) ? lt : null };
+    f.unread = [!f.cron && 'routines', !f.chans && 'channels', !f.lt && 'folder and webhook triggers'].filter(Boolean);
+    return f;
+  }
+  const uniq = xs => xs.filter((v, i, a) => a.indexOf(v) === i);
+  // the poster's verdict, read by the same tests REFIT's RUN NOW gate applies (build.js finPlanGate)
+  function routingState(sync, drawnBlocking, label) {
+    const labels = errs => uniq(errs.map(e => label(e.code))).join(' · ');
+    let out;
+    if (!sync || !sync.station) out = { state: 'unknown', note: 'The page could not say whether the router holds this floor.' };
+    else if ((sync.errors || []).length) out = { state: 'off', note: 'Routing is OFF for the whole station: the router refuses the entire floor while any blocking error is on it, so no line routes work. Fix: ' + labels(sync.errors) + '.' };
+    else if (sync.refusedHash && sync.refusedHash === sync.lastHash) out = { state: 'off', note: 'Routing is OFF: the router refused the last floor it was sent, so no line routes work.' };
+    else if (sync.stale || sync.inflight || sync.retryPending) out = { state: 'unconfirmed', note: 'The router has not confirmed it holds this floor (the last send failed or is still in flight), so it may be routing by an older floor.' };
+    else if (!sync.lastHash) out = { state: 'unknown', note: 'The router has not answered for this floor yet.' };
+    else out = { state: 'live', note: 'Routing is live: the router is running this floor.' };
+    if (sync && sync.station && sync.pending) {
+      out.pendingEdits = true;
+      out.note += ' The floor has newer edits the router has not received yet (Build mode sends them when it closes, and running a line sends them first); until then work routes by the previous floor.';
+      if (drawnBlocking.length) out.note += ' As drawn now, the floor has a blocking error the router will refuse: ' + labels(drawnBlocking) + '.';
+    }
+    return out;
+  }
+  // one line by exact lineId, exact name, or a UNIQUE name fragment — the same law as resolveSession
+  function pickLine(lines, want) {
+    const lower = want.toLowerCase();
+    const byId = lines.filter(l => l.lineId === want);
+    const byName = lines.filter(l => l.name && l.name.toLowerCase() === lower);
+    const byPart = lines.filter(l => l.name && l.name.toLowerCase().indexOf(lower) >= 0);
+    const hits = byId.length ? byId : (byName.length ? byName : byPart);
+    if (hits.length === 1) return hits[0];
+    const names = lines.map(l => (l.name || 'unnamed') + ' (' + l.lineId + ')').join(', ');
+    throw new Error(hits.length > 1 ? 'more than one line matches "' + want + '" — name it exactly. Lines: ' + names
+      : 'there is no line called "' + want + '"' + (names ? '. Lines: ' + names : ' — this station has no assembly lines'));
+  }
+  function describeLayout(st, agents, facts, sync, want) {
+    const P = Pipeline, W = WorkflowLine, B = typeof Build !== 'undefined' ? Build : null;
+    const names = {}; for (const a of (agents || [])) if (a && a.id) names[a.id] = a.name || a.id;
+    const who = id => id ? { agentId: id, name: names[id] || id } : null;
+    const upper = id => String(names[id] || id || 'AGENT').toUpperCase();   // the panel's agent label (build.js agentLabelFor)
+    const label = code => (B && B.nagLabel) ? B.nagLabel(code) : code;       // the floor's short nag
+    const why = code => (B && B.nagWhy) ? B.nagWhy(code) : label(code);      // the panel's full fix sentence (its labelOf)
+    const issue = e => { const o = { code: e.code, label: label(e.code), blocking: !e.warn, propId: e.propId || null }; const f = why(e.code); if (f !== o.label) o.fix = f; return o; };
+    const propOf = id => (id && st.propById(id)) || null;
+    const roomName = p => { const id = p ? st.roomAt(p.x, p.y) : null; const r = id && st.roomById(id); return r ? (r.name || r.kind || id) : null; };
+    const toolsAt = (aid, pid) => { try { return (aid && st.bayObjects(aid, pid)) || []; } catch (_) { return []; } };
+    const toolName = o => (o && typeof o === 'object') ? (o.objectType + (o.connectorId ? ':' + o.connectorId : '')) : String(o);
+    // a routine's schedule in words, exactly as the panel says it (build.js wfHost.human)
+    const human = d => { const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } })();
+      return (typeof CronHuman !== 'undefined' && CronHuman.describeDisplay) ? CronHuman.describeDisplay(d, { tz }) : String(d == null ? '' : d); };
+
+    // geometry props carry the projected frame; every room lookup uses the station's own prop tile
+    const geo = st.projectGeometry(), plan = P.compileRoutingPlan(geo) || {};
+    const D = P.dockLayer(plan), dockChains = D.dockChains || {};
+    const received = {}; for (const d of (plan.dockBays || [])) received[d.propId] = d.brief || '';
+    // a crewed Bay: the compiled brief its agent receives; an uncrewed one: what it WILL receive once crewed
+    const briefFor = pid => {
+      if (Object.prototype.hasOwnProperty.call(received, pid)) return received[pid];
+      const p = propOf(pid);
+      return (p && P.composeStageBrief && P.composeStageBrief(p.brief, p.hands)) || '';
+    };
+    const errors = (plan.errors || []).filter(Boolean), claimed = new Set();
+    const onLine = (c, e) => (e.propId != null && c.props.indexOf(e.propId) >= 0) || !!(e.tile && c.tiles && c.tiles[e.tile.x + ',' + e.tile.y])
+      || (e.propId == null && !e.tile && [].concat(e.agentId || [], e.agents || []).some(a => c.bays.some(b => b.agentId === a)));
+    const unread = (facts && facts.unread) || [];
+
+    let lines = (P.lineComponents(geo) || []).filter(c => c.intakes.length || c.bays.length || c.outboxes.length).map(c => {
+      const flow = W.lineFlow(plan, c, P, geo.props);
+      const starts = W.lineStarts(flow, { lt: facts.lt, lineKey: c.key, cron: facts.cron, chans: facts.chans, agents, human });
+      const anyStart = !!(starts.schedules.length || starts.channels.length || starts.events.length);
+      // the panel's facts, verbatim (build.js wfHost: hasCompute; workflowpanel.js paintHead: briefOf, labelOf)
+      const ready = W.readiness(flow, c, { hasCompute: aid => !!aid && toolsAt(aid).indexOf('computer') >= 0, errors: plan.errors || [],
+        labelOf: why, briefOf: pid => { const p = propOf(pid); return p && (p.brief || p.hands); }, triggers: starts });
+      const segs = W.howItRuns(flow, { nameOf: upper, handsOf: pid => { const p = propOf(pid); return p && p.hands; }, triggers: starts });
+      let hints = ready.hints.map(h => h.what);
+      if (unread.length && flow.trigger.propId && !anyStart) {
+        // a start the page could not read is unknown, not absent: never let "nothing starts it" stand on a failed read
+        const unsure = 'What starts it could not be fully read right now (' + unread.join(', ') + ' unavailable); ';
+        if (segs[0] && /^Nothing starts it/.test(segs[0].s)) segs[0] = { t: 'text', s: unsure };
+        hints = hints.filter(h => !/^nothing starts it/.test(h)).concat(['check what starts this line again: ' + unread.join(', ') + ' could not be read']);
+      }
+      const step = {}; flow.order.forEach((pid, i) => { step[pid] = i + 1; });
+      const ref = pid => ({ step: step[pid] || null, propId: pid, agent: flow.docks[pid] && flow.docks[pid].agentId ? upper(flow.docks[pid].agentId) : null });
+      const MODE = { all: 'in parallel', turns: 'taking turns', oneof: 'whichever the content routes to' };
+      const colMode = {}; for (const col of flow.cols) for (const d of col.docks) colMode[d.propId] = col.docks.length > 1 ? (MODE[col.mode] || null) : null;
+      const steps = flow.order.map(pid => {
+        const d = flow.docks[pid], sp = propOf(pid), nb = W.neighbours(flow, pid), ch = dockChains[pid];
+        const fed = !!(D.reachDock || {})[pid];
+        const s = { step: step[pid], propId: pid, role: d.role || null, room: roomName(sp), agent: who(d.agentId),
+          routed: !!d.routed, fedByInbox: fed, getsWorkFrom: (fed ? ['INBOX'] : []).concat(nb.prev.map(ref)),
+          sendsTo: d.agentId ? nb.next.map(ref).concat(ch && ch.outbox ? ['OUTBOX'] : []) : [],
+          brief: briefFor(pid), tools: d.agentId ? toolsAt(d.agentId, pid).map(toolName) : [] };
+        if (colMode[pid]) s.runsWith = colMode[pid];
+        if (!d.agentId) s.note = 'no agent yet: not routed until one is assigned';
+        else if (d.detached) s.note = 'not connected to the INBOX';
+        else if (d.deadEnd) s.note = 'its work goes nowhere: connect a belt onward';
+        return s;
+      });
+      const gates = flow.gates.map(g => g.kind === 'loop'
+        ? { kind: 'loop', propId: g.propId || null, after: (g.after || []).map(ref), sendsBackTo: g.backTo ? ref(g.backTo) : null, until: g.when || null, maxPasses: g.max || null }
+        : { kind: g.kind, propId: g.propId || null, after: (g.after || []).map(ref) });
+      const mine = errors.filter(e => onLine(c, e)); mine.forEach(e => claimed.add(e));
+      const out = { lineId: c.key, name: (c.intakes.map(id => propOf(id)).find(p => p && p.label) || {}).label || null,
+        status: W.pillText(ready), ready: !!ready.ready, howItRuns: W.sentenceText(segs),
+        blocking: ready.blocking.map(b => b.what), hints,
+        starts: { schedules: starts.schedules, channels: starts.channels, events: starts.events,
+          routines: starts.routines.map(r => ({ name: r.name, agent: upper(r.agentId), enabled: r.enabled, runsWholeLine: r.runsLine, atEntry: r.atEntry, startsLine: r.startsLine, schedule: human(r.display) })),
+          channelBots: starts.chanRows.map(r => ({ label: r.label, connected: r.connected, answersAs: r.answersAs, feedsThisLine: r.feeds })) },
+        steps, gates, issues: mine.map(issue) };
+      if (unread.length) out.startsUnread = unread;
+      return out;
+    });
+    if (want) lines = [pickLine(lines, want)];
+    let cut = false;
+    if (!want) for (const l of lines) for (const s of l.steps) if (s.brief.length > LAYOUT_BRIEF_CAP) { s.brief = s.brief.slice(0, LAYOUT_BRIEF_CAP) + '…'; s.briefTruncated = true; cut = true; }
+    const drawnBlocking = errors.filter(e => !e.warn);
+    const res = {
+      routing: routingState(sync, drawnBlocking, label),
+      lines,
+      // a finding on no line (a beltless Inbox or Bay, a buried belt) is still a finding: reported floor-wide, never dropped
+      otherIssues: want ? [] : errors.filter(e => !claimed.has(e)).map(issue),
+      rooms: (st.rooms() || []).filter(r => r && r.kind !== 'corridor').map(r => ({ id: r.id, name: r.name || null, kind: r.kind || null })),
+      workstations: (st.props() || []).filter(p => p && p.agentId && p.t !== 'bay').map(p => ({ propId: p.id, type: p.t, room: roomName(p), agent: who(p.agentId),
+        grants: (typeof WorldModel !== 'undefined' && WorldModel.capForProp && WorldModel.capForProp(p.t)) || null }))
+    };
+    if (cut) res.note = 'Briefs over ' + LAYOUT_BRIEF_CAP + ' characters are cut here; pass line for one line with full briefs.';
+    return res;
+  }
+
   const VERBS = {
+    /* The floor, read-only, for the lead: routing state, every assembly line as the Workflow panel reads it, rooms,
+       and workstation holders. Refuses honestly when the station, routing, or the line reader is not loaded. */
+    'station.layout': async (a) => {
+      const st = typeof App !== 'undefined' && App.station ? App.station() : null;
+      if (!st || !st.projectGeometry || !st.rooms || !st.bayObjects) throw new Error('the station layout is not ready yet');
+      if (typeof Pipeline === 'undefined' || !Pipeline.compileRoutingPlan || !Pipeline.lineComponents || !Pipeline.dockLayer) throw new Error('workflow routing is not loaded on this page');
+      if (typeof WorkflowLine === 'undefined' || !WorkflowLine.lineStarts) throw new Error('the workflow line reader is not loaded on this page');
+      const want = String((a && a.line) || '').trim().slice(0, 80);
+      let sync = null;
+      try { sync = (typeof World !== 'undefined' && World && World.planStatus) ? World.planStatus() : null; } catch (_) { sync = null; }   // unreadable = unknown, never live
+      const facts = await layoutFacts();
+      return describeLayout(st, typeof App !== 'undefined' && App.agents ? App.agents() : [], facts, sync, want);
+    },
+
     'station.agent_config': (args) => {
       if (typeof App === 'undefined' || !App.agents) throw new Error('the crew roster is not ready yet');
       const crew = App.agents();

@@ -185,10 +185,30 @@
       }
     };
 
+    /* station.layout (2026-09-28; builds on PR #48 by @mvanhorn) — the lead's EYES on the floor. Asked "what does my
+       line do?" or "why isn't step 2 running?", a lead with no view of the floor guessed. The page answers from the
+       Workflow panel's own readers (frontend/app/stationcommands.js describeLayout), so the lead can quote the same
+       status pill and sentence the Commander sees. Read-only, so it is a consent-free orchestrator read. */
+    const layoutTool = {
+      name: 'station.layout', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      description: 'Read the station floor the way the Workflow panel shows it: whether routing is live; every assembly line with its status pill, its plain-English "how it runs" sentence, what starts it (schedules, channels, folder and webhook triggers) and what is blocking it; each step in run order with its Bay, room, agent, the exact brief that agent receives (added to its Dossier), where its work comes from and goes, and the tools it has there; loops and joins; routing issues; rooms; and who holds which workstation. ⛔ Call this before explaining, troubleshooting, or suggesting changes to Bays and assembly lines, and never answer those from memory. Quote its status and sentence as given, and when routing is not live, say so. Read-only: it cannot assign agents, edit briefs, or change the layout; the Commander does that in Build mode. Pass `line` (a line name or lineId) for one line with full-length briefs. Requires an open station page.',
+      schema: { type: 'object', properties: { line: { type: 'string' } } },
+      run: async (args) => {
+        const line = String((args && args.line) || '').trim().slice(0, 80);
+        const out = await ask('station.layout', line ? { line } : {});
+        if (!out.ok) return refuse(out.error);
+        const r = out.result || {};
+        const lines = r.lines || [];
+        const routing = r.routing && r.routing.state ? 'routing ' + r.routing.state : 'routing unknown';
+        const head = lines.length === 1 ? '"' + (lines[0].name || 'unnamed line') + '": ' + (lines[0].status || '?') : lines.length + ' line(s)';
+        return { content: JSON.stringify(r), summary: head + ' · ' + routing };
+      }
+    };
+
     return {
-      agentConfigTool, agentConfigureTool,
+      agentConfigTool, agentConfigureTool, layoutTool,
       listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool,
-      register(reg) { [listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool, agentConfigTool, agentConfigureTool].forEach(t => reg.register(t)); return reg; }
+      register(reg) { [listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool, agentConfigTool, agentConfigureTool, layoutTool].forEach(t => reg.register(t)); return reg; }
     };
   }
 

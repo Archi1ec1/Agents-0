@@ -74,26 +74,14 @@ const WorkflowPanel = (() => {
     const i = f.order.indexOf(pid);
     return (d.role || 'BAY ' + (i + 1)) + (d.agentId ? ' · ' + nameOf(d.agentId) : '');
   }
-  const entryAgents = f => f ? f.order.map(p => f.docks[p]).filter(d => d.agentId && d.col === 0 && d.routed).map(d => d.agentId) : [];
   // (multi-bay) the ENTRY DOCKS themselves — a routine that fires at one bay of a multi-dock agent is judged by its bay
-  const entryDocks = f => f ? f.order.filter(p => { const d = f.docks[p]; return d.agentId && d.col === 0 && d.routed; }) : [];
-  const dockAgents = f => f ? f.order.map(p => f.docks[p].agentId).filter(Boolean) : [];
+  const entryDocks = f => { const W = WL(); return W ? W.entryDocksOf(f) : []; };
 
+  // what starts this line — composed by WorkflowLine.lineStarts, the ONE reader the lead's station.layout shares
   function triggers(f) {
-    const W = WL(); const out = { schedules: [], channels: [], routines: [], chanRows: [], events: [] };
-    if (!W || !f) return out;
-    // LINE TRIGGERS: only the ones the server reports enabled with nothing blocking them start the line
-    if (S.lt && W.lineEventTriggers) out.events = W.lineEventTriggers(S.lt.triggers, S.lineKey).sentences;
-    if (S.cron && Array.isArray(S.cron.jobs)) {
-      out.routines = W.lineRoutines(S.cron.jobs, dockAgents(f), entryAgents(f), entryDocks(f));
-      const armed = !!(S.cron.enabled && !S.cron.halted);
-      for (const r of out.routines) if (r.startsLine && armed) out.schedules.push(H.human(r.display));
-    }
-    if (S.chans) {
-      out.chanRows = W.channelFeeds(S.chans, entryAgents(f), H.agents());
-      for (const c of out.chanRows) if (c.feeds === true && c.connected && out.channels.indexOf(c.label.split(' ')[0]) < 0) out.channels.push(c.label.split(' ')[0]);
-    }
-    return out;
+    const W = WL();
+    if (!W || !f) return { schedules: [], channels: [], routines: [], chanRows: [], events: [] };
+    return W.lineStarts(f, { lt: S.lt, lineKey: S.lineKey, cron: S.cron, chans: S.chans, agents: H.agents(), human: H.human });
   }
   function refreshServerFacts() {
     api('/api/cron').then(r => { if (r.j && Array.isArray(r.j.jobs)) S.cron = r.j; paint(); }).catch(() => {});

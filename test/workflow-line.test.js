@@ -133,6 +133,36 @@ const nameOf = a => String(a).toUpperCase();
   A.eq(rt.map(r => [r.id, r.startsLine]), [['j1', true], ['j2', false], ['j3', false]], 'only a runsLine routine at an ENTRY dock starts the whole line');
 }
 
+/* ---------- lineStarts: the ONE composition the Workflow panel and the lead's station.layout share (2026-09-28) ---------- */
+{
+  const x = read(stamp('research_line', true)), f = x.flow, key = x.comp.key;
+  const entry = W.entryAgentsOf(f)[0];
+  A.eq(W.entryDocksOf(f), [f.order[0]], 'the entry dock is the routed column-0 dock');
+  A.eq(W.dockAgentsOf(f), f.order.map(p => f.docks[p].agentId), 'dockAgentsOf lists every crewed dock\'s agent in run order');
+  const facts = {
+    lineKey: key, human: d => 'HUMAN(' + d + ')', agents: [{ id: entry, name: 'Nova' }],
+    cron: { enabled: true, halted: false, jobs: [{ id: 'j1', agentId: entry, runsLine: true, enabled: true, scheduleDisplay: 'daily 9' },
+      { id: 'j2', agentId: entry, enabled: true, scheduleDisplay: 'hourly' }] },
+    chans: { telegram: { configured: true, connected: true, agentName: 'Nova' }, slack: { configured: true, connected: false, agentName: 'Nova' } },
+    lt: { triggers: [{ id: 't1', lineId: key, kind: 'folder', enabled: true, blockedBy: null, config: { path: 'C:\\Drops' } },
+      { id: 't2', lineId: 'other', kind: 'folder', enabled: true, blockedBy: null, config: { path: 'C:\\Elsewhere' } }] }
+  };
+  const s = W.lineStarts(f, facts);
+  A.eq(s.schedules, ['HUMAN(daily 9)'], 'a runsLine routine at the entry dock is a schedule, in the host\'s words');
+  A.eq(s.routines.map(r => [r.id, r.startsLine]), [['j1', true], ['j2', false]], 'every routine of the line is listed, starting it or not');
+  A.eq(s.channels, ['Telegram'], 'a connected channel answering as the entry agent starts the line; a disconnected one does not');
+  A.eq(s.chanRows.length, 2, 'every configured channel row is kept for the reader');
+  A.eq(s.events, ['when a file lands in C:\\Drops'], 'only this line\'s armed folder/webhook triggers count');
+  A.eq(W.lineStarts(f, Object.assign({}, facts, { cron: Object.assign({}, facts.cron, { halted: true }) })).schedules, [], 'a halted scheduler starts nothing');
+  A.eq(W.lineStarts(f, Object.assign({}, facts, { cron: Object.assign({}, facts.cron, { enabled: false }) })).schedules, [], 'a disabled scheduler starts nothing');
+  const bare = W.lineStarts(f, {});
+  A.eq([bare.schedules, bare.channels, bare.events, bare.routines, bare.chanRows], [[], [], [], [], []], 'an unread fact contributes nothing (the caller says it is unread)');
+  A.eq(W.lineStarts(null, facts).schedules, [], 'no flow, no starts');
+  const segs = W.howItRuns(f, { nameOf, triggers: s });
+  A.eq(W.sentenceText(segs), segs.map(v => v.s).join(''), 'sentenceText is the panel sentence as plain text');
+  A.ok(/^HUMAN\(daily 9\), when a Telegram message arrives or when a file lands in C:\\Drops, /.test(W.sentenceText(segs)), 'the starts lead the sentence: ' + W.sentenceText(segs));
+}
+
 /* ---------- test inputs flow left to right ---------- */
 {
   const x = read(stamp('research_line', true)), [d1, d2] = x.flow.order;
