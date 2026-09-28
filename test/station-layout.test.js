@@ -52,7 +52,7 @@ function boot(o) {
   vm.createContext(context);
   const S = vm.runInContext(commands + '\nStationCommands;', context);
   const tools = makeStationTools({ station: { request: async (verb, args) => { await S.run('r' + acks.length, verb, args); return acks.at(-1); } },
-    layoutFacts: o.facts === undefined ? FACTS : o.facts });
+    layoutFacts: o.facts === undefined ? FACTS : o.facts, now: o.now === undefined ? () => Date.now() : o.now });
   return { tools, calls };
 }
 async function layout(o, args, ctx) {
@@ -363,6 +363,7 @@ const detail = async (o, line) => (await layout(o, { line: line || 'draft & revi
     A.eq(L.budget, { maxHops: 4, maxUsdPerMessage: 1, maxUsdPerDay: 5 }, 'the effective budget');
     A.eq(L.today, { runs: 3, shipped: 1, failed: 1, tests: 2, usd: 0.1234, capUsdPerDay: 5, medianMs: 42000, day: 'UTC day' }, 'today\'s numbers, with the day they are counted in');
     A.eq(L.steps[0].lastRun, 'budget, 5m ago', 'the Bay\'s last run, as the lamp reads it');
+    A.eq((await layout({ app: app(st, []), facts, now: null })).r.lines[0].steps[0].lastRun, 'budget', 'with no injected clock, "how long ago" is never guessed');
     const D = await detail({ app: app(st, []), facts });
     A.eq([D.steps[0].lastRun.result, D.steps[0].lastRun.failed, D.steps[0].lastRun.runId], ['budget', true, 'r1'], 'the detail carries the run id to look it up');
     const r = (await layout({ app: app(st, []), facts: {} })).r;

@@ -203,8 +203,10 @@
     const lf = deps.layoutFacts || {};
     const call = (fn, ...a) => { if (typeof fn !== 'function') return undefined; try { return fn(...a); } catch (_) { return undefined; } };
     const agoText = ms => { const m = Math.round(ms / 60000); return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : m < 2880 ? Math.round(m / 60) + 'h ago' : Math.round(m / 1440) + 'd ago'; };
+    // the clock is INJECTED (sidecar determinism law); without one, "how long ago" is not claimed at all
+    const clock = typeof deps.now === 'function' ? deps.now : null;
     const lastRun = (d, now) => ({ result: d.reason || 'unknown', failed: !!d.failed, at: d.ts ? new Date(d.ts).toISOString() : null,
-      ago: d.ts ? agoText(Math.max(0, now - d.ts)) : null, runId: d.runId || null });
+      ago: (d.ts && now != null) ? agoText(Math.max(0, now - d.ts)) : null, runId: d.runId || null });
     function completeLayout(r, now) {
       const ro = r.routing || (r.routing = { state: 'unknown', note: 'The page could not say whether the router holds this floor.' });
       const held = call(lf.routed);
@@ -302,7 +304,7 @@
         const line = String((args && args.line) || '').trim().slice(0, 80);
         const out = await ask('station.layout', line ? { line } : {});
         if (!out.ok) return refuse(out.error);
-        const r = completeLayout(out.result || {}, Date.now());
+        const r = completeLayout(out.result || {}, clock ? clock() : null);
         const max = (ctx && Number(ctx.outputMax) > 0) ? Math.floor(Number(ctx.outputMax)) : 80000;
         const shaped = line ? { routing: r.routing, automation: r.automation || null, line: (r.lines || [])[0] || null } : overviewOf(r);
         if (line && r.todayUnread) shaped.todayUnread = true;
