@@ -91,7 +91,9 @@ function migrate(saved) {
 // ---- wiring locks: both load sites migrate BEFORE the saved effort reaches the wire, and every save is marked ----
 A.ok(/migrateLegacyReasoning\(saved\);[^\n]*\n\s*if \(savedStationProv\(saved\) && Harness\.setProv\)/.test(appjs), 're-entry migrates before restoring the wire');
 A.ok(/if \(saved && saved\.agent\) migrateLegacyReasoning\(saved\);[^\n]*\n\s*if \(saved && savedStationProv\(saved\)/.test(appjs), 'boot migrates before restoring the wire');
-A.ok(/reasoningEffort, reasoningMigrated: REASONING_MIGRATION, station:/.test(appjs), 'persist marks every save');
+const persistMark = /reasoningEffort, reasoningMigrated: '([^']+)'/.exec(appjs);
+A.ok(!!persistMark, 'persist marks every save');
+A.eq(persistMark && persistMark[1], (/\n  const REASONING_MIGRATION = '([^']+)';/.exec(appjs) || [])[1], 'the persisted marker equals REASONING_MIGRATION');
 A.ok(/getReasoningEffort, setReasoningEffort, clearLegacyReasoningOff,/.test(harnessjs), 'Harness exposes clearLegacyReasoningOff');
 
 // ---- Harness.clearLegacyReasoningOff removes only an inherited OFF, only for the named providers ----
