@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "1a3f1464633a0f0f2496571a4c8ae253a084dca6",
+    "sourceCommit": "6fb2505ded64590b243912b36a4f456178fc0100",
     "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
@@ -318,8 +318,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 409001,
-        "sha256": "503016abd677ad0e8a140809d0105ce05c6dc9d8fe1cb396304f37944e90916d"
+        "bytes": 409484,
+        "sha256": "7f182be581fc40153d0d9f35fb0fe99c0004e93e12eb4ccb153916e5fb0304a4"
       },
       {
         "path": "frontend/app/channels.js",
@@ -703,8 +703,8 @@
       },
       {
         "path": "frontend/app/pipeline.js",
-        "bytes": 98530,
-        "sha256": "3346c983d34197a0024e51338f4947ccee218abc9067f77cc00c3042636ec387"
+        "bytes": 98962,
+        "sha256": "8c88440283c32eb101fbc8fa81af6d69d9b0b4d299640dd502eaa9fdee83f1e4"
       },
       {
         "path": "frontend/app/pitch.js",
@@ -1053,8 +1053,8 @@
       },
       {
         "path": "frontend/app/stationcommands.js",
-        "bytes": 42386,
-        "sha256": "4760d4060545aae5a18bfe3b30256f63c9bcb39a80c1a3eeb4983f873edfa764"
+        "bytes": 48435,
+        "sha256": "92e82ee1b8978af58b477afaa2f1804bf6b99f2e95ca258bdd6173b8e211499d"
       },
       {
         "path": "frontend/app/stationquests.js",
@@ -1263,13 +1263,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 40153,
-        "sha256": "b968cc98e6ca0b1ed8e13b3a8793d955d59de195985278e786eedf7438929866"
+        "bytes": 47436,
+        "sha256": "5bd12e1e347a874d070f516441ab3d69c81afb5c57b75167edd6afd2bf466476"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 112703,
-        "sha256": "8d203bc12b40c4b10deb3ab919f204846dc078dac8b4be59d675fed481ebd5e0"
+        "bytes": 113629,
+        "sha256": "48e32371ab09bf4ecd5b1d1d3e1874e46899629caf3e23a60da7995e3e7ed574"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
