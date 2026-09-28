@@ -173,7 +173,7 @@ const StationCommands = (() => {
     else if (sync.refusedHash && sync.refusedHash === sync.lastHash) out = { state: 'off', note: 'Routing is OFF: the router refused the last floor it was sent, so no line routes work.' };
     else if (sync.stale || sync.inflight || sync.retryPending) out = { state: 'unconfirmed', note: 'The router has not confirmed it holds this floor (the last send failed or is still in flight), so it may be routing by an older floor.' };
     else if (!sync.lastHash) out = { state: 'unknown', note: 'The router has not answered for this floor yet.' };
-    else out = { state: 'live', note: 'Routing is live: the router is running this floor.' };
+    else out = { state: 'live', note: 'Routing is live: the router is running ' + (sync.pending ? 'the floor as last sent.' : 'this floor.') };
     if (sync && sync.station && sync.pending) {
       out.pendingEdits = true;
       out.note += ' The floor has newer edits the router has not received yet (Build mode sends them when it closes, and running a line sends them first); until then work routes by the previous floor.';

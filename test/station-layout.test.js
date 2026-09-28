@@ -215,6 +215,8 @@ const refs = list => list.map(x => typeof x === 'string' ? x : x.step + ':' + x.
     const pend = (await layout({ app, world: liveWorld({ pending: true }) })).r.routing;
     A.eq([pend.state, pend.pendingEdits], ['live', true], 'unsent edits: the router runs the previous floor');
     A.ok(/newer edits the router has not received yet/.test(pend.note), 'and the note says so: ' + pend.note);
+    A.ok(/running the floor as last sent\./.test(pend.note) && !/running this floor/.test(pend.note), 'it never says the router runs THIS floor while edits are unsent: ' + pend.note);
+    A.ok(/running this floor\./.test((await layout({ app })).r.routing.note), 'with nothing pending it runs this floor');
     A.eq((await layout({ app, world: null })).r.routing.state, 'unknown', 'no world on the page: unknown, never live');
     A.eq((await layout({ app, world: liveWorld({ station: false }) })).r.routing.state, 'unknown', 'no floor loaded in the world: unknown');
     // a floor whose DRAWN state has a blocking error (a belt loop) that the router has not been sent yet
