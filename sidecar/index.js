@@ -3188,6 +3188,20 @@ function setMasterBypass(on) {
   saveResilient(BYPASS_FILE, { version: 1, on: !!on, setAt: Date.now() });   // throws -> caller reports, state unchanged
   masterBypassFlag = !!on;
 }
+/* WATCH THE AGENT'S BROWSER — the Commander's station switch that opens the agent-controlled Chrome in a visible
+   window instead of headless. Persisted, token-gated (/api/browser/watch), read live by each run's browser
+   session; the model has no tool that reaches it. It changes only what the user can SEE: input stays synthetic. */
+const BROWSER_WATCH_FILE = path.join(WORKSPACES, 'browser-watch.json');
+function loadBrowserWatch() {
+  try { const raw = loadResilient(BROWSER_WATCH_FILE, 'browser-watch'); return !!(raw && raw.on === true); }
+  catch (e) { return false; }
+}
+let browserWatchFlag = loadBrowserWatch();
+const browserWatchOn = () => browserWatchFlag;
+function setBrowserWatch(on) {
+  saveResilient(BROWSER_WATCH_FILE, { version: 1, on: !!on, setAt: Date.now() });   // throws -> caller reports, state unchanged
+  browserWatchFlag = !!on;
+}
 // permanent allowlist of danger-class keys (capability:scope) the user has blessed forever. Lives BESIDE
 // the notebook store (sibling of the fs jail) so the agent's own fs.* tools can neither read nor rewrite it.
 const ALLOWLIST_FILE = path.join(WORKSPACES, 'permissions.allow.json');
@@ -9655,6 +9669,8 @@ const ROUTES = [
   { m: 'POST', exact: '/api/permissions/grant', h: handlePermissionsGrant },
   { m: 'POST', exact: '/api/permissions/revoke', h: handlePermissionsRevoke },
   { m: 'POST', exact: '/api/permissions/bypass', h: handlePermissionsBypass },
+  { m: 'GET', exact: '/api/browser/watch', h: handleBrowserWatchGet },          // { on } — is the agent's Chrome shown in a window
+  { m: 'POST', exact: '/api/browser/watch', h: handleBrowserWatchSet },         // { on } — show or hide it
   { m: 'GET', exact: '/api/projects', h: handleProjectsList },   // NS-5: the known blessed-project roots (autonomy surface)
   { m: 'GET', qsplit: '/api/projects/workspace', h: handleProjectWorkspace },
   { m: 'POST', exact: '/api/projects/workspace', h: handleProjectWorkspace },
@@ -16683,6 +16699,9 @@ async function runOnceCore(o) {
     allowVisible: false,
     forceHeadless: true,
     syntheticInputOnly: true,
+    // ...except when the Commander switched on "show the agent's browser": the window becomes visible to watch,
+    // input stays synthetic. Live predicate, so the next run follows a flip.
+    watchable: () => browserWatchOn(),
     // Chromium owns an ephemeral CDP port and a unique profile per run. Never attach to a
     // process-wide endpoint where another agent (or the user's browser) may be listening.
     cdpPort: 0,
@@ -19270,6 +19289,15 @@ async function handlePermissionsBypass(req, res) {
   }
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify({ ok: true, masterBypass: masterBypassOn(), envFullAccess: FULL_ACCESS }));
+}
+// GET/POST /api/browser/watch { on } — the "show the agent's browser" switch. The click IS the consent; persist-
+// before-commit, so a torn write leaves the previous state standing.
+function handleBrowserWatchGet(req, res) { respondJson(res, 200, { ok: true, on: browserWatchOn() }); }
+async function handleBrowserWatchSet(req, res) {
+  let body; try { body = JSON.parse(await readBody(req, 4096)) || {}; } catch (e) { return respondJson(res, 400, { ok: false, reason: 'bad json' }); }
+  try { setBrowserWatch(body && body.on === true); }
+  catch (e) { return respondJson(res, 500, { ok: false, reason: 'could not save the setting — unchanged', on: browserWatchOn() }); }
+  respondJson(res, 200, { ok: true, on: browserWatchOn() });
 }
 // POST /api/permissions/grant { key } — proactively PRE-BLESS a curated, LOCAL-only capability (cabinet:write)
 // so an autonomous run can use it with no mid-run prompt. Refuses any non-curated/exec/network class; fail-closed
