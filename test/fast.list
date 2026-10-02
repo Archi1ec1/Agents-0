@@ -960,3 +960,5 @@ test/agent-skin-thumbs.test.js
 test/estop-sample-hub.test.js
 test/trigger-sweep.test.js
 test/steptest-restart-spend.test.js
+test/shorts.test.js
+test/shorts.opus.test.js
