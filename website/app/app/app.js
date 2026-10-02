@@ -1152,7 +1152,7 @@ const App = (() => {
     recomposeOrchestrators();   // the lead's YOUR CREW clause must include the new worker before the roster push
     refreshUsage(); renderRail(); persist();
     pushRoster();   // the new worker is now delegatable by the lead
-    const _notify = (typeof StationUI !== 'undefined' && StationUI.notify) ? StationUI.notify : (m) => console.log('[summon]', m);
+    const _notify = opts.quiet === true ? () => {} : (typeof StationUI !== 'undefined' && StationUI.notify) ? StationUI.notify : (m) => console.log('[summon]', m);
     if (activate) {
       // ACTIONABLE FOLLOW-UP (audit B-1): a summoned specialist can't take FLOOR work until it has its own DESK
       // (a seated workstation). The old copy buried this required step in a passing remark ("give it its OWN PC")
@@ -1186,6 +1186,56 @@ const App = (() => {
     const lo = loadoutSummary(a, spec);
     if (lo) _notify(a.name + ' loadout - ' + lo, 'info');
     return a;
+  }
+  /* PRESET CREW (Agent 0). A station preset that hires staff (presetcrews.js) calls this after its layout is
+     applied: each member is summoned as a real specialist of its class, given its written identity and mission,
+     seated at a free desk in its own room, and then each routine is created as a real /api/cron job that runs
+     as that member, chained to the routines it reads (contextFrom). Members whose name is already on the roster
+     are reused, never duplicated, so applying the preset twice is safe. Resolves to a plain summary. */
+  async function seedCrew(crew, opts) {
+    opts = opts || {};
+    if (!agent) return { ok: false, error: 'Finish creating your Overseer first.' };
+    if (!crew || !Array.isArray(crew.members)) return { ok: false, error: 'No crew to hire.' };
+    const docsFor = opts.docsFor, routinePrompt = opts.routinePrompt || (r => r.prompt);
+    const byName = {}, hired = [], reused = [], seatless = [];
+    const rooms = station && station.rooms ? station.rooms() : [];
+    const inRoom = (p, room) => room && room.rects.some(r => p.x >= r.x1 && p.x <= r.x2 && p.y >= r.y1 && p.y <= r.y2);
+    for (const m of crew.members) {
+      const want = AgentId.normalizeName(m.agentName);
+      let a = liveAgents().find(x => x.name === want);
+      if (a) reused.push(want);
+      else {
+        const cls = (typeof Specialties !== 'undefined' && Specialties.get) ? Specialties.get(m.cls) : null;
+        a = summonAgent(Object.assign({}, cls || { id: m.cls, name: m.cls }, { agentName: want }), { quiet: true });
+        if (!a) return { ok: false, error: 'Could not hire ' + want + '.' };
+        hired.push(want);
+      }
+      byName[m.agentName] = a.id;
+      if (docsFor) applyAgentConfig(docsFor(m), a.id);
+      // a desk in the member's own room: keep one it already owns there, else bind the first free one
+      const room = rooms.find(r => r.name === m.room);
+      const props = station.props();
+      const owned = props.find(p => p.t === 'desk' && p.agentId === a.id && inRoom(p, room));
+      const free = owned || props.find(p => p.t === 'desk' && !p.agentId && inRoom(p, room));
+      if (free && !owned) { const r = station.assignPropAgent(free.id, a.id); if (!r || !r.ok) seatless.push(want); }
+      else if (!free) seatless.push(want);
+    }
+    recomposeOrchestrators(); renderRail(); persist();
+    try { await pushRoster(); } catch (e) { return { ok: false, error: 'The crew was hired, but the roster did not reach the server, so routines were not created. Reopen the preset to retry.', hired, reused }; }
+    // routines, in order, so each one can read the routines before it
+    const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) { return undefined; } })();
+    const routineIds = {}, created = [], failed = [];
+    for (const r of crew.routines || []) {
+      const body = { name: r.name, prompt: routinePrompt(r), schedule: r.schedule, tz, agentId: byName[r.by],
+        contextFrom: (r.after || []).map(n => routineIds[n]).filter(Boolean), enabled: opts.routinesOn !== false };
+      try {
+        const res = await Harness.api.post('/api/cron', body);
+        const job = res && res.j && res.j.job;
+        if (res && res.ok && job && job.id) { routineIds[r.name] = job.id; created.push(r.name); }
+        else failed.push(r.name + ': ' + ((res && res.j && (res.j.error || res.j.message)) || 'HTTP ' + (res && res.status)));
+      } catch (e) { failed.push(r.name + ': ' + ((e && e.message) || e)); }
+    }
+    return { ok: !failed.length && !seatless.length, hired, reused, seatless, routines: created, failed };
   }
   // DOES THIS CREW MEMBER STILL HAVE NOWHERE TO SIT? A truthful read of the LIVE FLOOR, never a flag: a
   // specialist owns exactly one prop — its workstation (capForProp === 'computer') — so "no such prop bound to
@@ -5299,7 +5349,7 @@ const App = (() => {
   // (never an id in the UI) and keys its standing candidates against the focused hero.
   // currentAgent/agents/applyConfig (slash-plan): the slash-command suite reads/writes the live roster
   // and per-agent config (/agents, /model, /personality, …).
-  return { show, refreshUsage, persist, pushRoster, refreshRail: renderRail, openWorkstream, launchRecipe, summonAgent, summonForRequest, crewCount: () => agents.size,
+  return { show, refreshUsage, persist, pushRoster, refreshRail: renderRail, openWorkstream, launchRecipe, summonAgent, summonForRequest, seedCrew, crewCount: () => agents.size,
     agentName: id => { const a = agents.get(id); return a ? (a.name || a.id) : null; },
     // WORK LINES: a downstream stage runs as ANOTHER agent, so the chat host needs THAT agent's composed
     // prompt — never the focused one's. Read-only; null for an id that is not on the live roster.

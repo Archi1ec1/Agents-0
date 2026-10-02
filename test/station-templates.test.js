@@ -6,7 +6,7 @@ const remasterContext={module:{exports:{}},IndustrialTextures:{enabled:()=>true,
 require('node:vm').runInNewContext(require('node:fs').readFileSync(require.resolve('../frontend/app/propsprites.js'),'utf8'),remasterContext);
 const T=require('../frontend/app/stationtemplates.js');
 const approved=require('./fixtures/station-default-approved.json');
-assert.equal(T.catalog.length,7); // default, five purpose builds, and cozy workshop
+assert.equal(T.catalog.length,8); // default, five purpose builds, cozy workshop, and Zak Holding
 for(const P of [legacySprites,remasterContext.module.exports])for(const item of T.catalog) {
   const doc=T.build(item.id,M,P,1000),s=M.create(doc);
   assert.equal(s.rooms().filter(r=>r.kind!=='corridor').length,item.rooms);
@@ -102,4 +102,4 @@ for(const P of [legacySprites,remasterContext.module.exports])for(const item of 
   const invalid=structuredClone(doc);invalid.props[0].x=999;
   const snapshot=current.serialize();assert.equal(current.replaceLayout(invalid).ok,false);assert.deepEqual(current.serialize(),snapshot);
 }
-console.log('station-templates: seven layouts, classic/remastered catalogs, approved home, cozy and creative conveyor routing, clear entrances, prop access, ownership, undo/redo and persistence PASS');
+console.log('station-templates: eight layouts, classic/remastered catalogs, approved home, cozy and creative conveyor routing, clear entrances, prop access, ownership, undo/redo and persistence PASS');
