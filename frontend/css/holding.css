@@ -82,3 +82,8 @@ body:has(#stage-wrap.o3d-on) #left .on, body:has(#stage-wrap.o3d-on) #chat-panel
 html body #crew-sum, html body .tut-card, html body [class*="toast"], html body [class*="hint-card"], html body [class*="coach"] {
   background: rgba(238,246,243,0.95) !important; color: var(--text) !important; border-color: rgba(15,107,120,0.18) !important;
 }
+
+/* the onboarding / dialogue sheet painted its own near-black backing: give it the daylight glass instead */
+html body .fnv-dialogue::before { background: rgba(232, 243, 239, 0.94) !important; }
+html body .fnv-dialogue, html body .fnv-dialogue * { color: var(--text); }
+html body .fnv-dialogue h1, html body .fnv-dialogue h2, html body .fnv-dialogue h3 { color: var(--ph-bright); }

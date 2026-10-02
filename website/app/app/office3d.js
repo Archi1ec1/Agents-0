@@ -362,7 +362,7 @@
       floorsEl.textContent = '';
       const mk = (txt, tint, fn, fl) => { const b = document.createElement('button'); b.type = 'button';
         const lv = document.createElement('span'); lv.className = 'lvl'; lv.textContent = txt; if (tint) lv.style.background = tint; b.appendChild(lv);
-        b.appendChild(document.createTextNode(fl ? fl.name : 'Whole building'));
+        const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = fl ? fl.name : 'Whole building'; b.appendChild(nm); b.title = nm.textContent;
         if (fl) { const c = document.createElement('span'); c.className = 'cnt'; b.appendChild(c); fl.btnCnt = c; fl.btn = b; }
         b.addEventListener('click', fn); floorsEl.appendChild(b); return b; };
       floorsEl.allBtn = mk('⌂', '', () => enter(null));
