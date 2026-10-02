@@ -48,6 +48,7 @@ test/workspace-recovery.test.js
 test/workspace-lineage.test.js
 test/agent-lifecycle.test.js
 test/durable-store.test.js
+test/commerce.test.js
 test/durable-write.mode.test.js
 test/secret-file-modes.test.js
 test/child-env.test.js
@@ -459,6 +460,7 @@ test/pathtrust.test.js
 test/folder-lock.test.js
 test/livewatch.test.js
 test/office3d.test.js
+test/commercepanel.test.js
 test/browser-watch.test.js
 test/workspace-reserved.test.js
 test/nightfocus.test.js
