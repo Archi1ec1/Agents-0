@@ -43,3 +43,28 @@ html body .o3d-ui, html body .o3d-ui * { font-size-adjust: none; letter-spacing:
 /* the rail's SESSIONS / PROJECTS / + NEW head: let it fit the narrow rail */
 html body .ws-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 html body .ws-head .ws-tab, html body .ws-head-acts button { font-size: 12px; padding: 3px 6px; white-space: nowrap; }
+
+/* ---------- GLASS: the tower fills the whole window and every panel floats over it as frosted glass ----------
+   Active only while the 3D view is on; CLASSIC keeps the solid panels. */
+body:has(#stage-wrap.o3d-on) { --glass-bg: rgba(14, 22, 42, 0.42); --glass-edge: rgba(170, 195, 255, 0.22); }
+body:has(#stage-wrap.o3d-on) #stage3d { position: fixed; inset: 0; width: 100vw !important; height: 100vh !important; z-index: 0; }
+body:has(#stage-wrap.o3d-on) #screen-game,
+body:has(#stage-wrap.o3d-on) #stage-wrap { background: transparent !important; box-shadow: none !important; border-color: transparent !important; overflow: visible; }
+body:has(#stage-wrap.o3d-on) #stage-wrap .cam-hud { display: none; }
+body:has(#stage-wrap.o3d-on) #topbar, body:has(#stage-wrap.o3d-on) #left,
+body:has(#stage-wrap.o3d-on) #chat-panel, body:has(#stage-wrap.o3d-on) #bottombar { position: relative; z-index: 2; }
+body:has(#stage-wrap.o3d-on) #topbar, body:has(#stage-wrap.o3d-on) #left,
+body:has(#stage-wrap.o3d-on) #chat-panel, body:has(#stage-wrap.o3d-on) #bottombar,
+body:has(#stage-wrap.o3d-on) [class*="window"]:not(#stage-wrap *), body:has(#stage-wrap.o3d-on) [class*="popup"], body:has(#stage-wrap.o3d-on) [class*="menu"]:not(li):not(button),
+body:has(#stage-wrap.o3d-on) [role="dialog"], body:has(#stage-wrap.o3d-on) [role="menu"], body:has(#stage-wrap.o3d-on) [class*="modal"], body:has(#stage-wrap.o3d-on) .o3d-ui .o3d-floors {
+  background: var(--glass-bg) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--glass-edge) !important; border-radius: var(--r-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+/* inner surfaces of a glass panel go clear so the blur reads through, instead of stacking solid fills */
+body:has(#stage-wrap.o3d-on) #left *, body:has(#stage-wrap.o3d-on) #chat-panel *, body:has(#stage-wrap.o3d-on) #topbar *, body:has(#stage-wrap.o3d-on) #bottombar * { background-color: transparent; }
+body:has(#stage-wrap.o3d-on) #left [class*="card"], body:has(#stage-wrap.o3d-on) #chat-panel [class*="card"],
+body:has(#stage-wrap.o3d-on) #left .on, body:has(#stage-wrap.o3d-on) #chat-panel button, body:has(#stage-wrap.o3d-on) #chat-panel textarea {
+  background: rgba(255, 255, 255, 0.06) !important; border-color: rgba(170, 195, 255, 0.18) !important;
+}

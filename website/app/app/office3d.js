@@ -463,12 +463,17 @@
     }
     ui.querySelectorAll('.o3d-switch button').forEach(b => b.addEventListener('click', () => { writeView(b.dataset.view); applyView(b.dataset.view); }));
 
+    // the canvas may be the wrap's size or (glass mode) the whole window behind every panel: size to the canvas itself
     function resize() {
-      const w = wrap.clientWidth, h = wrap.clientHeight;
+      const w = cv.clientWidth || wrap.clientWidth, h = cv.clientHeight || wrap.clientHeight;
       if (!w || !h) return;
-      renderer.setSize(w, h, false); camera.aspect = w / h; camera.fov = w < 700 ? 50 : 36; camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false); camera.aspect = w / h;
+      // full-window canvas: centre the shot on the stage's own box, not on the window, so the tower sits between the panels
+      const cr = cv.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+      const dx = (wr.left + wr.width / 2) - (cr.left + cr.width / 2), dy = (wr.top + wr.height / 2) - (cr.top + cr.height / 2);
+      if (Math.abs(dx) + Math.abs(dy) > 1) camera.setViewOffset(w, h, -dx, -dy, w, h); else camera.clearViewOffset(); camera.fov = w < 700 ? 50 : 36; camera.updateProjectionMatrix();
     }
-    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe(wrap); else window.addEventListener('resize', resize);
+    if (typeof ResizeObserver !== 'undefined') { const ro = new ResizeObserver(resize); ro.observe(wrap); ro.observe(cv); } else window.addEventListener('resize', resize);
 
     /* ---- loop: draws only while the 3D view is showing, at most ~30 fps ---- */
     const v3 = new THREE.Vector3();
@@ -497,11 +502,12 @@
         if (pe.working && !reduce) { pe.hands.forEach((h, i) => { h.position.y = 0.9 + Math.max(0, Math.sin(t * 14 + pe.phase + i * Math.PI)) * 0.04; }); pe.head.rotation.y = Math.sin(t * 0.7 + pe.phase) * 0.12; pe.p.rotation.x = 0; }
         else { pe.hands.forEach(h => { h.position.y = 0.9; }); pe.head.rotation.y = 0.4 * Math.sin(pe.phase); pe.p.rotation.x = pe.working ? 0 : -0.08; }
       });
-      const w = wrap.clientWidth, h = wrap.clientHeight;
+      const cr = cv.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+      const w = cr.width, h = cr.height, ox = cr.left - wr.left, oy = cr.top - wr.top;
       people.forEach(pe => { if (pe.tag.hidden) return; pe.anchor.getWorldPosition(pe.pos); pe.pos.y += 0.45; v3.copy(pe.pos).project(camera);
-        pe.tag.style.left = ((v3.x + 1) / 2 * w) + 'px'; pe.tag.style.top = ((1 - v3.y) / 2 * h) + 'px'; });
+        pe.tag.style.left = (ox + (v3.x + 1) / 2 * w) + 'px'; pe.tag.style.top = (oy + (1 - v3.y) / 2 * h) + 'px'; });
       floors.forEach(f => { if (f.label.hidden) return; v3.copy(f.labelPos).project(camera);
-        f.label.style.display = v3.z < 1 ? '' : 'none'; f.label.style.left = ((v3.x + 1) / 2 * w) + 'px'; f.label.style.top = ((1 - v3.y) / 2 * h) + 'px'; });
+        f.label.style.display = v3.z < 1 ? '' : 'none'; f.label.style.left = (ox + (v3.x + 1) / 2 * w) + 'px'; f.label.style.top = (oy + (1 - v3.y) / 2 * h) + 'px'; });
       renderer.render(scene, camera);
     }
 
