@@ -2004,12 +2004,27 @@ const Build = (() => {
     }
     apply.onclick = () => {
       if(!selected)return;
-      if(!armed){armed=true;apply.textContent='CONFIRM — USE '+selected.name;status.textContent='Replace the current rooms, props, and conveyors with '+selected.name+'? Agents and conversations remain. Click again to apply.';return;}
+      const crew=selected.crew&&typeof PresetCrews!=='undefined'?PresetCrews.get(selected.id):null;
+      if(!armed){armed=true;apply.textContent='CONFIRM — USE '+selected.name;status.textContent='Replace the current rooms, props, and conveyors with '+selected.name+'? Agents and conversations remain.'+(crew?' It also hires '+crew.members.length+' agents and creates '+crew.routines.length+' weekly routines.':'')+' Click again to apply.';return;}
       try {
         const doc=StationTemplates.build(selected.id,WorldModel,PropSprites,station.doc()._nid+100);
         localStorage.setItem(backupKey,JSON.stringify(station.serialize()));
         const result=station.replaceLayout(doc);if(!result.ok)throw Error(result.msg||result.error);
-        fitCamera();closeP();sfx('click');
+        fitCamera();sfx('click');
+        if(!crew||typeof App==='undefined'||!App.seedCrew){closeP();return;}
+        // AGENT 0: a crew preset hires its staff into the rooms that were just laid out.
+        apply.disabled=true;status.textContent='Hiring '+crew.members.length+' agents and setting up routines…';
+        App.seedCrew(crew,{docsFor:m=>PresetCrews.docsFor(crew,m),routinePrompt:PresetCrews.routinePrompt}).then(r=>{
+          const parts=[];
+          if(r.hired&&r.hired.length)parts.push(r.hired.length+' agents hired');
+          if(r.reused&&r.reused.length)parts.push(r.reused.length+' already on your crew');
+          if(r.routines&&r.routines.length)parts.push(r.routines.length+' routines ready');
+          const msg=selected.name+': '+(parts.join(', ')||'nothing new to add')+'.';
+          const problems=[r.error].concat(r.seatless&&r.seatless.length?['no free desk for '+r.seatless.join(', ')]:[]).concat(r.failed||[]).filter(Boolean);
+          if(typeof StationUI!=='undefined'&&StationUI.notify)StationUI.notify(msg+(problems.length?' Problems: '+problems.join('; '):''),problems.length?'warn':'good');
+          if(problems.length){apply.disabled=false;armed=false;apply.textContent='USE '+selected.name;status.textContent=msg+' Problems: '+problems.join('; ');}
+          else closeP();
+        });
       }catch(e){armed=false;status.textContent='Layout unchanged: '+e.message;apply.textContent='USE '+selected.name;}
     };
     backupButton.onclick = () => {

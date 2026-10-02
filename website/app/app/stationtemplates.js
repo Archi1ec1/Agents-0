@@ -9,8 +9,14 @@ const StationTemplates = (() => {
     { id: 'creative', name: 'CREATIVE STUDIO', rooms: 3, description: 'A warm design studio and a review room with an Inbox → Draft → Review → Outbox conveyor. Assign agents to the two prepared steps.', wings: [['creative','north'],['creativeReview','east']] },
     { id: 'research', name: 'RESEARCH STATION', rooms: 3, description: 'An analysis lab to the north and a dedicated reference archive to the east.', wings: [['research','north'],['archive','east']] },
     { id: 'engineering', name: 'ENGINEERING STATION', rooms: 5, description: 'Workshop, analysis lab, review room, and quiet lounge around your home station.', wings: [['engineering','west'],['review','east'],['research','north'],['reading','south']] },
-    { id: 'operations', name: 'OPERATIONS STATION', rooms: 5, description: 'Planning, communications, reference, and review rooms around a central home station.', wings: [['archive','west'],['comms','east'],['planning','north'],['review','south']] }
+    { id: 'operations', name: 'OPERATIONS STATION', rooms: 5, description: 'Planning, communications, reference, and review rooms around a central home station.', wings: [['archive','west'],['comms','east'],['planning','north'],['review','south']] },
+    // AGENT 0: the first preset that also hires staff — presetcrews.js names the crew and their weekly routines.
+    { id: 'zakholding', name: 'ZAK HOLDING', rooms: 5, crew: true, description: 'Your HQ with four labs: E-Commerce, YouTube, Real Estate and A Design. Applying it hires 18 named agents at their desks and sets up each lab\'s weekly routines.', wings: [['ecomLab','west'],['youtubeLab','east'],['realEstateLab','north'],['designLab','south']] }
   ];
+  // A lab: five desks (four along the back wall, one by the door side), web, files and memory gear, and the
+  // lab's name on the room. Entrances (left/right middle, top/bottom centre) stay clear for every side.
+  const labProps = (extra) => [['desk',1,1],['desk',4,1],['desk',12,1],['desk',15,1],['desk',2,7],
+    ['comms_uplink',13,7],['rack',15,8],['core',11,8],['plant',0,0],['plant',17,3]].concat(extra || []);
   const rooms = {
     cozyWorkshop: { name: 'WORKROOM', kind: 'factory', floorStyle: 'walnut', floorMat: 'plank', blueprint: ['front_desk',3,1], props: [['plant',1,1],['plant',16,1],['desk',2,7],['industrial_drawerbank',12,7],['bookshelf',14,9]] },
     cozyLounge: { name: 'LOUNGE', kind: 'quarters', floorStyle: 'walnut', floorMat: 'plank', props: [['tv',2,1],['rug',1,2],['couch',1,5],['industrial_roundtable',11,4],['dinerchair',10,4,3],['dinerchair',13,4,1],['coffee',14,4],['bookshelf',12,1],['plant',16,1],['bunk',13,7],['plant',1,8]] },
@@ -28,6 +34,10 @@ const StationTemplates = (() => {
     engineering: { name: 'WORKSHOP', kind: 'factory', floorStyle: 'hull', floorMat: 'tread', props: [['desk',3,1],['fabricator',11,1],['industrial_drawerbank',2,8],['crate',13,8]] },
     planning: { name: 'PLANNING', kind: 'bridge', floorStyle: 'cobalt', floorMat: 'resin', props: [['consoleL',2,1],['missionboard',7,0],['desk',13,1],['holotable',7,6],['plant',16,8]] },
     comms: { name: 'COMMS', kind: 'bridge', floorStyle: 'hull', floorMat: 'resin', props: [['consoleL',3,1],['screens',10,0],['rack',12,1],['plant',16,1]] },
+    ecomLab: { name: 'E-COMMERCE LAB', kind: 'factory', floorStyle: 'walnut', floorMat: 'plank', props: labProps() },
+    youtubeLab: { name: 'YOUTUBE LAB', kind: 'lab', floorStyle: 'cobalt', floorMat: 'resin', props: labProps() },
+    realEstateLab: { name: 'REAL ESTATE LAB', kind: 'bridge', floorStyle: 'teal', floorMat: 'resin', props: labProps() },
+    designLab: { name: 'A DESIGN LAB', kind: 'hab', floorStyle: 'ash', floorMat: 'plank', props: labProps([['easel',5,6]]) },
     archive: { name: 'ARCHIVE', kind: 'hab', floorStyle: 'walnut', floorMat: 'plank', props: [['bookshelf',2,1],['bookshelf',6,1],['bookshelf',10,1],['plant',16,1],['desk',3,7]] }
   };
   const slots = {
