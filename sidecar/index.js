@@ -79,6 +79,7 @@ const { makeSpotifyTools } = require('./tools/builtin/spotify.js');       // JUK
 const { makeSpotifyStore } = require('./spotify/store.js');               // Spotify OAuth (PKCE) token store + auto-refresh
 const spotifyPkce = require('./spotify/pkce.js');                          // pure PKCE helpers (verifier/challenge/urls)
 const { makeSaveStore } = require('./savestore.js');
+const { makeCommerceRoutes } = require('./commerce/routes.js');
 const { mergeNotes } = require('./notebookrestore.js');
 const { makeRunStore } = require('./runstore.js');
 const { makeGrowthRatings, deriveRating: deriveGrowthRating } = require('./growthratings.js');
@@ -453,6 +454,8 @@ function defaultWorkspaces() {
   return neu;
 }
 const WORKSPACES = ENV('WORKSPACES') ? path.resolve(ENV('WORKSPACES')) : defaultWorkspaces();
+const commerceRoutes = makeCommerceRoutes({ fs, path, directory: path.join(WORKSPACES, 'commerce'),
+  now: () => new Date().toISOString(), readBody });
 const outputArtifacts = makeOutputArtifacts({ fsp, fs, pathMod: path, root: WORKSPACES, crypto });
 
 const RECOVERY_CANDIDATE_ROOTS = workspaceCandidates({
@@ -10035,6 +10038,8 @@ const ROUTES = [
 function dispatchRoute(req, res) {
   const url = req.url || '';
   const bare = url.split('?')[0];
+  // Dispatch is reached only after the existing auth and update-freeze guards.
+  if (bare === '/api/commerce' || bare.startsWith('/api/commerce/')) return commerceRoutes(req, res);
   for (let i = 0; i < ROUTES.length; i++) {
     const r = ROUTES[i];
     if (Array.isArray(r.m) ? r.m.indexOf(req.method) < 0 : r.m !== req.method) continue;
