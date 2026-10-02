@@ -38,6 +38,8 @@
      scope   : 'read' | 'write' (write only reaches here AFTER the broker's own scope consent).
      surface : 'interactive' | 'autonomous'.
      prompt  : async (proposedRoot, { path, scope }) => 'always'|'once'|'full'|'deny'|...  (null ⇒ autonomous).
+     lockRoot: optional ONE-FOLDER MODE root. When set, the target must be inside it or the call is denied —
+               no prompt, no bless, and Full Power / blessed roots / the agent workspace do not widen it.
 
    Pure decision core over injected node deps (matches fs.js / permgrants.js). No env, no wall-clock. */
 'use strict';
@@ -135,6 +137,21 @@
       // policy restrictions, not path syntax validity or the distinction between this computer and a share.
       if (raw.indexOf('\0') >= 0) throw new Error('illegal path (NUL): ' + raw);
       if (/^[\\/]{2}/.test(raw)) throw new Error('network paths (UNC) are not local computer paths: ' + raw);
+      // ONE-FOLDER MODE: the Commander picked a single folder the agents may touch. It outranks everything
+      // below — Full Power, blessed roots, the agent's own workspace — and it never prompts: inside the folder
+      // (real path, symlinks resolved) the path is allowed, anywhere else it is denied.
+      const lockRoot = o.lockRoot ? String(o.lockRoot) : '';
+      if (lockRoot) {
+        const lhr = hardlineReason(raw, norm);
+        if (lhr) throw new Error(lhr);
+        const lockReal = await realpathOrSelf(lockRoot);
+        const lreal = await realpathDeepest(norm);
+        const lrhr = hardlineReason(lreal, lreal);
+        if (lrhr) throw new Error(lrhr + ' (reached via ' + norm + ')');
+        if (pathInside(lreal, lockReal)) return { base: lockReal, abs: norm, folderLock: true };
+        throw new Error('path is outside the Agent 0 folder (' + lockRoot + '): ' + norm +
+          ' — agents can only work inside that folder; do not retry.');
+      }
       // Host-wide Full Power intentionally bypasses project blessings, protected-file policy, cross-agent
       // workspace ownership and symlink containment. The OS remains the authority on whether the path exists
       // and whether this user can read or write it.

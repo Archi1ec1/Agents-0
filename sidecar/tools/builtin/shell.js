@@ -868,6 +868,12 @@
           cwd = resolveShellCwd({ pathMod: P, fs: fs, requested: args.cwd, current: cwd, jailRoot: jailRoot, root: ROOT, isWin: isWin, allowExternal: remoteOwner || environmentBackendId === 'local', allowProtected: remoteOwner });
           sessions.set(sessionKey, { cwd: cwd });
         }
+        // ONE-FOLDER MODE: the working directory itself may never leave the Commander's chosen folder.
+        const lockRoot = String((ctx && ctx.folderLock) || '').trim();
+        if (lockRoot && !withinJail(P, cwd, lockRoot)) {
+          sessions.delete(sessionKey);
+          throw new Error('refused: working directory ' + cwd + ' is outside the Agent 0 folder (' + lockRoot + ')');
+        }
         const hostCwd = environment && typeof environment.workspaceRoot === 'function' && environmentBackendId !== 'local'
           ? environment.workspaceRoot(aid) : cwd;
         const shellDialect = environment && environmentBackendId !== 'local' ? 'posix' : (isWin ? 'cmd' : 'posix');
