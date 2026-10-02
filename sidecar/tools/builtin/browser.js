@@ -2095,7 +2095,17 @@
          false/true -> if the running driver's mode differs, RELAUNCH in the requested mode on the same
                        profile dir (cookies/logins survive the swap). Headless is the default; a visible
                        window exists only while the Commander asked for one. */
+    /* WATCH MODE: the Commander's station setting "show the agent's browser". Read live from host state (never
+       model args), so a run started while it is on opens the agent's Chrome in a visible window the user can
+       watch. Input stays synthetic — the page still ignores the user's own mouse and keys — so watching never
+       hands the run real OS input. A headless env pin (CI rigs) still wins. */
+    function watchNow() {
+      try { return (typeof deps.watchable === 'function' ? deps.watchable() === true : deps.watchable === true) && !headlessRequested(deps.env); }
+      catch (_) { return false; }
+    }
+    function modeOverrides(headed) { return headed && watchNow() ? { headed: true, forceHeadless: false, headless: false } : { headed: headed }; }
     function wantedHeaded(wantVisible) {
+      if (watchNow() && wantVisible !== false) return true;
       return deps.forceHeadless === true ? false
         : (wantVisible === undefined ? (driverHeaded === null ? false : driverHeaded)
           : (!!wantVisible && !headlessRequested(deps.env) && deps.headless !== true));
@@ -2114,7 +2124,7 @@
         // Callers with an explicit mode must use ensureDriverMode(), which awaits that teardown.
         throw new Error('browser mode switch requires awaited teardown');
       }
-      driver = makeDriver(Object.assign({}, deps, profileDeps(), { headed }));
+      driver = makeDriver(Object.assign({}, deps, profileDeps(), modeOverrides(headed)));
       driverHeaded = headed;
       return driver;
     }
@@ -2148,7 +2158,7 @@
       const headed = wantedHeaded(wantVisible);
       if (!driver) return ensureDriver(wantVisible);
       if (attachedToUserBrowser || injected || driverHeaded === headed) return driver;
-      return relaunch({ headed });
+      return relaunch(modeOverrides(headed));
     }
     function refFor(node) {
       const ref = 'b' + (++seq);
@@ -2531,13 +2541,13 @@
         if (!vis) throw new Error('no full Chrome found — only a headless-shell binary, so a visible login window is impossible; install Chrome or set STARNET_CHROME');
       } catch (e) {
         // restore the shimmed headless posture before surfacing the failure
-        await relaunch({ headed: false });
+        await relaunch(modeOverrides(watchNow()));
         throw e;
       }
       const done = approved(await attended.prompt({ tool: 'browser.login.done', scope: 'execute', argsSummary: host }));
       // Done or cancelled, the window closes and research mode resumes on the SAME profile — any cookies the
       // site set during the attempt are already durable.
-      await relaunch({ headed: false });
+      await relaunch(modeOverrides(watchNow()));
       return { status: done ? 'done' : 'unconfirmed', host, url: finalUrl || u.href };
     }
     async function close() {

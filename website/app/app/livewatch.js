@@ -106,6 +106,7 @@
     if (typeof document === 'undefined' || typeof U === 'undefined' || !U.bus) return null;
     const core = create();
     let budget = null, budgetErr = '', open = false, paintQueued = false;
+    let watch = null, watchErr = '', watchBusy = false;   // "show the agent's browser" — server truth, null = unknown
 
     const css = document.createElement('style');
     css.textContent = [
@@ -130,6 +131,10 @@
       '.lw-run .lw-name{font-weight:600;color:#f8fafc}',
       '.lw-run .lw-step{margin-top:3px;color:#cbd5e1;word-break:break-word}',
       '.lw-run.ended{opacity:.6}',
+      '.lw-watch{display:flex;justify-content:space-between;align-items:center;gap:10px}',
+      '.lw-btn{flex:none;padding:3px 10px;border:1px solid rgba(148,163,184,.5);border-radius:3px;background:transparent;color:#f8fafc;font:inherit;font-size:11px;letter-spacing:.06em;cursor:pointer}',
+      '.lw-btn:hover{border-color:#f8fafc}.lw-btn[disabled]{opacity:.5;cursor:default}',
+      '.lw-err{color:#fca5a5}',
       '.lw-feed{list-style:none;margin:0;padding:0}',
       '.lw-feed li{padding:2px 0;border-bottom:1px solid rgba(148,163,184,.12);word-break:break-word}',
       '.lw-feed li.error{color:#fca5a5}.lw-feed li.end{color:#86efac}',
@@ -188,6 +193,11 @@
       html += '<div class="lw-dim">' + (s.known ? 'From the spend ledger, including background passes.' : (budgetErr ? 'Ledger unavailable (' + esc(budgetErr) + '); showing this window only.' : 'Counting this window only until the ledger answers.')) +
         (budget && typeof budget.lifetime === 'number' ? ' All time: ' + money(budget.lifetime) + '.' : '') + '</div>';
 
+      html += '<h5>AGENT BROWSER</h5><div class="lw-watch"><span>' +
+        (watch === null ? 'Checking…' : watch ? 'Shown in a window you can watch. The agent drives it; your clicks there are ignored.' : 'Hidden. Agents browse in the background.') +
+        '</span><button type="button" class="lw-btn" id="lw-watch"' + (watch === null || watchBusy ? ' disabled' : '') + '>' + (watch ? 'HIDE' : 'SHOW') + '</button></div>' +
+        (watchErr ? '<div class="lw-err">' + esc(watchErr) + '</div>' : '') +
+        '<div class="lw-dim">Applies to the next task an agent starts.</div>';
       html += '<h5>WORKING NOW</h5>';
       if (!s.snap.active.length) html += '<div class="lw-dim">No agent is running.</div>';
       for (const r of s.snap.active) {
@@ -210,6 +220,21 @@
       else html += '<ul class="lw-feed">' + s.snap.feed.slice(0, 40).map(f =>
         '<li class="' + esc(f.kind) + '"><span class="lw-t">' + clock(f.at) + '</span><b>' + esc(nameOf(f.agentId)) + '</b> ' + esc(f.text) + '</li>').join('') + '</ul>';
       panel.innerHTML = html;
+      const wb = panel.querySelector('#lw-watch');
+      if (wb) wb.addEventListener('click', () => {
+        if (typeof Harness === 'undefined' || !Harness.api || watch === null) return;
+        watchBusy = true; schedulePaint();
+        Harness.api.post('/api/browser/watch', { on: !watch }).then(({ ok, j }) => {
+          watchBusy = false;
+          if (ok && j) { watch = j.on === true; watchErr = ''; } else watchErr = String((j && j.reason) || 'could not change the setting');
+          schedulePaint();
+        }).catch(e => { watchBusy = false; watchErr = String((e && e.message) || 'the station could not be reached'); schedulePaint(); });
+      });
+    }
+    function refreshWatch() {
+      if (typeof Harness === 'undefined' || !Harness.api) return;
+      Harness.api.get('/api/browser/watch').then(j => { watch = !!(j && j.on === true); watchErr = ''; schedulePaint(); })
+        .catch(e => { watchErr = String((e && e.message) || 'setting unavailable'); schedulePaint(); });
     }
 
     function schedulePaint() {
@@ -235,7 +260,7 @@
     chip.addEventListener('click', () => {
       open = !open;
       panel.hidden = !open;
-      if (open) refreshBudget();
+      if (open) { refreshBudget(); refreshWatch(); }
       schedulePaint();
     });
     document.addEventListener('keydown', (e) => { if (open && e.key === 'Escape') { open = false; panel.hidden = true; schedulePaint(); } });
