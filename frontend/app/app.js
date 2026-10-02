@@ -3181,6 +3181,13 @@ const App = (() => {
       // Presence is already proven by the live roster, link indicator, and COMMS state. Do not
       // create a fresh persistent notification every time an existing station is reloaded.
     }
+    // AGENT 0: the 3D office over the stage. Read-only: it reads the station, the roster and who is running, and a
+    // click on a person opens the same dossier a click in the classic world opens. The classic World keeps running.
+    if (typeof Office3D !== 'undefined') Office3D.mount({
+      wrap: el('stage-wrap'), station: () => station, agents: liveAgents, openAgent: openWorldAgent,
+      isRunning: id => (typeof StationUI !== 'undefined' && StationUI.isAgentRunning) ? StationUI.isAgentRunning(id) : false,
+      company: () => { const d = station && station.doc ? station.doc() : null; return d && d.meta ? d.meta.name : ''; }
+    });
     setTimeout(maybeStartPreset, 0);   // AGENT 0: a holding chosen on the splash is built once the station is live
     // AGENT GROWTH: subscribe XP/Level/Confidence to the real run-outcome bus. Seeds agent.stats +
     // the station rollup, pushes the live numbers to the world HUD, and fires level-up celebrations.
