@@ -51,8 +51,9 @@ for (const html of ['frontend/index.html', 'website/app/index.html']) {
 }
 
 /* ---------- 4. every CSS font-family names VT323 (or inherits one that does) ---------- */
-for (const f of fs.readdirSync(path.join(root, 'frontend', 'css')).filter(n => n.endsWith('.css') && n !== 'holding.css')) {
+for (const f of fs.readdirSync(path.join(root, 'frontend', 'css')).filter(n => n.endsWith('.css') && n !== 'holding.css' && n !== 'lab-frame.css')) {
   // holding.css is the deliberate exception: the dark 3D-office look sets the system sans app-wide.
+  // lab-frame.css (THE LAB frame v2) sets the same system sans on the frame.
   const decls = stripCssComments(rd('frontend/css/' + f)).match(/font-family\s*:[^;}]+/g) || [];
   for (const d of decls) {
     A.ok(/VT323|inherit/i.test(d), 'frontend/css/' + f + ' — every font-family is VT323 or inherit, got: ' + d.trim());

@@ -1,0 +1,225 @@
+/* THE LAB — frame v2 (loaded LAST). The approved mockup: one clean top bar that also carries the four menus
+   (the bottom dock is gone), a Team panel with coloured agent tiles, a calm chat panel, and soft rounded
+   buttons everywhere. Presentational only: every id and class the scripts use is kept. */
+
+html body {
+  --f-ink: #10262B; --f-sub: #3C5A60; --f-mute: #5A7378; --f-faint: #8AA1A5;
+  --f-teal: #0F5D6B; --f-teal-hi: #0B4A55;
+  --f-glass: rgba(250, 253, 252, 0.86); --f-card: #FFFFFF;
+  --f-tint: rgba(16, 38, 43, 0.06); --f-tint-2: rgba(16, 38, 43, 0.10); --f-line: rgba(16, 38, 43, 0.09);
+  --f-shadow: 0 8px 30px rgba(16, 38, 43, 0.12);
+  --f-font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+}
+
+/* ---------- shell: two rows, the dock floats in the top bar ---------- */
+html body #screen-game.active {
+  grid-template-rows: 60px minmax(0, 1fr) !important;
+  grid-template-areas: "top top top" "left center chat" !important;
+  gap: 14px !important; padding: 16px 20px 20px !important;
+}
+html body #topbar, html body #left, html body #chat-panel, html body #bottombar, html body .bb-menu,
+html body #topbar *, html body #left *, html body #chat-panel *, html body #bottombar *, html body .bb-menu *, html body .o3d-ui * {
+  font-family: var(--f-font) !important; letter-spacing: normal !important; text-shadow: none !important;
+}
+html body #topbar, html body #left, html body #chat-panel {
+  background: var(--f-glass) !important; backdrop-filter: blur(18px) saturate(1.1) !important;
+  border: 0 !important; border-radius: 20px !important; box-shadow: var(--f-shadow) !important;
+}
+html body #topbar { border-radius: 18px !important; padding: 0 12px 0 22px !important; }
+
+/* ---------- the four menus, moved into the top bar ---------- */
+html body #bottombar {
+  position: fixed !important; top: 26px; left: 50%; transform: translateX(-50%); z-index: 70;
+  height: 40px !important; min-height: 0 !important; padding: 4px !important; gap: 4px !important;
+  display: flex !important; align-items: center; justify-content: center;
+  background: var(--f-tint) !important; border: 0 !important; border-radius: 12px !important; box-shadow: none !important;
+  backdrop-filter: none !important; width: auto !important;
+}
+html body #bottombar::before, html body #bottombar::after { display: none !important; }
+html body #bottombar .bb-right, html body #bottombar .widget-rail { display: none !important; }
+html body #bottombar .bb-grp {
+  height: 32px !important; padding: 0 16px !important; border: 0 !important; border-radius: 9px !important;
+  background: transparent !important; box-shadow: none !important; color: var(--f-sub) !important;
+  font-size: 0 !important; display: inline-flex !important; align-items: center; gap: 0 !important;
+}
+html body #bottombar .bb-grp .bb-gi { display: none !important; }
+html body #bottombar .bb-grp::after { font-size: 14px; font-weight: 600; color: inherit; }
+html body .bb-group[data-group="crew"] .bb-grp::after { content: "Team"; }
+html body .bb-group[data-group="work"] .bb-grp::after { content: "Work"; }
+html body .bb-group[data-group="build"] .bb-grp::after { content: "Build"; }
+html body .bb-group[data-group="system"] .bb-grp::after { content: "System"; }
+html body #bottombar .bb-grp:hover { background: rgba(255,255,255,.7) !important; color: var(--f-ink) !important; }
+html body #bottombar .bb-grp[aria-expanded="true"], html body .bb-group.open .bb-grp {
+  background: var(--f-card) !important; color: var(--f-ink) !important; box-shadow: 0 1px 3px rgba(16,38,43,.14) !important;
+}
+html body #bottombar .bb-grp::after { font-weight: 700; }
+html body .bb-grp-badge { font-size: 10px !important; margin-left: 6px; }
+
+/* menus open DOWN from the top bar as clean white cards */
+html body .bb-menu {
+  top: calc(100% + 10px) !important; bottom: auto !important; left: 50% !important; transform: translateX(-50%);
+  min-width: 320px !important; padding: 8px !important; gap: 2px !important;
+  background: rgba(255,255,255,.97) !important; border: 1px solid var(--f-line) !important; border-radius: 16px !important;
+  box-shadow: 0 16px 40px rgba(16,38,43,.18) !important; backdrop-filter: blur(18px) !important;
+}
+html body .bb-menu::before, html body .bb-menu::after { display: none !important; }
+html body .bb-menu .bb {
+  display: flex !important; align-items: center; gap: 12px !important; padding: 10px 12px !important; min-height: 52px;
+  border: 0 !important; border-radius: 12px !important; background: transparent !important; box-shadow: none !important; text-align: left;
+}
+html body .bb-menu .bb:hover, html body .bb-menu .bb:focus-visible { background: #EEF6F3 !important; }
+html body .bb-menu .bb .bb-i {
+  flex: 0 0 34px !important; width: 34px !important; height: 34px; border-radius: 10px; display: flex !important;
+  align-items: center; justify-content: center; background: #E3F2EE !important; color: var(--f-teal) !important; font-size: 16px !important;
+}
+html body .bb-menu .bb .bb-tx b { display: block; font-size: 14px !important; font-weight: 700 !important; color: var(--f-ink) !important; }
+html body .bb-menu .bb .bb-tx small { font-size: 12px !important; color: var(--f-mute) !important; text-transform: none !important; line-height: 1.35; }
+
+/* ---------- top bar ---------- */
+html body #topbar .tb-stats { gap: 8px !important; }
+html body #tb-station { display: none !important; }                       /* the game "level" chip: not useful day to day */
+html body #lw-chip, html body .tb-connection {
+  height: 36px !important; border-radius: 10px !important; border: 0 !important;
+  background: var(--f-tint) !important; color: var(--f-ink) !important; font-size: 13px !important; font-weight: 600 !important;
+}
+html body .tb-connection { background: #E3F5EE !important; color: #11674F !important; }
+html body #topbar .tb-shell, html body #topbar .tb-inst { border: 0 !important; background: transparent !important; box-shadow: none !important; }
+html body #logo .logo-img { background-color: var(--f-ink) !important; }
+
+/* ---------- Team panel ---------- */
+html body #left { padding: 16px 12px !important; gap: 10px; }
+html body #left > h3 {
+  font-size: 0 !important; padding: 0 6px !important; margin: 0 0 4px !important; border: 0 !important; background: none !important;
+  display: flex !important; align-items: center; justify-content: space-between; min-height: 32px;
+}
+html body #left > h3::before { content: "Team"; font-size: 16px; font-weight: 800; color: var(--f-ink); text-transform: none; }
+html body #left > h3 button {
+  width: 32px !important; height: 32px !important; border-radius: 9px !important; border: 0 !important;
+  background: var(--f-tint) !important; color: var(--f-sub) !important; font-size: 14px !important;
+}
+html body #crew { gap: 4px !important; }
+html body #crew > li {
+  border: 0 !important; border-radius: 12px !important; background: transparent !important; box-shadow: none !important;
+  padding: 10px !important; min-height: 58px;
+}
+html body #crew > li:hover { background: rgba(255,255,255,.7) !important; }
+html body #crew > li.sel, html body #crew > li.active, html body #crew > li[aria-current="true"], html body #crew > li.on {
+  background: var(--f-card) !important; box-shadow: 0 1px 4px rgba(16,38,43,.10) !important;
+}
+html body #crew > li:nth-child(5n+1) { --tile: #0F5D6B; }
+html body #crew > li:nth-child(5n+2) { --tile: #E07A2F; }
+html body #crew > li:nth-child(5n+3) { --tile: #D6455A; }
+html body #crew > li:nth-child(5n+4) { --tile: #2A9D8F; }
+html body #crew > li:nth-child(5n+5) { --tile: #7A5CC7; }
+html body #crew .crew-portrait { background: var(--tile, #0F5D6B) !important; border: 0 !important; border-radius: 12px !important; box-shadow: none !important; }
+html body #crew .crew-portrait::after { background-color: #FFFFFF !important; }
+html body #crew .crew-name { color: var(--f-ink) !important; font-size: 14px !important; font-weight: 700 !important; }
+html body #crew .crew-room { color: var(--f-faint) !important; font-size: 12px !important; font-weight: 600 !important; margin-left: 6px; }
+html body #crew .crew-status { color: var(--f-mute) !important; font-size: 12px !important; }
+html body #crew .crew-prog { display: none !important; }
+html body #crew > li.selected { background: var(--f-card) !important; box-shadow: 0 1px 4px rgba(16,38,43,.10) !important; }
+html body #crew > li [class*="name"] { font-size: 14px !important; font-weight: 700 !important; color: var(--f-ink) !important; }
+html body #crew-sum { display: flex !important; gap: 6px; padding: 4px 6px !important; border: 0 !important; background: none !important; }
+html body #crew-sum > * {
+  padding: 5px 10px !important; border-radius: 8px !important; background: var(--f-tint) !important; border: 0 !important;
+  font-size: 12px !important; font-weight: 700 !important; color: var(--f-sub) !important; text-transform: none !important;
+}
+html body #crew-sum > .pos { background: #E3F5EE !important; color: #11674F !important; }
+
+/* sessions */
+html body .ws-head { border: 0 !important; padding: 0 6px !important; gap: 6px; }
+html body .ws-head .ws-tab {
+  height: 32px; padding: 0 12px !important; border: 0 !important; border-radius: 9px !important; text-transform: none !important;
+  font-size: 13px !important; font-weight: 700 !important; letter-spacing: normal !important; background: transparent !important; color: var(--f-sub) !important;
+}
+html body .ws-head .ws-tab.on { background: var(--f-card) !important; color: var(--f-ink) !important; box-shadow: 0 1px 3px rgba(16,38,43,.12) !important; }
+html body .ws-head button:not(.ws-tab), html body #ws-wrap .ws-new {
+  height: 32px; padding: 0 12px !important; border: 0 !important; border-radius: 9px !important;
+  background: var(--f-teal) !important; color: #fff !important; font-size: 13px !important; font-weight: 700 !important;
+}
+html body #ws-search {
+  height: 38px; border-radius: 10px !important; border: 1px solid var(--f-line) !important; background: var(--f-card) !important;
+  padding: 0 12px !important; font-size: 13px !important; color: var(--f-ink) !important; box-shadow: none !important;
+}
+html body .ws-kind-filter { gap: 4px !important; padding: 4px !important; border: 0 !important; border-radius: 10px !important; background: var(--f-tint) !important; }
+html body .ws-kind-filter button {
+  height: 28px; padding: 0 10px !important; border: 0 !important; border-radius: 7px !important; background: transparent !important;
+  font-size: 12px !important; font-weight: 700 !important; color: var(--f-sub) !important;
+}
+html body .ws-kind-filter button[aria-pressed="true"] { background: var(--f-card) !important; color: var(--f-ink) !important; box-shadow: 0 1px 3px rgba(16,38,43,.12) !important; }
+html body #workstreams > li { border: 0 !important; border-radius: 10px !important; font-size: 13px !important; }
+html body #workstreams > li:hover { background: rgba(255,255,255,.7) !important; }
+
+/* ---------- chat panel ---------- */
+html body #chat-panel > h3 { border: 0 !important; background: none !important; padding: 12px 16px 0 !important; min-height: 28px; }
+html body #comms-title { font-size: 0 !important; }
+html body #comms-title::before { content: "Conversation"; font-size: 12px; font-weight: 700; color: var(--f-mute); }
+html body #chat-status { font-size: 12px !important; text-transform: none !important; color: var(--f-mute) !important; }
+html body #comms-expand {
+  height: 28px; padding: 0 10px !important; border: 0 !important; border-radius: 8px !important;
+  background: var(--f-tint) !important; color: var(--f-sub) !important; font-size: 12px !important; font-weight: 700 !important;
+}
+html body .comms-idbar { border-bottom: 1px solid var(--f-line) !important; padding: 10px 16px 14px !important; background: none !important; }
+html body .comms-agent-select { font-size: 16px !important; font-weight: 800 !important; color: var(--f-ink) !important; border: 0 !important; background: transparent !important; }
+html body .comms-idbar button {
+  height: 36px; padding: 0 12px !important; border: 1px solid var(--f-line) !important; border-radius: 10px !important;
+  background: var(--f-card) !important; color: var(--f-ink) !important; font-size: 13px !important; font-weight: 700 !important; box-shadow: none !important;
+}
+html body #chat-inputrow { margin: 12px !important; border-radius: 16px !important; background: var(--f-card) !important; border: 1px solid rgba(16,38,43,.14) !important; box-shadow: none !important; }
+html body #chat-input { font-size: 15px !important; color: var(--f-ink) !important; }
+html body #chat-input::placeholder { color: var(--f-faint) !important; text-transform: none !important; }
+html body #chat-send { width: 38px !important; height: 38px !important; border-radius: 11px !important; background: var(--f-teal) !important; color: #fff !important; border: 0 !important; }
+html body #chat-send .cs-label { display: none !important; }
+html body #chat-inputrow button:not(#chat-send) {
+  border: 0 !important; border-radius: 9px !important; background: var(--f-tint) !important; color: var(--f-sub) !important; box-shadow: none !important;
+}
+
+/* ---------- 3D rooms toolbar (production rooms) ---------- */
+html body .o3d-ui button {
+  font-size: 13px !important; font-weight: 600 !important; min-height: 34px; padding: 0 14px !important;
+  border-radius: 10px !important; border: 0 !important; background: rgba(250,253,252,.9) !important; color: var(--f-sub) !important;
+  box-shadow: 0 2px 10px rgba(16,38,43,.10) !important;
+}
+html body .o3d-ui button:hover { background: #fff !important; color: var(--f-ink) !important; }
+html body .o3d-ui button[aria-pressed="true"] { background: var(--f-ink) !important; color: #fff !important; }
+html body .o3d-ui .o3d-shop { background: #E8833A !important; color: #fff !important; }
+html body .o3d-ui .o3d-switch { padding: 4px; gap: 4px; border-radius: 12px; background: rgba(250,253,252,.9); box-shadow: 0 2px 10px rgba(16,38,43,.10); }
+html body .o3d-ui .o3d-switch button { box-shadow: none !important; background: transparent !important; min-height: 30px; }
+html body .o3d-ui .o3d-switch button[aria-pressed="true"] { background: var(--f-ink) !important; }
+html body .o3d-ui .o3d-rooms button { border-top: 0 !important; box-shadow: inset 0 -3px 0 var(--room-tint), 0 2px 10px rgba(16,38,43,.10) !important; }
+html body .o3d-ui .o3d-heading strong { font-size: 18px !important; font-weight: 800; color: var(--f-ink); }
+html body .o3d-ui .o3d-heading span { font-size: 13px !important; color: var(--f-mute) !important; }
+html body .o3d-ui .o3d-anchor { font-size: 12px !important; border-radius: 10px !important; min-height: 28px; padding: 0 10px !important; }
+html body .o3d-ui .o3d-anchor.room { font-size: 13px !important; font-weight: 800 !important; }
+html body .o3d-ui .o3d-tools button { font-size: 12px !important; min-height: 30px; }
+html body .o3d-ui .o3d-legend { font-size: 12px !important; border-radius: 10px !important; padding: 4px 10px !important; }
+html body .o3d-ui .o3d-inspector { border-radius: 16px !important; box-shadow: 0 16px 40px rgba(16,38,43,.18) !important; border: 0 !important; }
+
+/* ---------- kill the old cabinet chrome (bezels, corner brackets, inner rules) ---------- */
+html body #screen-game #left, html body #screen-game #chat-panel, html body #screen-game #topbar, html body #screen-game #stage-wrap { border: 0 !important; outline: 0 !important; }
+html body #screen-game #left::before, html body #screen-game #left::after, html body #screen-game #chat-panel::before, html body #screen-game #chat-panel::after,
+html body #screen-game #topbar::before, html body #screen-game #topbar::after { display: none !important; }
+html body #screen-game .tb-stats, html body #screen-game .tb-stats > *:not(#lw-chip):not(.tb-connection) { border: 0 !important; box-shadow: none !important; background: transparent !important; }
+html body #screen-game #stage-wrap { border-radius: 20px !important; box-shadow: var(--f-shadow) !important; }
+html body #nav-coach { display: none !important; }
+html body #comms-title > * { display: none !important; }
+html body #screen-game.active { grid-template-columns: 288px minmax(0, 1fr) 400px !important; }
+html body #crew-sum { flex-wrap: wrap; }
+html body #crew-vresizer, html body #crew-resizer, html body #comms-resizer { opacity: 0; }
+html body #chat-log .cmsg-empty, html body #chat-log [class*="starter"] { font-size: 14px !important; }
+html body #chat-log [class*="starter"] b, html body #chat-log [class*="starter"] strong { font-size: 15px !important; }
+html body #crew .dot { display: none !important; }
+html body #screen-game #comms-title { font-size: 0 !important; }
+html body #workstreams > li, html body #workstreams > li * { font-size: 13px !important; }
+html body #workstreams input[type="checkbox"] { display: none !important; }
+html body .o3d-ui .o3d-rooms button { padding: 0 12px !important; }
+html body #chat-input { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+html body #screen-game #chat-panel #comms-title { display: none !important; }
+html body #screen-game #chat-panel > h3::before { content: "Conversation"; display: block !important; font-size: 12px; font-weight: 700; color: var(--f-mute); position: static !important; width: auto !important; height: auto !important; background: none !important; border: 0 !important; }
+html body #screen-game #left #workstreams .ws-row { min-height: 40px; padding: 8px 10px !important; gap: 10px; border-radius: 10px !important; }
+html body #screen-game #left #workstreams .ws-title { font-size: 13px !important; font-weight: 600 !important; color: var(--f-ink) !important; }
+html body #screen-game #left #workstreams .ws-meta { font-size: 12px !important; color: var(--f-faint) !important; }
+html body #screen-game #left #workstreams .ws-dot { width: 8px !important; height: 8px !important; border-radius: 50% !important; border: 0 !important; background: #B9C7C9 !important; }
+html body #screen-game #left #workstreams .ws-dot:not(.seen) { background: #1FA67A !important; }
+html body #screen-game #bottombar .bb-menu { background: #FFFFFF !important; backdrop-filter: none !important; }
+html body #screen-game #bottombar .bb-menu .bb .bb-i { background: #E3F2EE !important; }
