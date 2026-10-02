@@ -208,11 +208,15 @@ const Onboarding = (() => {
       if (!running) return;
       waitBirth(500, () => {
         if (!running) return;
-        type([seg(bs('contact') || '…there you are. what should we begin with?', 40, 450)], startQuestions);
+        startQuestions();
       });
     })) { sfx('boot'); AU.start(); return; }
-    sfx('boot'); sfx('gasp'); AU.start();
+    sfx('boot'); AU.start();
     if (World.igniteSpark) World.igniteSpark();
+    if (World.setWakeProgress) World.setWakeProgress(0.15);
+    if (World.awakenTurn) World.awakenTurn();
+    // THE LAB: no birth monologue (flood, first contact, mandate). Go straight to the setup questions.
+    return void setTimeout(startQuestions, 300);
     if (wake && World.camPushIn) World.camPushIn();
     setTimeout(() => waitBirth(1500, () => {
       const wakeFr = bs('wake'), thinkFr = bs('think');
@@ -233,13 +237,7 @@ const Onboarding = (() => {
     if (World.igniteSpark) World.igniteSpark();
     if (World.setWakeProgress) World.setWakeProgress(0.15);         // not the pitch dark of a first birth
     if (World.awakenTurn) World.awakenTurn();                       // it already knows where you are
-    type([
-      seg('…and we’re back.', 38, 550),
-      seg('  i remember this part — i caught fire, met you, and the lights went out mid-briefing.', 42, 550),
-      seg('  no need to be born twice. where were we.', 42, 420)
-    ], () => {
-      setTimeout(startQuestions, 600);
-    });
+    setTimeout(startQuestions, 300);   // THE LAB: no re-wake monologue, straight back to the setup questions
   }
 
   // the cascade is seeded with REAL fragments — the agent's own forming prompt, its true harness
