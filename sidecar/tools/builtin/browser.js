@@ -2509,7 +2509,12 @@
        Credentials are typed into real Chrome by the human; they never transit the agent or the sidecar.
        Fail-closed inheritance: both asks ride the run's consent channel (auto-deny on timeout/disconnect),
        and env-pinned headless (CI/soak) refuses before any window can appear. */
-    async function login(url, signal) {
+    /* HUMAN CHECK HANDOFF: the same attended window, opened so the Commander can pass a site's human check
+       ("I'm not a robot", Cloudflare) themselves. The agent never clicks a check; the person does, in real
+       Chrome, on the persistent profile, so the site's pass cookie carries on into the agent's next request. */
+    async function check(url, signal) { return login(url, signal, { purpose: 'check' }); }
+    async function login(url, signal, opts) {
+      const ask = opts && opts.purpose === 'check' ? 'browser.check' : 'browser.login';
       const attended = deps.attendedLogin;
       if (!attended || typeof attended.prompt !== 'function') {
         throw new Error('browser.login needs a watched COMMS session — an unattended run cannot open a login window for the Commander');
@@ -2521,7 +2526,7 @@
       await assertResolvedSafe(u, doLookup);   // same rebinding bar as navigate — a login window is not a weaker surface
       const host = hostOf(u);
       const approved = d => !!d && d !== 'deny';
-      if (!approved(await attended.prompt({ tool: 'browser.login', scope: 'execute', argsSummary: host }))) {
+      if (!approved(await attended.prompt({ tool: ask, scope: 'execute', argsSummary: host }))) {
         return { status: 'declined', host };
       }
       // The durable profile is what makes the login outlive this run. When a host wires one, contention is a
@@ -2544,7 +2549,7 @@
         await relaunch(modeOverrides(watchNow()));
         throw e;
       }
-      const done = approved(await attended.prompt({ tool: 'browser.login.done', scope: 'execute', argsSummary: host }));
+      const done = approved(await attended.prompt({ tool: ask + '.done', scope: 'execute', argsSummary: host }));
       // Done or cancelled, the window closes and research mode resumes on the SAME profile — any cookies the
       // site set during the attempt are already durable.
       await relaunch(modeOverrides(watchNow()));
@@ -2568,7 +2573,7 @@
       const d = driver || null;
       return d && typeof d.attachedPort === 'function' ? d.attachedPort() : null;
     }
-    return { waitForProfile, navigate, snapshot, click, type, press, hover, drag, select: selectOption, viewport, forward, upload, tabs, selectTab, closeTab, inspect, evalPublic, evalAllowed, wait, find, pdf, intercept, emulate, attach, detach, attachedToUser: () => attachedToUserBrowser, testInput, testEval, testState, testSnapshot, scroll, back, getText, challengeStatus, consoleLog, networkLog, dialog, vision, screenshot, login, close, visible, headlessFallback, attachedPort, lastResponse, _internals: { refs, version: () => version, navEpoch: () => navEpoch, localMode: () => localMode, localOrigin: () => localOrigin, leaseHeld: () => leaseHeld } };
+    return { waitForProfile, navigate, snapshot, click, type, press, hover, drag, select: selectOption, viewport, forward, upload, tabs, selectTab, closeTab, inspect, evalPublic, evalAllowed, wait, find, pdf, intercept, emulate, attach, detach, attachedToUser: () => attachedToUserBrowser, testInput, testEval, testState, testSnapshot, scroll, back, getText, challengeStatus, consoleLog, networkLog, dialog, vision, screenshot, login, check, close, visible, headlessFallback, attachedPort, lastResponse, _internals: { refs, version: () => version, navEpoch: () => navEpoch, localMode: () => localMode, localOrigin: () => localOrigin, leaseHeld: () => leaseHeld } };
   }
 
   function makeBrowserTools(deps) {
@@ -2644,7 +2649,7 @@
             try { host = new URL(url).host; } catch (_) {}
             const http = describeResponse(session.lastResponse && session.lastResponse());
             return {
-              content: 'Browser reached a human-verification wall at ' + host + http.text + '. This is not page content. If the Commander is available, use browser.attach for their own Chrome or browser.login when sign-in is required; otherwise report the wall plainly.',
+              content: 'Browser reached a human-verification wall at ' + host + http.text + '. This is not page content. If the Commander is available, use browser.check so they can pass the human check themselves in a visible window (never try to click the check yourself), browser.attach for their own Chrome, or browser.login when sign-in is required; otherwise report the wall plainly.',
               summary: 'verification wall' + http.summary
             };
           }
@@ -2878,6 +2883,19 @@
           if (r.status === 'declined') return { content: 'Commander declined to open a login window for ' + r.host + '. Continue without authentication and say what is blocked.', summary: 'login declined' };
           if (r.status === 'unconfirmed') return { content: 'Login window for ' + r.host + ' closed without a Done confirmation. Any cookies the site set were saved to the station profile; verify with browser.navigate whether you are signed in before relying on it.', summary: 'login unconfirmed' };
           return { content: 'Commander finished logging in at ' + r.host + '. The browser is back in headless research mode. Done is a human confirmation, not authentication proof: use browser.navigate to verify the account and access before continuing.', summary: 'login done' };
+        }
+      },
+      // HUMAN CHECK: same two-phase live consent as browser.login (open-window ask + done-wait), so the generic
+      // broker card stays off. The agent asks; the Commander solves the check in real Chrome.
+      {
+        name: 'browser.check', capability: 'web', impact: 'synthetic-browser', scope: 'execute', requiresConsent: false, timeoutMs: 60 * 60 * 1000,
+        description: 'The page is behind a human check (captcha, "I\'m not a robot", "checking your browser"). Ask the Commander to open a VISIBLE browser window at the URL and pass the check THEMSELVES. Never try to click or solve a human check yourself. Blocks until they click Done, then returns to headless mode on the same profile; navigate to the URL again and carry on.',
+        schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' } } },
+        run: async (a, ctx) => {
+          const r = await session.check(a.url, ctx && ctx.signal);
+          if (r.status === 'declined') return { content: 'Commander declined to open a window for the human check at ' + r.host + '. Do not retry the page; say what is blocked and continue with what you can do.', summary: 'check declined' };
+          if (r.status === 'unconfirmed') return { content: 'The check window for ' + r.host + ' closed without Done. Navigate to the URL once to see whether the check was passed before relying on it.', summary: 'check unconfirmed' };
+          return { content: 'Commander passed the human check at ' + r.host + '. The browser is back in headless mode on the same profile. Navigate to ' + r.url + ' again and continue the task.', summary: 'check passed' };
         }
       },
       read('browser.vision', 'Capture the current viewport and answer a question about what is on screen (vision rides the session\'s own model when no dedicated vision key exists — never ask the user for an API key). If no vision route is available this returns a clear "unavailable" result — it never fabricates a description.', { type: 'object', properties: { question: { type: 'string' } } },

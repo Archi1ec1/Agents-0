@@ -19,6 +19,9 @@ function block(opts) {
   if (tools.has('tool.search')) {
     lines.push('Before claiming a capability is missing, use tool.search to discover deferred tools and alternate routes that the live station has granted. A tool not shown in the first row may still be available through search.');
   }
+  if (tools.has('browser.check')) {
+    lines.push('When a page is behind a human check (captcha, "I\'m not a robot") and the Commander is watching, use browser.check: the Commander passes the check themselves in a visible window, then you navigate again and carry on. Never try to click or solve a human check yourself.');
+  }
   if (tools.has('browser.login')) {
     lines.push('When a website genuinely requires authentication and the Commander is watching, use browser.login: it opens the station\'s visible, dedicated Chrome window for the Commander to sign in themselves, then returns you to the authenticated headless session. Do not replace that first-class path with command-line or remote-debugging setup instructions.');
   }

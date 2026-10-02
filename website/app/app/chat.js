@@ -2869,6 +2869,8 @@ const Chat = (() => {
     // drives; phase 2 holds the run until they click Done. Password honesty is part of the card copy.
     if (t === 'browser.login') return 'open a browser window so YOU can log in to ' + (ev.argsSummary || 'a website') + ' (you type your password in that window — the agent never sees it)';
     if (t === 'browser.login.done') return 'wait while you log in to ' + (ev.argsSummary || 'the website') + ' in the browser window — click Done here when you\'ve finished';
+    if (t === 'browser.check') return 'open a browser window so YOU can pass the human check on ' + (ev.argsSummary || 'a website') + ' (tick "I\'m not a robot" yourself — the agent never clicks it)';
+    if (t === 'browser.check.done') return 'wait while you pass the check on ' + (ev.argsSummary || 'the website') + ' in the browser window — click Done here when it\'s through';
     if (/^fs[._](?:write|append|edit|patch)$/.test(t)) {
       let target = ev.argsSummary || 'a file';
       try { target = JSON.parse(target).path || 'a file'; } catch (_) {}
@@ -3069,6 +3071,12 @@ const Chat = (() => {
       mk('Deny', 'deny', 'deny', '✕ denied', true);
     } else if (p.tool === 'browser.login.done') {
       mk('Done — I\'ve logged in', 'once', '', '✓ done', false);
+      mk('Cancel', 'deny', 'deny', '✕ cancelled', true);
+    } else if (p.tool === 'browser.check') {
+      mk('Open the page', 'once', '', '✓ window opened', false);
+      mk('Not now', 'deny', 'deny', '✕ declined', true);
+    } else if (p.tool === 'browser.check.done') {
+      mk('Done — I passed the check', 'once', '', '✓ done', false);
       mk('Cancel', 'deny', 'deny', '✕ cancelled', true);
     } else {
       mk('Approve once', 'once', '', '✓ approved once', false);

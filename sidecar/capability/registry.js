@@ -152,6 +152,7 @@
       // requiresConsent:false is NOT a free pass — browser.login runs its OWN two-phase live consent
       // (open-window ask + done-wait) inside the tool; the generic broker card would double-prompt.
       { capId: 'web', tool: 'browser.login', scope: 'execute', requiresConsent: false, network: true, deferred: true },
+      { capId: 'web', tool: 'browser.check', scope: 'execute', requiresConsent: false, network: true, deferred: true },   // same two-phase live consent as browser.login
       { capId: 'web', tool: 'browser.click', scope: 'execute', requiresConsent: true, network: true },
       { capId: 'web', tool: 'browser.type', scope: 'execute', requiresConsent: true, network: true },
       { capId: 'web', tool: 'browser.press', scope: 'execute', requiresConsent: true, network: true },

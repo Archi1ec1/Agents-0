@@ -116,7 +116,7 @@ function fakeDriver() {
   const B = makeBrowserTools({ driver, lookup: null, vision: async ({ question }) => 'vision answer: ' + question });
   const names = B.tools.map(t => t.name).sort();
   A.eq(names, [
-    'browser.attach', 'browser.back', 'browser.click', 'browser.console', 'browser.detach', 'browser.dialog', 'browser.drag',
+    'browser.attach', 'browser.back', 'browser.check', 'browser.click', 'browser.console', 'browser.detach', 'browser.dialog', 'browser.drag',
     'browser.emulate', 'browser.eval', 'browser.find', 'browser.forward', 'browser.get_text', 'browser.hover', 'browser.inspect',
     'browser.intercept', 'browser.login', 'browser.navigate', 'browser.network',
     'browser.pdf', 'browser.press', 'browser.screenshot', 'browser.scroll', 'browser.select', 'browser.snapshot',
@@ -1243,6 +1243,33 @@ function fakeDriver() {
       A.ok(lease.released >= 1, 'session close releases the profile lease');
     }
 
+    // 5b. HUMAN CHECK HANDOFF: browser.check is the same attended window, asked under its own name, and the
+    // Commander (never the agent) passes the check on the persistent profile.
+    {
+      const seam = mkSeam();
+      {
+        const lease = mkLease();
+        const asked = [];
+        const B2 = makeBrowserTools({
+          makeDriver: seam.makeDriver, forceHeadless: true, syntheticInputOnly: true,
+          persistentProfile: lease.profile,
+          attendedLogin: { prompt: async f => { asked.push({ tool: f.tool, host: f.argsSummary }); return 'once'; } }
+        });
+        const out = await B2.tools.find(t => t.name === 'browser.check').run({ url: 'https://www.etsy.com/search?q=lamp' }, {});
+        A.eq(asked.map(a => a.tool), ['browser.check', 'browser.check.done'], 'the check handoff asks under its own name, open then done');
+        A.eq(asked[0].host, 'www.etsy.com', 'the check ask names the host');
+        A.eq(seam.made[0].headed, true, 'the check window is visible');
+        A.eq(seam.made[0].synthetic, false, 'the person drives real Chrome in the check window');
+        A.eq(seam.made[1].headed, false, 'after Done the agent is back to headless on the same profile');
+        A.ok(/passed the human check/i.test(out.content) && /navigate/i.test(out.content), 'the agent is told to navigate again and continue');
+        await B2.session.close();
+        const declined = makeBrowserTools({ makeDriver: mkSeam().makeDriver, attendedLogin: { prompt: async () => 'deny' } });
+        const no = await declined.tools.find(t => t.name === 'browser.check').run({ url: 'https://www.etsy.com/' }, {});
+        A.ok(/declined/i.test(no.content), 'a declined check is reported, not retried');
+        await declined.session.close();
+      }
+    }
+
     // 6. SAME-PROFILE RELAUNCH: wait for asynchronous teardown before constructing the replacement.
     {
       let closeSettled = true;
@@ -1417,7 +1444,7 @@ function fakeDriver() {
       .find(t => t.name === 'browser.navigate');
     A.ok(navTool.timeoutMs >= 45000, 'browser.navigate gets a larger tool budget than other browser tools');
     const others = makeBrowserTools({ existsSync: () => false, WebSocketImpl: null }).tools
-      .filter(t => t.name !== 'browser.navigate' && t.name !== 'browser.login');
+      .filter(t => t.name !== 'browser.navigate' && t.name !== 'browser.login' && t.name !== 'browser.check');   // both attended windows wait on a human
     A.ok(others.every(t => t.timeoutMs < navTool.timeoutMs), 'and it is the longest of the ordinary browser tools');
   }
 
