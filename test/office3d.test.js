@@ -19,8 +19,8 @@ A.eq(O.titleOf({ id: 'agent', role: 'orchestrator' }), 'Overseer', 'the hero is 
 A.eq(O.titleOf({ id: 'x', role: 'specialist' }), 'Specialist', 'an unclassed crew member is a Specialist');
 
 // tints follow the lab, with a palette fallback
-A.eq(O.tintFor('E-COMMERCE LAB', 1), '#FF8A3D', 'e-commerce is orange');
-A.eq(O.tintFor('A DESIGN LAB', 4), '#A78BFA', 'design is violet');
+A.eq(O.tintFor('E-COMMERCE', 1), '#FF8A3D', 'e-commerce is orange');
+A.eq(O.tintFor('A DESIGN', 4), '#A78BFA', 'design is violet');
 A.ok(/^#[0-9A-F]{6}$/i.test(O.tintFor('HAB-03', 7)), 'any other room gets a palette colour');
 
 // a real ZAK HOLDING station, its crew seated the way seedCrew seats them (a free desk in the named room)
@@ -43,7 +43,7 @@ const floors = O.plan(rooms, roster, roomOf, { spawnRoomId: s.spawnRoomId() });
 A.eq(floors.length, rooms.filter(r => r.kind !== 'corridor').length, 'one floor per room (corridors are not floors)');
 A.ok(floors[0].ground && floors[0].id === s.spawnRoomId(), 'the spawn room is the ground floor');
 A.ok(floors[0].agents.some(a => a.id === 'agent' && a.title === 'Overseer'), 'the Overseer works on the ground floor');
-for (const lab of ['E-COMMERCE LAB', 'YOUTUBE LAB', 'REAL ESTATE LAB', 'A DESIGN LAB']) {
+for (const lab of ['E-COMMERCE', 'YOUTUBE', 'REAL ESTATE', 'A DESIGN']) {
   const f = floors.find(x => x.name === lab);
   A.ok(f, lab + ' is a floor');
   const want = crew.members.filter(m => m.room === lab).map(m => m.agentName).sort();

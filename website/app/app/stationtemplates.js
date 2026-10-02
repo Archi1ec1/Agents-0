@@ -34,10 +34,10 @@ const StationTemplates = (() => {
     engineering: { name: 'WORKSHOP', kind: 'factory', floorStyle: 'hull', floorMat: 'tread', props: [['desk',3,1],['fabricator',11,1],['industrial_drawerbank',2,8],['crate',13,8]] },
     planning: { name: 'PLANNING', kind: 'bridge', floorStyle: 'cobalt', floorMat: 'resin', props: [['consoleL',2,1],['missionboard',7,0],['desk',13,1],['holotable',7,6],['plant',16,8]] },
     comms: { name: 'COMMS', kind: 'bridge', floorStyle: 'hull', floorMat: 'resin', props: [['consoleL',3,1],['screens',10,0],['rack',12,1],['plant',16,1]] },
-    ecomLab: { name: 'E-COMMERCE LAB', kind: 'factory', floorStyle: 'walnut', floorMat: 'plank', props: labProps() },
-    youtubeLab: { name: 'YOUTUBE LAB', kind: 'lab', floorStyle: 'cobalt', floorMat: 'resin', props: labProps() },
-    realEstateLab: { name: 'REAL ESTATE LAB', kind: 'bridge', floorStyle: 'teal', floorMat: 'resin', props: labProps() },
-    designLab: { name: 'A DESIGN LAB', kind: 'hab', floorStyle: 'ash', floorMat: 'plank', props: labProps([['easel',5,6]]) },
+    ecomLab: { name: 'E-COMMERCE', kind: 'factory', floorStyle: 'walnut', floorMat: 'plank', props: labProps() },
+    youtubeLab: { name: 'YOUTUBE', kind: 'lab', floorStyle: 'cobalt', floorMat: 'resin', props: labProps() },
+    realEstateLab: { name: 'REAL ESTATE', kind: 'bridge', floorStyle: 'teal', floorMat: 'resin', props: labProps() },
+    designLab: { name: 'A DESIGN', kind: 'hab', floorStyle: 'ash', floorMat: 'plank', props: labProps([['easel',5,6]]) },
     archive: { name: 'ARCHIVE', kind: 'hab', floorStyle: 'walnut', floorMat: 'plank', props: [['bookshelf',2,1],['bookshelf',6,1],['bookshelf',10,1],['plant',16,1],['desk',3,7]] }
   };
   const slots = {

@@ -60,7 +60,7 @@
     const spawn = list.find(r => r.id === opts.spawnRoomId) || list[0];
     const ordered = [spawn].concat(list.filter(r => r !== spawn));
     const floors = ordered.map((r, i) => ({
-      id: r.id, index: i, name: str(r.name || (i ? 'FLOOR ' + i : 'HQ'), 32), ground: i === 0,
+      id: r.id, index: i, name: str(String(r.name || (i ? 'FLOOR ' + i : 'HQ')).replace(/\s+LAB$/i, ''), 32), ground: i === 0,
       tint: i === 0 ? '#5B8CFF' : tintFor(r.name, i), agents: []
     }));
     const byId = new Map(floors.map(f => [f.id, f]));

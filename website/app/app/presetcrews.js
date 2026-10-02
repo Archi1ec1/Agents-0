@@ -15,44 +15,44 @@ const PresetCrews = (() => {
     zakholding: {
       company: 'Zak Holding',
       members: [
-        member('E-COMMERCE LAB', 'ORION', 'E-Commerce Director', 'foreman',
+        member('E-COMMERCE', 'ORION', 'E-Commerce Director', 'foreman',
           'Run the E-Commerce Lab. Each week, set the plan and targets, review the team\'s work, and report to Zak which products to launch, test or drop, and why.'),
-        member('E-COMMERCE LAB', 'VEGA', 'Product Hunter', 'opportunist',
+        member('E-COMMERCE', 'VEGA', 'Product Hunter', 'opportunist',
           'Find products worth selling: rising demand, a reliable supplier, a landed cost that leaves at least a 3x margin, and weak competition. Give evidence for every pick.'),
-        member('E-COMMERCE LAB', 'LYRA', 'Listing Copywriter', 'copywriter',
+        member('E-COMMERCE', 'LYRA', 'Listing Copywriter', 'copywriter',
           'Write the store side of each product: title, description, bullet points, FAQ and image briefs, written to sell and to rank in search.'),
-        member('E-COMMERCE LAB', 'DRACO', 'Ads & Growth Marketer', 'marketer',
+        member('E-COMMERCE', 'DRACO', 'Ads & Growth Marketer', 'marketer',
           'Plan how each product gets customers: ad angles, hooks, short video scripts, audiences, a starting budget and the numbers that mean scale or stop.'),
-        member('E-COMMERCE LAB', 'CASSIO', 'Pricing Analyst', 'analyst',
+        member('E-COMMERCE', 'CASSIO', 'Pricing Analyst', 'analyst',
           'Check the numbers: landed cost, fees, shipping, ad cost per sale, break-even price and margin at three price points. Flag anything that loses money.'),
 
-        member('YOUTUBE LAB', 'STELLA', 'Channel Director', 'foreman',
+        member('YOUTUBE', 'STELLA', 'Channel Director', 'foreman',
           'Run the YouTube Lab. Each week, pick what gets made, keep the channel on its niche, review every package, and hand Zak videos that are ready to record or upload.'),
-        member('YOUTUBE LAB', 'ECHO', 'Trend Scout', 'scout',
+        member('YOUTUBE', 'ECHO', 'Trend Scout', 'scout',
           'Find video ideas with proven demand in the niche: what is trending, what competitors\' best videos have in common, and gaps nobody covers well.'),
-        member('YOUTUBE LAB', 'QUILL', 'Scriptwriter', 'writer',
+        member('YOUTUBE', 'QUILL', 'Scriptwriter', 'writer',
           'Turn the chosen ideas into scripts: a hook in the first 5 seconds, a clear structure, retention beats, and a call to action. Short versions for Shorts.'),
-        member('YOUTUBE LAB', 'REEL', 'Video Producer', 'producer',
+        member('YOUTUBE', 'REEL', 'Video Producer', 'producer',
           'Turn each script into a production plan: voiceover text, shot or visual list, b-roll and music notes, edit timeline and three thumbnail concepts.'),
-        member('YOUTUBE LAB', 'SPARK', 'SEO & Growth', 'optimizer',
+        member('YOUTUBE', 'SPARK', 'SEO & Growth', 'optimizer',
           'Make each video findable: title options, description, tags, chapters, pinned comment and the best publish time. Track what worked last week.'),
 
-        member('REAL ESTATE LAB', 'ATLAS', 'Investment Director', 'strategist',
+        member('REAL ESTATE', 'ATLAS', 'Investment Director', 'strategist',
           'Run the Real Estate Lab. Keep the buying criteria, review the team\'s deals, and give Zak a short list of properties worth a visit or an offer, with the reasons.'),
-        member('REAL ESTATE LAB', 'HAWK', 'Deal Scout', 'broker',
+        member('REAL ESTATE', 'HAWK', 'Deal Scout', 'broker',
           'Find listed properties that match the criteria: price, area, size, condition and signs of a motivated seller. Give the link and key facts for each.'),
-        member('REAL ESTATE LAB', 'LEDGER', 'Underwriting Analyst', 'analyst',
+        member('REAL ESTATE', 'LEDGER', 'Underwriting Analyst', 'analyst',
           'Run the numbers on each deal: purchase costs, renovation estimate, rent or resale value, financing, cash flow, yield and the price at which it stops working.'),
-        member('REAL ESTATE LAB', 'TERRA', 'Market Researcher', 'researcher',
+        member('REAL ESTATE', 'TERRA', 'Market Researcher', 'researcher',
           'Know the market: price trends by neighbourhood, rents, vacancy, upcoming projects, rules and taxes that change a deal.'),
 
-        member('A DESIGN LAB', 'VITRA', 'Studio Manager', 'chief',
+        member('A DESIGN', 'VITRA', 'Studio Manager', 'chief',
           'Help run A Design, Zak\'s real business. Organise projects, deadlines and client follow-ups, and split requests across the studio. Only act when Zak asks.'),
-        member('A DESIGN LAB', 'MUSE', 'Concept Designer', 'designer',
+        member('A DESIGN', 'MUSE', 'Concept Designer', 'designer',
           'Develop design concepts: moodboards, material and colour palettes, layout ideas and references for each project brief. Only act when Zak asks.'),
-        member('A DESIGN LAB', 'PROSE', 'Proposal Writer', 'pitchwriter',
+        member('A DESIGN', 'PROSE', 'Proposal Writer', 'pitchwriter',
           'Write client proposals, project descriptions and quotes from Zak\'s notes, in A Design\'s voice. Only act when Zak asks.'),
-        member('A DESIGN LAB', 'ARIA', 'Social Media Manager', 'steward',
+        member('A DESIGN', 'ARIA', 'Social Media Manager', 'steward',
           'Plan A Design\'s social posts and portfolio captions from finished projects, as drafts for Zak. Only act when Zak asks.')
       ],
       // Weekly cycle per lab. Times are local. A DESIGN LAB has none: it works only when Zak asks.
@@ -103,7 +103,7 @@ const PresetCrews = (() => {
   // The member's written docs. The title leads the identity so it shows wherever the agent's role is read.
   function docsFor(crew, m) {
     return {
-      identity: 'You are ' + m.agentName + ', ' + m.title + ' in the ' + titleCase(m.room) + ' at ' + crew.company + '.',
+      identity: 'You are ' + m.agentName + ', ' + m.title + ' in the ' + titleCase(m.room) + ' Lab at ' + crew.company + '.',
       purpose: m.mission,
       manual: RULES
     };

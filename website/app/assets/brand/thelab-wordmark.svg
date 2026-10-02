@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 946 160" role="img" aria-label="THE LAB">
+<title>THE LAB</title>
+<g fill="none" stroke="#EAF0FF" stroke-width="22" stroke-linejoin="miter" stroke-linecap="square" transform="translate(48 0)">
+  <path d="M11 24H101M56 24V140"/>
+  <path d="M151 24V140M241 24V140M151 82H241"/>
+  <path d="M371 24H291V140H371M291 82H356"/>
+  <path d="M481 24V140H561"/>
+  <path d="M601 140L651 24L701 140M621 98H681"/>
+  <path d="M751 24V140H811Q851 140 851 108Q851 82 816 82H751M751 24H806Q841 24 841 52Q841 82 806 82"/>
+</g>
+</svg>

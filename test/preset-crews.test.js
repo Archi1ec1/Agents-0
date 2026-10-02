@@ -20,7 +20,7 @@ A.eq(crew.members.length, 18, '18 agents');
 
 const doc = T.build('zakholding', M, P, 1000), s = M.create(doc);
 const rooms = s.rooms();
-for (const lab of ['E-COMMERCE LAB', 'YOUTUBE LAB', 'REAL ESTATE LAB', 'A DESIGN LAB']) {
+for (const lab of ['E-COMMERCE', 'YOUTUBE', 'REAL ESTATE', 'A DESIGN']) {
   const room = rooms.find(r => r.name === lab);
   A.ok(room, lab + ' is built with its name on the room');
   const inRoom = p => room.rects.some(r => p.x >= r.x1 && p.x <= r.x2 && p.y >= r.y1 && p.y <= r.y2);
@@ -35,7 +35,7 @@ for (const r of crew.routines) {
   A.ok(scan.ok, r.name + ': passes the routine prompt guard');
   A.ok(C.routinePrompt(r).includes(C.RULES), r.name + ': carries the house rules');
 }
-A.ok(!crew.routines.some(r => crew.members.find(m => m.agentName === r.by).room === 'A DESIGN LAB'), 'A Design Lab has no routines: it works only when asked');
+A.ok(!crew.routines.some(r => crew.members.find(m => m.agentName === r.by).room === 'A DESIGN'), 'A Design Lab has no routines: it works only when asked');
 
 const d = C.docsFor(crew, crew.members[0]);
 A.ok(/^You are ORION, E-Commerce Director in the E-Commerce Lab at Zak Holding\.$/.test(d.identity), 'identity names the title and lab');
