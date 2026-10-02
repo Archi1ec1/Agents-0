@@ -301,6 +301,14 @@ input[type=file]::file-selector-button:hover { border-color: var(--ph); backgrou
   animation: sp-blink 1.5s steps(1) infinite;
 }
 .sp-press:focus-visible { outline: 2px solid var(--ph); outline-offset: 4px; }
+.sp-holding {   /* AGENT 0: the holding's front door on the title screen */
+  margin-top: 22px; pointer-events: auto; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  font-family: inherit; font-size: 20px; letter-spacing: 4px; text-transform: uppercase;
+  color: var(--ph-bright); background: rgba(0,0,0,.35); border: 1px solid var(--ph); padding: 12px 28px;
+  box-shadow: 0 0 18px var(--ph-glow2); text-shadow: 0 0 10px var(--ph-glow);
+}
+.sp-holding small { font-size: 12px; letter-spacing: 2px; color: var(--ph-dim); text-shadow: none; }
+.sp-holding:hover, .sp-holding:focus-visible { background: rgba(0,0,0,.55); box-shadow: 0 0 26px var(--ph-glow); outline: none; }
 @keyframes sp-blink { 0%, 62% { opacity: 1; } 62.01%, 100% { opacity: .18; } }
 .sp-stamp {
   position: absolute; left: 0; right: 0; bottom: 14px; display: flex; justify-content: center;

@@ -3181,6 +3181,7 @@ const App = (() => {
       // Presence is already proven by the live roster, link indicator, and COMMS state. Do not
       // create a fresh persistent notification every time an existing station is reloaded.
     }
+    setTimeout(maybeStartPreset, 0);   // AGENT 0: a holding chosen on the splash is built once the station is live
     // AGENT GROWTH: subscribe XP/Level/Confidence to the real run-outcome bus. Seeds agent.stats +
     // the station rollup, pushes the live numbers to the world HUD, and fires level-up celebrations.
     // S3: onCredential fires only on a coarse track-record change (tier crossing / band flip), and re-pushes
@@ -4688,6 +4689,32 @@ const App = (() => {
   // DISCONNECT topbar button was removed; recovery / resume / error paths still reuse this teardown.)
   function disconnect() { if (typeof Onboarding !== 'undefined' && Onboarding.stop && Onboarding.isRunning && Onboarding.isRunning()) Onboarding.stop(); if (typeof Tutorial !== 'undefined' && Tutorial.teardown) Tutorial.teardown(); if (typeof DockGlow !== 'undefined' && DockGlow.stop) DockGlow.stop(); if (typeof Intake !== 'undefined' && Intake.stop) Intake.stop(); SFX.close(); Chat.abort(); stopRailTicker(); World.stop(); if (World.pauseBridge) World.pauseBridge(); persist(); if (typeof StationUI !== 'undefined') StationUI.leave(); reentry(); }
 
+  /* ---------- AGENT 0: start straight into a crew preset ----------
+     The splash's OPEN ZAK HOLDING stores the preset id; the first time the station is entered after that
+     (right after the brain is connected) the layout is built and the crew hired, then the flag is cleared.
+     A station already on that preset only gets its missing crew and routines (seedCrew skips existing names). */
+  const START_PRESET_KEY = 'agent0.startPreset';
+  function maybeStartPreset() {
+    let id = null; try { id = localStorage.getItem(START_PRESET_KEY); } catch (_) {}
+    if (!id || !agent || !station) return;
+    try { localStorage.removeItem(START_PRESET_KEY); } catch (_) {}
+    if (typeof StationTemplates === 'undefined' || typeof PresetCrews === 'undefined' || typeof PropSprites === 'undefined') return;
+    const crew = PresetCrews.get(id), note = (typeof StationUI !== 'undefined' && StationUI.notify) ? StationUI.notify : () => {};
+    try {
+      if (station.doc().meta.templateId !== id) {
+        const r = station.replaceLayout(StationTemplates.build(id, WorldModel, PropSprites, station.doc()._nid + 100));
+        if (!r.ok) throw new Error(r.msg || r.error);
+        persist();
+      }
+    } catch (e) { note('Could not build the holding: ' + ((e && e.message) || e) + '. Try BUILD ▸ Presets.', 'warn'); return; }
+    if (!crew) return;
+    note('Building ' + crew.company + ': hiring ' + crew.members.length + ' agents…', 'info');
+    seedCrew(crew, { docsFor: m => PresetCrews.docsFor(crew, m), routinePrompt: PresetCrews.routinePrompt }).then(r => {
+      const bad = [r.error].concat(r.seatless && r.seatless.length ? ['no free desk for ' + r.seatless.join(', ')] : []).concat(r.failed || []).filter(Boolean);
+      note(crew.company + ' is open: ' + ((r.hired || []).length + (r.reused || []).length) + ' agents at their desks, ' + (r.routines || []).length + ' routines ready.' + (bad.length ? ' Problems: ' + bad.join('; ') : ''), bad.length ? 'warn' : 'good');
+    });
+  }
+
   /* ---------- first-boot splash ---------- */
   // The key-art boot card: shown ONLY from init()'s first-run branch (no save anywhere), never on
   // resume/recovery/re-entry — a returning Commander must land in their station, not a title card.
@@ -4752,7 +4779,17 @@ const App = (() => {
       window.removeEventListener('keydown', advance, true);
       screen.removeEventListener('pointerdown', advance);
       stopSplashStars();
+      // AGENT 0: OPEN ZAK HOLDING (clicked, or Enter while it has focus) remembers the holding preset, names the
+      // Overseer after the holding and goes straight to the one required step: connecting a brain.
+      const holding = e && ((e.target && e.target.closest && e.target.closest('#sp-holding')) ||
+        (e.type === 'keydown' && (e.key === 'Enter' || e.key === ' ') && document.activeElement === el('sp-holding')));
+      if (holding) { try { localStorage.setItem(START_PRESET_KEY, 'zakholding'); } catch (_) {} }
       startCreation();
+      if (holding) {
+        const nm = el('in-name');
+        if (nm && !nm.value.trim()) { nm.value = 'ZAK HOLDING'; nm.dispatchEvent(new Event('input', { bubbles: true })); }
+        const next = el('btn-setup-next'); if (next && !next.hidden) next.click();
+      }
     };
     window.addEventListener('keydown', advance, true);
     screen.addEventListener('pointerdown', advance);
