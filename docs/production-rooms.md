@@ -4,7 +4,8 @@ The 3D tower, city and landscape have been replaced by same-level rooms joined b
 
 ## Interaction and ownership
 
-- Click a room to focus it; **All rooms** shows the connected platforms and room attention badges.
+- Click a room to focus it; **Production floor** shows the YouTube and E-commerce platforms joined by a bridge. Other saved rooms remain selectable in the room bar.
+- **Expand view** temporarily hides the Team/chat panels; **Restore panels** brings them back. Classic restores the ordinary frame.
 - Click an agent or their name to open the existing dossier through `openWorldAgent`, resolving the current roster index from the real agent ID.
 - Click a conveyor station to inspect its queue and the reason work is waiting. Its action opens the Shorts window or Claude's existing Shop panel.
 - Task board, finished work, connections and routines reuse `StationUI.openTerm`. The shared controls also remain accessible from every room.
@@ -25,6 +26,7 @@ Failed reads retain the previous snapshot with unknown/stale status. A scheduled
 ## Files and integration
 
 - `frontend/app/office3d.js`: pure room/roster planning, horizontal layout, scene, raycast targets and existing-handler dispatch.
+- `frontend/app/productionroomscene.js`: local procedural 3D rooms, desks, articulated characters, monitor textures, lights, bridges and conveyor art. Static parts are instanced per room. There are no downloaded 3D assets or new runtime dependencies.
 - `frontend/app/productionflow.js`: pure stage projections and read-only shared store, including commerce mode-race protection.
 - `frontend/app/shortspanel.js`: registered workflow window, escaped records, form conversion and same-body/action-ID retry after uncertain acknowledgements.
 - `frontend/app/app.js`: host callbacks to existing agent, terminal and workflow handlers.
@@ -33,6 +35,14 @@ Failed reads retain the previous snapshot with unknown/stale status. A scheduled
 The branch integrates the commerce foundation and Claude's Shop panel from `feat/commerce-panel` (#2/#3) and the Shorts backend from `feat/youtube-shorts-workflow` (#4). Both route sets are retained in `sidecar/index.js`. These PR dependencies should be reviewed together; merging this branch includes their commits.
 
 The repository still tracks `website/app` and requires it to match the frontend. It was regenerated with `scripts/sync-website-app.mjs`; this does not publish or deploy the web version.
+
+## Dark room update
+
+The room renderer now uses a near-black background, charcoal cutaway walls, tiled floors, warm fixtures, monitor textures and five-spoke office chairs. Characters are real 3D geometry with articulated heads and arms. Idle breathing/head movement is decorative; typing follows the actual roster agent's running signal. Reduced motion freezes all decorative movement and conveyor rotation. Queue tokens remain bounded to their stage; they never imply a completed external operation. Stage warnings reflect workflow state and are not attributed to arbitrary seated agents.
+
+Claude's `lab-frame.css` and `labels.js` remain unchanged. A narrow `glass-demo.js` correction lets existing workflow sheets use the viewport bottom when the dock has moved into the header; previously their measured band placed them above the screen. The Shorts provider error-body cleanup now records a fail-open diagnostic with a generic message rather than logging upstream data.
+
+Browser checks cover articulated motion/stop behavior, agent and conveyor raycasts, the header-dock sheet placement, expanded view, responsive layout, workflow actions, stale reads and Classic fallback. Screenshots are browser captures of an isolated fixture station. Paid operations use a fixture provider and commerce records are explicitly demo data. No installed desktop rebuild or real-provider trial is implied.
 
 ## Verification
 

@@ -93,7 +93,11 @@
     let x = left && left.width ? left.right + 10 : 12;
     let end = right && right.width ? right.left - 10 : innerWidth - 12;
     if (end - x < 520) { x = 12; end = innerWidth - 12; }
-    return { x:x/z, width:(end-x)/z, top:((top ? top.bottom : 0)+10)/z, bottom:((bottom ? bottom.top : innerHeight)-10)/z };
+    const topEdge=(top && top.height ? top.bottom : 0)+10;
+    // Frame v2 moves the dock into the top bar. Only a dock BELOW the top bar
+    // bounds a bottom sheet; using the header menu's top put sheets above y=0.
+    const bottomEdge=bottom && bottom.height && bottom.top>topEdge ? bottom.top : innerHeight;
+    return { x:x/z, width:(end-x)/z, top:topEdge/z, bottom:(bottomEdge-10)/z };
   }
   function seat(w, s, animate = false, measuredBand) {
     if (!w.isConnected || w._closing || s.exiting || w.classList.contains('term-min-hidden') || !s.docked) return;
