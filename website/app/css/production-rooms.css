@@ -1,0 +1,100 @@
+/* Production rooms replace the tower overlay. Keep the existing app frame and window manager. */
+#stage3d { position:absolute; inset:0; width:100%; height:100%; display:none; z-index:1; outline:none; touch-action:none; }
+#stage-wrap.o3d-on #stage3d { display:block; }
+#stage-wrap.o3d-on #stage { visibility:hidden; }
+#stage-wrap.o3d-on .cam-hud { display:none; }
+#stage-wrap.o3d-on { min-height:500px; }
+#stage-wrap.o3d-on::before { display:none; }
+html body #screen-game:has(#stage-wrap.o3d-on) { overflow-y:auto; }
+#stage-wrap { container-type:inline-size; }
+body:has(#stage-wrap.o3d-on) #stage3d { position:absolute; inset:0; width:100% !important; height:100% !important; z-index:1; }
+body:has(#stage-wrap.o3d-on) #stage-wrap { overflow:hidden; isolation:isolate; }
+.o3d-ui { position:absolute; inset:0; z-index:3; pointer-events:none; color:#173F45; font-family:inherit; }
+.o3d-ui button { pointer-events:auto; font:600 11px/1.25 system-ui,sans-serif; color:#173F45; background:#F1F8F4; border:1px solid #B8CFC7; border-radius:8px; cursor:pointer; padding:7px 10px; min-height:32px; }
+.o3d-ui button:hover { background:white; border-color:#548F8C; }
+.o3d-ui button:focus-visible { outline:3px solid #157894; outline-offset:2px; }
+.o3d-ui button[aria-pressed=true] { background:#205E63; color:white; }
+.o3d-toolbar { position:absolute; left:12px; right:12px; top:10px; display:flex; gap:6px; flex-wrap:wrap; }
+.o3d-switch { display:flex; gap:3px; margin-right:auto; }
+.o3d-ui .o3d-shop { position:static; padding:7px 10px; }
+.o3d-content { position:absolute; inset:52px 0 0; pointer-events:none; }
+.o3d-rooms { margin:0 12px; display:flex; gap:5px; overflow:auto; pointer-events:auto; scrollbar-width:thin; }
+.o3d-rooms button { flex:none; border-top:3px solid var(--room-tint); }
+.o3d-heading { padding:9px 15px 5px; display:flex; flex-direction:column; gap:3px; max-width:900px; }
+.o3d-heading strong { font-size:17px; letter-spacing:-.02em; }
+.o3d-heading span { font-size:11px; line-height:1.35; color:#4C6D70; text-wrap:pretty; }
+.o3d-stations { display:flex; gap:4px; margin:4px 12px; overflow:auto; pointer-events:auto; }
+.o3d-stations button { flex:1 0 max-content; border-bottom:3px solid #9BADAE; }
+.o3d-ui [data-status=review] { border-bottom-color:#C08219; }
+.o3d-ui [data-status=blocked] { border-bottom-color:#CE5145; }
+.o3d-ui [data-status=working] { border-bottom-color:#197DA2; }
+.o3d-ui [data-status=ready] { border-bottom-color:#288A69; }
+.o3d-labels { position:absolute; inset:-52px 0 0; pointer-events:none; overflow:hidden; }
+.o3d-ui .o3d-anchor { position:absolute; transform:translate(-50%,-50%); white-space:nowrap; max-width:150px; overflow:hidden; text-overflow:ellipsis; padding:4px 7px; min-height:26px; font-size:10px; background:rgba(247,251,247,.96); box-shadow:0 2px 7px #173f4514; }
+.o3d-ui .o3d-anchor.station { border-bottom-width:3px; }
+.o3d-ui .o3d-anchor.room { font-size:12px; font-weight:750; padding:8px 15px; max-width:250px; border-bottom-width:3px; }
+.o3d-ui [data-running=true]::before { content:'● '; color:#198664; }
+.o3d-bottom { position:absolute; bottom:12px; left:12px; right:12px; display:flex; align-items:center; flex-direction:column; gap:5px; }
+.o3d-crew,.o3d-tools { display:flex; gap:5px; max-width:100%; overflow:auto; pointer-events:auto; }
+.o3d-crew button { flex:none; }
+.o3d-crew span { font-size:12px; padding:5px; }
+.o3d-tools button { font-size:10px; padding:5px 8px; min-height:26px; background:#e7f1eb; }
+.o3d-legend { font-size:10px; color:#365D61; text-align:center; background:#e9f2eeed; padding:3px 8px; border-radius:7px; }
+.o3d-inspector { position:absolute; right:12px; top:125px; width:290px; max-width:calc(100% - 24px); max-height:calc(100% - 235px); overflow:auto; padding:16px; box-sizing:border-box; pointer-events:auto; background:#f7faf5f5; border:1px solid #aac5bc; border-radius:12px; box-shadow:0 12px 35px #214f5226; }
+.o3d-inspector [data-dismiss] { float:right; padding:0; min-width:28px; min-height:28px; }
+.o3d-inspector h3 { margin:4px 20px 8px 0; font-size:15px; }
+.o3d-inspector p,.o3d-inspector li { font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.o3d-inspector ul { padding-left:15px; }
+.o3d-inspector [data-open-workflow] { width:100%; margin-top:8px; background:#205E63; color:white; }
+#stage-wrap:not(.o3d-on) .o3d-content,#stage-wrap:not(.o3d-on) .o3d-toolbar > :not(.o3d-switch) { display:none; }
+.o3d-ui [hidden] { display:none !important; }
+.shorts-shell { color:var(--text,#24474D); padding:12px; font-size:14px; }
+.shorts-shell nav { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px; }
+.shorts-shell button { padding:8px 12px; cursor:pointer; color:var(--text,#24474D); background:var(--panel2,#e4f0ec); border:1px solid #adc7c0; }
+.shorts-shell button[aria-pressed=true] { background:#205E63; color:white; }
+.shorts-shell button:disabled { opacity:.5; cursor:not-allowed; }
+.shorts-shell button:focus-visible,.shorts-shell input:focus-visible,.shorts-shell textarea:focus-visible { outline:2px solid #157894; outline-offset:2px; }
+.shorts-card { padding:16px; border:1px solid #bdd1c9; border-radius:10px; margin:12px 0; background:#f2f7f3; }
+.shorts-card h3 { margin:0 0 10px; font-size:17px; }
+.shorts-card p { line-height:1.5; overflow-wrap:anywhere; }
+.shorts-card label { display:flex; flex-direction:column; gap:5px; margin:12px 0; }
+.shorts-card input,.shorts-card textarea,.shorts-card select { box-sizing:border-box; max-width:100%; width:100%; padding:8px; font:inherit; }
+.shorts-card textarea { min-height:75px; resize:vertical; }
+.shorts-card .shorts-check { flex-direction:row; align-items:flex-start; line-height:1.5; }
+.shorts-card .shorts-check input { width:auto; margin-top:4px; }
+.shorts-card video { width:100%; max-height:350px; background:#203d43; }
+.shorts-notice,.shorts-warning { color:#985119; overflow-wrap:anywhere; }
+.shorts-state { font-weight:600; }
+@media(max-width:750px) {
+  .o3d-ui .o3d-anchor.person,.o3d-ui .o3d-anchor.station { display:none; }
+  .o3d-heading span { max-height:44px; overflow:auto; pointer-events:auto; }
+}
+@media(max-width:860px) {
+  html body #screen-game.active:has(#stage-wrap.o3d-on) { grid-template-rows:60px minmax(500px,1fr) 260px minmax(44px,auto); }
+}
+@media(max-width:600px) {
+  html body #screen-game.active:has(#stage-wrap.o3d-on) {
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:"top" "center" "left" "chat" "bot";
+    grid-template-rows:60px minmax(500px,1fr) 180px 260px minmax(44px,auto);
+  }
+  html body.crew-rail-off #screen-game.active:has(#stage-wrap.o3d-on) {
+    grid-template-areas:"top" "center" "chat" "bot";
+    grid-template-rows:60px minmax(500px,1fr) 260px minmax(44px,auto);
+  }
+}
+@media(max-width:420px) {
+  .o3d-toolbar { gap:3px; left:6px; right:6px; }
+  .o3d-ui button { font-size:10px; padding:6px; }
+  .o3d-heading strong { font-size:14px; }
+  .o3d-inspector { top:140px; }
+  .o3d-legend { font-size:9px; }
+}
+@container(max-width:750px) {
+  .o3d-ui .o3d-anchor.person,.o3d-ui .o3d-anchor.station { display:none; }
+}
+@container(max-width:380px) {
+  .o3d-toolbar [data-shortcuts] { display:none; }
+  .o3d-ui button { font-size:10px; padding:6px; }
+  .o3d-heading span { max-height:44px; overflow:auto; pointer-events:auto; }
+}

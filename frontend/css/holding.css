@@ -53,10 +53,9 @@ html body .o3d-ui, html body .o3d-ui * { font-size-adjust: none; letter-spacing:
 html body .ws-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 html body .ws-head .ws-tab, html body .ws-head-acts button { font-size: 12px; padding: 3px 6px; white-space: nowrap; }
 
-/* ---------- GLASS: the tower fills the whole window and every panel floats over it as frosted glass ----------
+/* ---------- GLASS: existing panels retain their treatment around the production rooms ----------
    Active only while the 3D view is on; CLASSIC keeps the solid panels. */
 body:has(#stage-wrap.o3d-on) { --glass-bg: rgba(232, 243, 239, 0.74); --glass-edge: rgba(15, 107, 120, 0.14); }
-body:has(#stage-wrap.o3d-on) #stage3d { position: fixed; inset: 0; width: 100vw !important; height: 100vh !important; z-index: 0; }
 body:has(#stage-wrap.o3d-on) #screen-game,
 body:has(#stage-wrap.o3d-on) #stage-wrap { background: transparent !important; box-shadow: none !important; border-color: transparent !important; overflow: visible; }
 body:has(#stage-wrap.o3d-on) #stage-wrap .cam-hud { display: none; }
@@ -65,7 +64,7 @@ body:has(#stage-wrap.o3d-on) #chat-panel, body:has(#stage-wrap.o3d-on) #bottomba
 body:has(#stage-wrap.o3d-on) #topbar, body:has(#stage-wrap.o3d-on) #left,
 body:has(#stage-wrap.o3d-on) #chat-panel, body:has(#stage-wrap.o3d-on) #bottombar,
 body:has(#stage-wrap.o3d-on) [class*="window"]:not(#stage-wrap *), body:has(#stage-wrap.o3d-on) [class*="popup"], body:has(#stage-wrap.o3d-on) [class*="menu"]:not(li):not(button),
-body:has(#stage-wrap.o3d-on) [role="dialog"], body:has(#stage-wrap.o3d-on) [role="menu"], body:has(#stage-wrap.o3d-on) [class*="modal"], body:has(#stage-wrap.o3d-on) .o3d-ui .o3d-floors {
+body:has(#stage-wrap.o3d-on) [role="dialog"], body:has(#stage-wrap.o3d-on) [role="menu"], body:has(#stage-wrap.o3d-on) [class*="modal"] {
   background: var(--glass-bg) !important;
   -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid var(--glass-edge) !important; border-radius: var(--r-lg);

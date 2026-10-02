@@ -134,6 +134,11 @@
   function readMode() { try { return localStorage.getItem(MODE_KEY) === 'demo' ? 'demo' : 'disconnected'; } catch (_) { return 'disconnected'; } }
   function writeMode(m) { try { localStorage.setItem(MODE_KEY, m); } catch (_) {} }
   function paint() { if (el) el.innerHTML = render(state); }
+  function refreshRooms() {
+    if (typeof ProductionFlow !== 'undefined') {
+      const rooms = ProductionFlow.getStore(); rooms.setCommerceMode(state.mode); rooms.refresh('commerce');
+    }
+  }
 
   async function load() {
     const mode = state.mode;
@@ -165,7 +170,7 @@
         state.simError = j.error || (j.code === 'ECOMMERCE_ORDER_MISSING' ? 'Run “Customer pays” first.' : (j.code || 'HTTP ' + r.status));
       }
     } catch (e) { state.simError = 'Network error. Click again to retry the same step safely.'; }
-    state.busy = false; paint();
+    state.busy = false; paint(); refreshRooms();
   }
 
   function open() {
@@ -175,7 +180,7 @@
       el.addEventListener('click', ev => {
         const b = ev.target.closest('button'); if (!b || b.disabled) return;
         if (b.dataset.act === 'close') return close();
-        if (b.dataset.mode && b.dataset.mode !== state.mode) { state.mode = b.dataset.mode; writeMode(state.mode); state.snap = null; state.error = null; state.simError = null; paint(); load(); }
+        if (b.dataset.mode && b.dataset.mode !== state.mode) { state.mode = b.dataset.mode; writeMode(state.mode); state.snap = null; state.error = null; state.simError = null; paint(); refreshRooms(); load(); }
         if (b.dataset.step) simulate(b.dataset.step);
       });
       document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && el && !el.hidden) close(); });
