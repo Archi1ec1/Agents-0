@@ -1,0 +1,45 @@
+/* HOLDING — the dark 3D-office look over the whole app (loaded LAST so it wins).
+   Re-points the phosphor tokens every surface already themes through to the tower's night palette
+   (navy glass, blue accent, white text), switches the UI face to the system sans the 3D view uses,
+   and turns off the CRT effects (scanlines, glow, pixelated text). The engine and markup are untouched.
+   This file is the one deliberate exception to the VT323 font law (see test/font.law.test.js). */
+html body, html body[class*="theme-"] {
+  --ph: #5B8CFF; --ph-bright: #EAF0FF; --ph-dim: #4A5A80; --ph-faint: #141C30;
+  --ink: #0A0F1C; --ph-glow: rgba(91,140,255,0.35); --ph-glow2: rgba(91,140,255,0.10);
+  --bg: #070B16; --panel: rgba(14,20,36,0.94); --panel2: #111A2E;
+  --text: #C9D3EA; --warn: #FFC861; --gold: #F5D08A;
+  --ph-rgb: 91, 140, 255; --ph-bright-rgb: 234, 240, 255; --gold-rgb: 245, 208, 138;
+  --r-sm: 6px; --r: 10px; --r-lg: 14px;
+  --ui-font: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: radial-gradient(1200px 700px at 50% -10%, #16213D 0%, #070B16 60%) fixed, #070B16;
+  font-family: var(--ui-font);
+  text-shadow: none;
+  -webkit-font-smoothing: antialiased;
+}
+/* VT323 sat small for its px size; the sans is shrunk to the same visual size so no layout overflows */
+html body *:not(canvas) { font-family: var(--ui-font) !important; font-size-adjust: 0.4; letter-spacing: 0.02em !important; text-shadow: none !important; }
+html body code, html body pre, html body kbd, html body .mono { font-family: ui-monospace, Consolas, monospace !important; }
+html body::after, html body::before { display: none !important; }   /* CRT scanlines + vignette off */
+
+/* panels and buttons: rounded navy glass with a soft hairline */
+html body .panel, html body [class*="panel"], html body .win, html body [class*="window"], html body .card, html body [class*="-card"] {
+  border-radius: var(--r);
+  border-color: rgba(120,150,220,0.18);
+}
+html body button, html body .btn, html body [class*="-btn"] {
+  border-radius: var(--r-sm);
+  border-color: rgba(120,150,220,0.25);
+}
+html body button:hover, html body .btn:hover { border-color: var(--ph); }
+html body input, html body textarea, html body select {
+  border-radius: var(--r-sm); background: rgba(8,12,24,0.8); border-color: rgba(120,150,220,0.22); color: var(--ph-bright);
+}
+html body ::selection { background: rgba(91,140,255,0.35); color: #fff; }
+html body #stage-wrap { box-shadow: 0 0 0 1px rgba(120,150,220,0.25), 0 10px 40px rgba(0,0,0,0.6); border-radius: var(--r-lg); }
+html body img[src*="avatar"], html body .crew-row img, html body [class*="portrait"] { image-rendering: auto; }
+
+/* the 3D view's own overlay is already sized for the sans: leave it at its natural size */
+html body .o3d-ui, html body .o3d-ui * { font-size-adjust: none; letter-spacing: normal !important; }
+/* the rail's SESSIONS / PROJECTS / + NEW head: let it fit the narrow rail */
+html body .ws-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+html body .ws-head .ws-tab, html body .ws-head-acts button { font-size: 12px; padding: 3px 6px; white-space: nowrap; }
