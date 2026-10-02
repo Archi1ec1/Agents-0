@@ -169,3 +169,14 @@ assert.equal(reopenDock('tasks')._readDockState().height, undefined);
 settingsWindow._saveDockState({ height: Infinity, expanded: false });
 assert.equal(reopenDock('settings')._readDockState().height, null);
 console.log('glass preferences: normal height, maximized state, panel isolation and invalid-size recovery passed');
+
+// Both the original bottom dock and frame v2's header menus leave sheets on screen.
+const bandStart=src.indexOf('  function band()'),bandEnd=src.indexOf('  function seat(',bandStart);
+for(const dock of [{top:850,height:50},{top:26,height:40},{top:0,height:0}]){
+  const elements={'#topbar':{bottom:80,height:60},'#bottombar':dock,'#left':{right:260,width:240},'#chat-panel':{left:1100,width:300}};
+  const ctx={zoom:()=>1,rect:e=>e,innerWidth:1440,innerHeight:900,document:{querySelector:s=>elements[s]}};
+  vm.createContext(ctx);vm.runInContext(src.slice(bandStart,bandEnd),ctx);
+  const b=ctx.band();assert.equal(b.top,90);assert.equal(b.bottom,dock.top===850?840:890);
+  assert.ok(b.bottom-b.top>=600,'usable sheet band');
+}
+console.log('glass band: bottom dock, header dock and hidden dock passed');
