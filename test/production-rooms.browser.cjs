@@ -60,7 +60,7 @@ let browser,page;
         const v=target.getWorldPosition(new THREE.Vector3()).project(camera),r=document.getElementById('stage3d').getBoundingClientRect();return {x:r.x+(v.x+1)*r.width/2,y:r.y+(1-v.y)*r.height/2};
       },agent.id);
       await page.mouse.click(point.x,point.y);
-      await page.waitForFunction(name=>document.querySelector('.dossier .ag-name')?.textContent.startsWith(name),name);
+      await page.waitForFunction(name=>document.querySelector('.dossier .ag-name')?.textContent.toUpperCase().startsWith(name.toUpperCase()),name);
       await page.evaluate(()=>StationUI.closeTerm('agents'));
     }
     const stagePoint=await page.evaluate(()=>{const {scene,camera}=window.__roomFixture;let target;scene.traverse(o=>{if(o.userData.target?.type==='stage'&&o.userData.target.kind==='youtube'&&o.userData.target.stage==='permission')target=o;});const v=target.getWorldPosition(new THREE.Vector3()).project(camera),r=document.getElementById('stage3d').getBoundingClientRect();return {x:r.x+(v.x+1)*r.width/2,y:r.y+(1-v.y)*r.height/2};});
@@ -73,7 +73,7 @@ let browser,page;
     await page.waitForFunction(()=>document.getElementById('stage-wrap').clientWidth>1200);
     if(shotDir){fs.mkdirSync(shotDir,{recursive:true});await page.locator('#stage-wrap').screenshot({path:path.join(shotDir,'youtube-production-room.png')});await page.locator('[data-overview]').click();await page.mouse.move(1590,5);await page.locator('#stage-wrap').screenshot({path:path.join(shotDir,'connected-production-rooms-initial.png')});await page.locator('.o3d-rooms button').filter({hasText:'YOUTUBE'}).click();}
     await page.locator('.o3d-crew button').filter({hasText:'STELLA'}).click();
-    await page.waitForFunction(()=>Array.from(document.querySelectorAll('[role="dialog"]')).some(d=>d.textContent.includes('STELLA')));
+    await page.waitForFunction(()=>Array.from(document.querySelectorAll('[role="dialog"]')).some(d=>d.textContent.toUpperCase().includes('STELLA')));
     await page.evaluate(()=>StationUI.closeTerm('agents'));
     await page.locator('.o3d-tools button').filter({hasText:'Task board'}).click();
     await page.waitForFunction(()=>Array.from(document.querySelectorAll('[role="dialog"]')).some(d=>d.textContent.includes('TASK')));

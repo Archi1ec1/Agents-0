@@ -41,9 +41,9 @@ html body button, html body .btn, html body [class*="-btn"] {
 }
 html body button:hover, html body .btn:hover { border-color: var(--ph); }
 html body input, html body textarea, html body select {
-  border-radius: var(--r-sm); background: #F3F9F7; border-color: rgba(15,107,120,0.22); color: var(--ph-bright);
+  border-radius: var(--r-sm); background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.10); color: var(--ph-bright);
 }
-html body ::selection { background: rgba(15,107,120,0.25); color: #0B2E35; }
+html body ::selection { background: rgba(34,195,230,0.30); color: #FFFFFF; }
 html body #stage-wrap { box-shadow: 0 0 0 1px rgba(15,107,120,0.18), 0 10px 30px rgba(15,60,70,0.12); border-radius: var(--r-lg); }
 html body img[src*="avatar"], html body .crew-row img, html body [class*="portrait"] { image-rendering: auto; }
 
@@ -55,7 +55,7 @@ html body .ws-head .ws-tab, html body .ws-head-acts button { font-size: 12px; pa
 
 /* ---------- GLASS: existing panels retain their treatment around the production rooms ----------
    Active only while the 3D view is on; CLASSIC keeps the solid panels. */
-body:has(#stage-wrap.o3d-on) { --glass-bg: rgba(232, 243, 239, 0.74); --glass-edge: rgba(15, 107, 120, 0.14); }
+body:has(#stage-wrap.o3d-on) { --glass-bg: rgba(18, 22, 28, 0.86); --glass-edge: rgba(255, 255, 255, 0.07); }
 body:has(#stage-wrap.o3d-on) #screen-game,
 body:has(#stage-wrap.o3d-on) #stage-wrap { background: transparent !important; box-shadow: none !important; border-color: transparent !important; overflow: visible; }
 body:has(#stage-wrap.o3d-on) #stage-wrap .cam-hud { display: none; }
@@ -68,21 +68,21 @@ body:has(#stage-wrap.o3d-on) [role="dialog"], body:has(#stage-wrap.o3d-on) [role
   background: var(--glass-bg) !important;
   -webkit-backdrop-filter: blur(16px) saturate(1.4); backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid var(--glass-edge) !important; border-radius: var(--r-lg);
-  box-shadow: 0 8px 28px rgba(15, 60, 70, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.6) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
 }
 /* inner surfaces of a glass panel go clear so the blur reads through, instead of stacking solid fills */
 body:has(#stage-wrap.o3d-on) #left *, body:has(#stage-wrap.o3d-on) #chat-panel *, body:has(#stage-wrap.o3d-on) #topbar *, body:has(#stage-wrap.o3d-on) #bottombar * { background-color: transparent; }
 body:has(#stage-wrap.o3d-on) #left [class*="card"], body:has(#stage-wrap.o3d-on) #chat-panel [class*="card"],
 body:has(#stage-wrap.o3d-on) #left .on, body:has(#stage-wrap.o3d-on) #chat-panel button, body:has(#stage-wrap.o3d-on) #chat-panel textarea {
-  background: rgba(246, 251, 249, 0.62) !important; border-color: rgba(15, 107, 120, 0.14) !important;
+  background: rgba(255, 255, 255, 0.04) !important; border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 /* daylight: anything still painted on a near-black fill reads as a white card instead */
 html body #crew-sum, html body .tut-card, html body [class*="toast"], html body [class*="hint-card"], html body [class*="coach"] {
-  background: rgba(238,246,243,0.95) !important; color: var(--text) !important; border-color: rgba(15,107,120,0.18) !important;
+  background: #141920 !important; color: var(--text) !important; border-color: rgba(255,255,255,0.08) !important;
 }
 
 /* the onboarding / dialogue sheet painted its own near-black backing: give it the daylight glass instead */
-html body .fnv-dialogue::before { background: rgba(232, 243, 239, 0.94) !important; }
+html body .fnv-dialogue::before { background: rgba(14, 18, 24, 0.95) !important; }
 html body .fnv-dialogue, html body .fnv-dialogue * { color: var(--text); }
 html body .fnv-dialogue h1, html body .fnv-dialogue h2, html body .fnv-dialogue h3 { color: var(--ph-bright); }
