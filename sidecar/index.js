@@ -16,8 +16,12 @@ const dns = require('node:dns');
 // Consume the native envelope key before any subsystem can snapshot process.env
 // or launch a worker. The key stays in the vault closure, never a child environment.
 const connectorVaultMod = require('./connector-vault.js');
+const { makeShortsRoutes } = require('./shorts/routes.js');
 const connectorVault = connectorVaultMod.makeConnectorVault({ fs, path,
   keyHex: process.env.STARNET_CONNECTOR_ENCRYPTION_KEY || '', required: process.env.STARNET_DESKTOP_SHELL === '1' });
+// Separate lock state: a damaged Shorts credential file must not lock unrelated connectors.
+const shortsVault = connectorVaultMod.makeConnectorVault({ fs, path,
+  keyHex: process.env.STARNET_CONNECTOR_ENCRYPTION_KEY || '', required: true });
 delete process.env.STARNET_CONNECTOR_ENCRYPTION_KEY;
 
 const { runAgentLoop, _internals: LoopInternals } = require('./loop.js');
@@ -453,6 +457,9 @@ function defaultWorkspaces() {
   return neu;
 }
 const WORKSPACES = ENV('WORKSPACES') ? path.resolve(ENV('WORKSPACES')) : defaultWorkspaces();
+const shortsRoutes = makeShortsRoutes({ fs, path, directory: path.join(WORKSPACES, 'shorts'),
+  vault: shortsVault, fetchImpl: (...args) => globalThis.fetch(...args), now: () => new Date().toISOString(), readBody,
+  writeDurable: (...args) => writeFileDurable(...args) });
 const outputArtifacts = makeOutputArtifacts({ fsp, fs, pathMod: path, root: WORKSPACES, crypto });
 
 const RECOVERY_CANDIDATE_ROOTS = workspaceCandidates({
@@ -4700,6 +4707,7 @@ applyServiceKeysEnv();          // boot: persisted keys are live for the first r
    The per-launch API/IPC tokens are deliberately NOT listed: a few local surfaces still carry the API token in a
    URL the frontend must open, and scrubbing it there would break them (that is the token-in-URL lane's to fix). */
 function stationSecretValues() { return collectSecretValues([
+  { values: shortsRoutes.secretValues() },
   { values: [runtimeKey, CREDITS_TOKEN, String(process.env.STARNET_CHANNEL_WEBHOOK_SECRET || '')] },
   { values: Object.values(runtimeKeys) },
   { values: Object.values(runtimeKeyPools) },
@@ -9373,6 +9381,18 @@ updatePreparation = makeUpdatePreparation({
   appVersion: () => { try { return computeVersionSurface().appVersion || computeVersionSurface().harness || 'unknown'; } catch (_) { return 'unknown'; } }
 });
 
+// Only poll already-submitted Opus jobs. This worker never creates paid jobs or publishes.
+let shortsPollBusy = false;
+const shortsPollTimer = setInterval(() => {
+  if (shortsPollBusy || !workspaceOwnerClaim.ok || processFault.fault()) return;
+  const ticket = updatePreparation.beginRequest('POST', '/api/shorts/jobs/refresh');
+  if (!ticket.ok) return;
+  shortsPollBusy = true;
+  shortsRoutes.poll().catch(e => recordDiagError('Shorts polling: ' + (e.shortsError ? e.code : 'unavailable')))
+    .finally(() => { shortsPollBusy = false; ticket.release(); });
+}, 30000);
+shortsPollTimer.unref();
+
 const server = http.createServer((req, res) => {
   // DNS-REBINDING FLOOR ON EVERY PATH (2026-09-23 security audit). The Host pin used to guard only /api/* (and
   // openai-compat's own routes), while `/` inlines the per-launch API token — a rebound page could read the secret
@@ -10035,6 +10055,7 @@ const ROUTES = [
 function dispatchRoute(req, res) {
   const url = req.url || '';
   const bare = url.split('?')[0];
+  if (bare === '/api/shorts' || bare.startsWith('/api/shorts/')) return shortsRoutes.route(req, res);
   for (let i = 0; i < ROUTES.length; i++) {
     const r = ROUTES[i];
     if (Array.isArray(r.m) ? r.m.indexOf(req.method) < 0 : r.m !== req.method) continue;
