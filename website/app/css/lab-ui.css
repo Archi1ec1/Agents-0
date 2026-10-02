@@ -1,0 +1,197 @@
+/* THE LAB — interface system (loaded LAST, after holding.css).
+   One calm, modern language for the frame around the tower: system sans at fixed sizes, deep-teal ink on soft mint
+   glass, 14px cards, small tracked eyebrow labels, pill status chips, one floating dock. Purely presentational:
+   every id/class the app's scripts write to is left in place, only how it looks changes. */
+
+html body {
+  --lab-ink: #0E2A30;          /* primary text */
+  --lab-sub: #5A777B;          /* secondary text */
+  --lab-faint: #8AA3A6;        /* tertiary / meta */
+  --lab-teal: #0F5D6B;         /* primary action */
+  --lab-teal-2: #14848C;       /* hover / accent */
+  --lab-line: rgba(14, 42, 48, 0.09);
+  --lab-card: rgba(255, 255, 255, 0.72);
+  --lab-card-hi: rgba(255, 255, 255, 0.92);
+  --lab-shadow: 0 1px 2px rgba(14, 42, 48, 0.06), 0 8px 24px rgba(14, 42, 48, 0.08);
+  --lab-r: 14px; --lab-r-sm: 10px;
+  --lab-ok: #1F9D6B; --lab-warn: #D08A12; --lab-bad: #D24B3E;
+}
+/* fixed type scale for the frame: the global font-size-adjust (a VT323-era fix) is switched off here */
+html body #topbar, html body #topbar *, html body #left, html body #left *, html body #chat-panel, html body #chat-panel *,
+html body #bottombar, html body #bottombar *, html body .bb-menu, html body .bb-menu * {
+  font-size-adjust: none !important; letter-spacing: normal !important;
+}
+.lab-eyebrow, html body #left h3, html body #chat-panel h3, html body .ws-head .ws-tab {
+  font-size: 11px !important; font-weight: 700 !important; letter-spacing: .09em !important; text-transform: uppercase; color: var(--lab-sub) !important;
+}
+
+/* ---------------- shell spacing ---------------- */
+html body #screen-game { gap: 12px; padding: 12px; }
+html body #topbar, html body #left, html body #chat-panel, html body #bottombar {
+  border-radius: var(--lab-r) !important; box-shadow: var(--lab-shadow) !important;
+}
+
+/* ---------------- top bar ---------------- */
+html body #topbar { min-height: 60px; padding: 0 16px 0 20px !important; }
+html body #logo .logo-img { background-color: var(--lab-teal) !important; }
+html body .widget-rail .wg-add {
+  width: 32px !important; height: 32px !important; min-width: 0 !important; padding: 0 !important; border-radius: 10px !important;
+  background: var(--lab-card) !important; border: 1px solid var(--lab-line) !important; color: var(--lab-teal) !important; font-size: 16px !important;
+}
+html body .widget-rail .wg-add::after, html body .widget-rail .wg-add::before { content: none !important; display: none !important; }
+html body .tb-stats { gap: 8px !important; align-items: center; }
+html body #topbar .tb-sep { display: none !important; }
+/* every top-bar instrument becomes one pill */
+html body #lw-chip, html body #tb-station, html body .tb-connection, html body #spend-chip, html body [id$="-chip"].tb-chip {
+  display: inline-flex !important; align-items: center; gap: 8px; height: 34px; padding: 0 12px !important;
+  border-radius: 999px !important; background: var(--lab-card-hi) !important; border: 1px solid var(--lab-line) !important;
+  box-shadow: none !important; color: var(--lab-ink) !important; font-size: 13px !important; font-weight: 600 !important;
+}
+html body #tb-station .tb-lbl { font-size: 11px !important; font-weight: 700 !important; color: var(--lab-sub) !important; letter-spacing: .08em !important; }
+html body #tb-station .tb-val { font-size: 13px !important; color: var(--lab-ink) !important; }
+html body #tb-station .tb-xp { width: 40px !important; height: 4px !important; border-radius: 99px; background: var(--lab-line) !important; overflow: hidden; }
+html body #tb-station .tb-xp-fill { background: var(--lab-teal) !important; }
+html body .tb-station-mark, html body .tb-link-mark { width: 16px !important; height: 16px !important; stroke: var(--lab-teal) !important; color: var(--lab-teal) !important; }
+html body .tb-link-copy { display: flex; flex-direction: row !important; gap: 6px; align-items: center; }
+html body #sig { display: none !important; }
+html body #status-pill { font-size: 13px !important; font-weight: 600 !important; color: var(--lab-ink) !important; text-transform: capitalize; background: none !important; border: 0 !important; padding: 0 !important; }
+html body #status-pill::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; background: var(--lab-ok); box-shadow: 0 0 0 3px rgba(31,157,107,.18); vertical-align: 1px; }
+html body #status-pill.standby::before { background: var(--lab-warn); box-shadow: 0 0 0 3px rgba(208,138,18,.18); }
+html body #save-dot { font-size: 8px !important; color: var(--lab-faint) !important; }
+html body #lw-chip .lw-txt { font-size: 12px !important; font-weight: 700 !important; letter-spacing: .06em !important; }
+
+/* ---------------- crew list ---------------- */
+html body #left { padding: 14px 10px !important; }
+html body #crew { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px !important; }
+html body #crew .crew-row {
+  display: flex !important; align-items: center; gap: 12px; padding: 10px 12px !important; min-height: 0 !important;
+  border-radius: var(--lab-r-sm) !important; background: var(--lab-card) !important; border: 1px solid transparent !important;
+  box-shadow: none !important; transition: background .15s, border-color .15s, transform .15s;
+}
+html body #crew .crew-row:hover { background: var(--lab-card-hi) !important; border-color: var(--lab-line) !important; transform: translateY(-1px); }
+html body #crew .crew-row.selected { background: var(--lab-card-hi) !important; border-color: rgba(15,93,107,.35) !important; box-shadow: 0 0 0 3px rgba(15,93,107,.08) !important; }
+/* the pixel portrait becomes a clean teal agent tile */
+html body #crew .crew-portrait {
+  flex: 0 0 38px; width: 38px !important; height: 38px !important; border-radius: 11px !important; overflow: hidden; position: relative;
+  background: linear-gradient(160deg, #1A7680, #0F4F5C) !important; border: 0 !important; box-shadow: none !important;
+}
+html body #crew .crew-portrait img { opacity: 0 !important; }
+html body #crew .crew-portrait::after {
+  content: ''; position: absolute; inset: 9px; background: #fff;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='8' width='16' height='12' rx='3'/%3E%3Cpath d='M12 4v4M9 13h.01M15 13h.01M9 17h6'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='8' width='16' height='12' rx='3'/%3E%3Cpath d='M12 4v4M9 13h.01M15 13h.01M9 17h6'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+html body #crew .crew-row > .dot { position: absolute; margin: 30px 0 0 30px; width: 10px !important; height: 10px !important; border-radius: 50%; border: 2px solid #fff; z-index: 1; }
+html body #crew .crew-row { position: relative; }
+html body #crew .crew-main { min-width: 0; flex: 1; }
+html body #crew .crew-name { font-size: 14px !important; font-weight: 650 !important; color: var(--lab-ink) !important; text-transform: none; line-height: 1.25; }
+html body #crew .crew-name::first-letter { text-transform: uppercase; }
+html body #crew .crew-status { font-size: 12px !important; color: var(--lab-sub) !important; text-transform: lowercase; margin-top: 1px; }
+html body #crew .crew-status::first-letter { text-transform: uppercase; }
+html body #crew .crew-prog { height: 3px !important; border-radius: 99px; margin-top: 6px; background: var(--lab-line) !important; }
+html body #crew .crew-lv, html body #crew [class*="lvl"] { font-size: 11px !important; color: var(--lab-faint) !important; }
+html body #crew-sum {
+  display: flex !important; gap: 8px; padding: 10px 4px !important; border: 0 !important; background: none !important; box-shadow: none !important;
+}
+html body #crew-sum span { flex: 1; text-align: center; padding: 7px 0; border-radius: 999px; font-size: 12px !important; font-weight: 600; background: var(--lab-card); color: var(--lab-sub) !important; }
+html body #crew-sum .pos { color: var(--lab-teal) !important; background: rgba(15,93,107,.1); }
+
+/* ---------------- sessions ---------------- */
+html body #ws-wrap { border-top: 1px solid var(--lab-line); padding-top: 10px; box-shadow: none !important; background: none !important; }
+html body .ws-head { padding: 0 4px 8px !important; }
+html body .ws-head .ws-tab { border: 0 !important; background: none !important; padding: 4px 8px !important; border-radius: 8px !important; }
+html body .ws-head .ws-tab.on { background: rgba(15,93,107,.1) !important; color: var(--lab-teal) !important; }
+html body #ws-new { font-size: 12px !important; font-weight: 600 !important; padding: 5px 10px !important; border-radius: 8px !important; background: var(--lab-teal) !important; color: #fff !important; border: 0 !important; }
+html body #ws-search { height: 36px; border-radius: 10px !important; font-size: 13px !important; padding: 0 12px !important; }
+html body .ws-kind-filter button { font-size: 12px !important; border-radius: 8px !important; }
+html body .ws-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px !important; border-radius: 10px !important; font-size: 13px !important; color: var(--lab-ink) !important; }
+html body .ws-row:hover { background: var(--lab-card) !important; }
+html body .ws-row .ws-agent { display: none; }
+html body .ws-row .ws-title { font-weight: 600; text-transform: lowercase; }
+html body .ws-row .ws-title::first-letter { text-transform: uppercase; }
+html body .ws-row .ws-meta { margin-left: auto; font-size: 11px !important; color: var(--lab-faint) !important; }
+html body .ws-row .ws-receipt { display: none; }
+
+/* ---------------- chat panel ---------------- */
+html body #chat-panel { padding: 0 !important; overflow: hidden; }
+html body #chat-panel h3 { padding: 14px 16px 6px !important; margin: 0 !important; border: 0 !important; }
+html body #comms-expand { font-size: 11px !important; border-radius: 8px !important; padding: 4px 8px !important; }
+html body .comms-idbar { padding: 8px 16px 14px !important; gap: 12px; border-bottom: 1px solid var(--lab-line) !important; }
+html body .comms-portrait { width: 44px !important; height: 44px !important; border-radius: 12px !important; overflow: hidden; position: relative; background: linear-gradient(160deg, #1A7680, #0F4F5C) !important; border: 0 !important; }
+html body .comms-portrait img { opacity: 0 !important; }
+html body .comms-portrait::after {
+  content: ''; position: absolute; inset: 11px; background: #fff;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='8' width='16' height='12' rx='3'/%3E%3Cpath d='M12 4v4M9 13h.01M15 13h.01M9 17h6'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='8' width='16' height='12' rx='3'/%3E%3Cpath d='M12 4v4M9 13h.01M15 13h.01M9 17h6'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+html body .comms-agent-select { font-size: 18px !important; font-weight: 650 !important; color: var(--lab-ink) !important; border: 0 !important; background: transparent !important; padding: 0 !important; }
+html body .comms-overline, html body .comms-agent-model { font-size: 12px !important; color: var(--lab-sub) !important; }
+html body #chat-log { padding: 16px !important; }
+html body .cmsg-empty-line { font-size: 17px !important; font-weight: 650 !important; color: var(--lab-ink) !important; }
+html body .cmsg-empty-hint { font-size: 13px !important; color: var(--lab-sub) !important; margin: 4px 0 14px; }
+html body .cmsg-starter {
+  display: grid !important; grid-template-columns: 1fr auto; gap: 2px 12px; text-align: left; width: 100%;
+  padding: 14px 16px !important; border-radius: 12px !important; background: var(--lab-card-hi) !important;
+  border: 1px solid var(--lab-line) !important; box-shadow: none !important; transition: border-color .15s, transform .15s;
+}
+html body .cmsg-starter:hover { border-color: rgba(15,93,107,.4) !important; transform: translateY(-1px); }
+html body .cmsg-starter-title { font-size: 14px !important; font-weight: 650 !important; color: var(--lab-ink) !important; }
+html body .cmsg-starter-detail { grid-column: 1; font-size: 12.5px !important; color: var(--lab-sub) !important; }
+html body .cmsg-starter-arrow { grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--lab-teal) !important; font-size: 18px !important; }
+html body .cmsg-starter-row + .cmsg-starter-row { margin-top: 8px; }
+html body #chat-inputrow { margin: 0 12px 12px !important; padding: 8px 10px !important; border-radius: 14px !important; background: var(--lab-card-hi) !important; border: 1px solid var(--lab-line) !important; box-shadow: none !important; }
+html body #chat-inputrow .prompt { display: none !important; }
+html body #chat-input { font-size: 14px !important; color: var(--lab-ink) !important; background: transparent !important; border: 0 !important; box-shadow: none !important; }
+html body .chat-send { width: 36px; height: 36px; border-radius: 10px !important; background: var(--lab-teal) !important; color: #fff !important; border: 0 !important; }
+html body .chat-send .cs-label { color: #fff !important; }
+html body .chat-tools button, html body .model-dock-toggle { font-size: 12px !important; border-radius: 8px !important; }
+html body .model-dock-toggle { color: var(--lab-sub) !important; text-transform: none; }
+
+/* ---------------- bottom dock ---------------- */
+html body #bottombar { justify-content: center; gap: 6px !important; padding: 6px 10px !important; min-height: 0; }
+html body #bottombar .bb-grp {
+  display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px !important; border-radius: 12px !important;
+  font-size: 12px !important; font-weight: 700 !important; letter-spacing: .08em !important; color: var(--lab-ink) !important;
+  background: transparent !important; border: 0 !important; box-shadow: none !important;
+}
+html body #bottombar .bb-grp:hover, html body #bottombar .bb-grp[aria-expanded="true"] { background: rgba(15,93,107,.1) !important; color: var(--lab-teal) !important; }
+html body #bottombar .bb-gi svg { width: 16px; height: 16px; stroke: currentColor; }
+html body #bottombar .widget-rail { display: none !important; }   /* the dock's own pin rail duplicated the top one */
+html body #bottombar [class*="ctx"], html body #bottombar #ctx-meter { display: none !important; }
+html body .bb-menu {
+  border-radius: 14px !important; padding: 6px !important; background: rgba(250,253,252,.96) !important;
+  border: 1px solid var(--lab-line) !important; box-shadow: 0 16px 40px rgba(14,42,48,.16) !important;
+}
+html body .bb-menu .bb { display: flex; align-items: center; gap: 12px; padding: 10px 12px !important; border-radius: 10px !important; background: transparent !important; border: 0 !important; text-align: left; }
+html body .bb-menu .bb:hover { background: rgba(15,93,107,.08) !important; }
+html body .bb-menu .bb-i { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; background: rgba(15,93,107,.1); color: var(--lab-teal) !important; }
+html body .bb-menu .bb-tx b { display: block; font-size: 13px !important; font-weight: 650 !important; color: var(--lab-ink) !important; text-transform: lowercase; }
+html body .bb-menu .bb-tx b::first-letter { text-transform: uppercase; }
+html body .bb-menu .bb-tx small { display: block; font-size: 12px !important; color: var(--lab-sub) !important; text-transform: none; }
+
+/* ---------------- shared controls ---------------- */
+html body button:focus-visible, html body [role="button"]:focus-visible { outline: 2px solid var(--lab-teal-2) !important; outline-offset: 2px; }
+html body ::-webkit-scrollbar { width: 8px; height: 8px; }
+html body ::-webkit-scrollbar-thumb { background: rgba(14,42,48,.18); border-radius: 99px; }
+html body ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- fit pass ---- */
+html body #crew { overflow-y: auto; }
+html body #crew .crew-row { flex: 0 0 auto !important; margin: 0 !important; }
+html body #tb-station { flex-direction: row !important; }
+html body #tb-station > * { position: static !important; transform: none !important; margin: 0 !important; }
+html body #tb-station .tb-lbl { order: 1; } html body #tb-station .tb-val { order: 2; } html body #tb-station .tb-xp { order: 3; }
+html body .ws-head { display: flex !important; flex-wrap: nowrap !important; align-items: center; gap: 4px; }
+html body .ws-head .ws-view { display: flex; gap: 2px; }
+html body .ws-head .ws-tab { padding: 4px 6px !important; }
+html body .ws-head-acts { margin-left: auto; }
+html body .comms-agent-select { font-size: 16px !important; }
+html body .cmsg-starter-title { font-size: 13.5px !important; }
+html body .cmsg-starter-detail { font-size: 12px !important; }
+html body #chat-panel h3 #comms-title, html body #chat-panel h3 .h3-right * { font-size: 11px !important; }
+html body #crew .crew-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html body #crew-sum span { white-space: nowrap; font-size: 11.5px !important; }
+html body .ws-head { flex-wrap: wrap !important; }
+html body .ws-head-acts { margin-left: 0; width: 100%; }
+html body #ws-new { width: 100%; text-align: center; }
+html body .comms-agent-select { box-shadow: none !important; }
