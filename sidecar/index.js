@@ -3188,6 +3188,22 @@ function setMasterBypass(on) {
   saveResilient(BYPASS_FILE, { version: 1, on: !!on, setAt: Date.now() });   // throws -> caller reports, state unchanged
   masterBypassFlag = !!on;
 }
+/* ONE-FOLDER MODE — the Commander picks ONE folder; every agent works inside it and nowhere else. Same sourcing
+   rule as the master bypass: persisted, token-gated, flipped only by /api/folder-lock (a human in settings), so
+   no tool can widen or move it. Persist-before-commit; an unreadable file reads as OFF (no lock) because the
+   lock is an extra restriction the Commander opts into, and the ordinary approval ladder still stands under it. */
+const FOLDER_LOCK_FILE = path.join(WORKSPACES, 'folder-lock.json');
+function loadFolderLock() {
+  try { const raw = loadResilient(FOLDER_LOCK_FILE, 'folder-lock'); return (raw && typeof raw.folder === 'string' && raw.folder) ? raw.folder : ''; }
+  catch (e) { return ''; }
+}
+let folderLockRoot = loadFolderLock();
+const folderLockNow = () => folderLockRoot;
+function setFolderLock(folder) {
+  const next = folder ? String(folder) : '';
+  saveResilient(FOLDER_LOCK_FILE, { version: 1, folder: next, setAt: Date.now() });   // throws -> caller reports, state unchanged
+  folderLockRoot = next;
+}
 // permanent allowlist of danger-class keys (capability:scope) the user has blessed forever. Lives BESIDE
 // the notebook store (sibling of the fs jail) so the agent's own fs.* tools can neither read nor rewrite it.
 const ALLOWLIST_FILE = path.join(WORKSPACES, 'permissions.allow.json');
@@ -9655,6 +9671,8 @@ const ROUTES = [
   { m: 'POST', exact: '/api/permissions/grant', h: handlePermissionsGrant },
   { m: 'POST', exact: '/api/permissions/revoke', h: handlePermissionsRevoke },
   { m: 'POST', exact: '/api/permissions/bypass', h: handlePermissionsBypass },
+  { m: 'GET', exact: '/api/folder-lock', h: handleFolderLockGet },              // ONE-FOLDER MODE: the chosen folder (or none)
+  { m: 'POST', exact: '/api/folder-lock', h: handleFolderLockSet },             // { folder } sets it · { folder: null } clears it
   { m: 'GET', exact: '/api/projects', h: handleProjectsList },   // NS-5: the known blessed-project roots (autonomy surface)
   { m: 'GET', qsplit: '/api/projects/workspace', h: handleProjectWorkspace },
   { m: 'POST', exact: '/api/projects/workspace', h: handleProjectWorkspace },
@@ -16715,7 +16733,8 @@ async function runOnceCore(o) {
     // This Computer widens the path envelope without changing approval posture: ASK still prompts before
     // mutations, while reads of non-protected host paths no longer need a second project-root card.
     fullAccess: unrestrictedHostNow() || executionProfile.filesystemScope === 'host-paths-except-hard-floor',
-    unrestrictedHost: unrestrictedHostNow()
+    unrestrictedHost: unrestrictedHostNow(),
+    lockRoot: folderLockNow()   // ONE-FOLDER MODE: read live, so choosing or clearing the folder applies to the next call
   });
   makeFsTools({ fsp, pathMod: path, root: WORKSPACES, environment: executionEnvironment, limits: { writeBytes: 1 << 20, readReturn: 24000 }, redact, pathTrust: runPathTrust, docExtract, imageWire, editDiagnostics: lspManager, spawn: childSpawn }).register(registry);   // redact: scrub secrets out of surfaced fs.search lines (§5.6); baseline-before-edit LSP feedback; spawn: lets fs.search use `rg` when the machine has it
   makeNotebookTools({ store: notebookStore, clock: { now: () => Date.now() }, redact, rank, nextTrust: memcore.nextTrust, findSimilar: memcore.findSimilar }).register(registry);   // §5.6: scrub secrets at the write boundary; rank: explicit read shares auto-recall's relevance order; nextTrust: notebook.feedback rating fold; findSimilar: near-dupe guard so the same belief can't accumulate in N phrasings
@@ -17328,6 +17347,7 @@ async function runOnceCore(o) {
     // a FUNCTION, re-read every call: the master FULL BYPASS switch must take effect — and revoke — on the
     // very next tool call without a restart. The frozen env flag and the per-agent posture ride inside it.
     bypass: () => unrestrictedHostNow() || (ownerTrusted && !prompt), unrestrictedHost: unrestrictedHostNow, hardline: hardlineFloor, sessionKey: runId,
+    folderLock: () => !!folderLockNow(),
     grantsSession, grantsPermanent, persist: persistAllowlist,
     // Full Access is the persisted per-agent posture, so it applies on every surface and every later task.
     // The hardline floor remains above this broker and still denies protected physical/desktop effects.
@@ -17389,11 +17409,13 @@ async function runOnceCore(o) {
     // capability, schema and consent gates — so a hook can only ever remove a permission, never add one.
     hooks: hookSpine,
     cwd: WORKSPACES,
-    projectCwd: o.workdir || null,
+    // ONE-FOLDER MODE pins both relative file paths and the shell's default cwd to the chosen folder.
+    projectCwd: folderLockNow() || o.workdir || null,
     // A normal project-scoped session carries its still-blessed root separately from scheduled workdir. Native
     // fs.* uses it as the relative base (while re-running path trust per target), and shell.* uses it as the
     // run-scoped default cwd. Unblessed roots were erased by handleRun before runOnce, so this is host-minted.
-    projectRoot: o.projectRoot || null,
+    projectRoot: folderLockNow() || o.projectRoot || null,
+    folderLock: folderLockNow() || null,
     // PRECISE CHECKPOINT ROOT. fs.* invokes this after path-trust has resolved the actual base but before bytes
     // change; shell/verify invoke it after their real cwd is resolved but before spawning. This closes the gap
     // where the generic host hook always snapshotted WORKSPACES/<agentId> even while the tool mutated a blessed
@@ -19270,6 +19292,33 @@ async function handlePermissionsBypass(req, res) {
   }
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify({ ok: true, masterBypass: masterBypassOn(), envFullAccess: FULL_ACCESS }));
+}
+// GET /api/folder-lock — ONE-FOLDER MODE readout: { ok, folder } (folder '' = no lock).
+function handleFolderLockGet(req, res) {
+  respondJson(res, 200, { ok: true, folder: folderLockNow() });
+}
+// POST /api/folder-lock { folder } — lock every agent to ONE folder, or { folder: null } to clear the lock. Like the
+// bypass switch, the click IS the consent and only this token-gated route can change it. The folder must be an
+// existing local directory that is not a drive root, a network path, or StarNet's own workspace tree.
+async function handleFolderLockSet(req, res) {
+  let body; try { body = JSON.parse(await readBody(req, 8192)) || {}; } catch (e) { return respondJson(res, 400, { ok: false, reason: 'bad json' }); }
+  const want = (body && typeof body.folder === 'string') ? body.folder.trim() : '';
+  let folder = '';
+  if (want) {
+    if (want.indexOf('\0') >= 0 || /^[\\/]{2}/.test(want)) return respondJson(res, 400, { ok: false, reason: 'pick a folder on this computer (network paths are not allowed)' });
+    if (!path.isAbsolute(want)) return respondJson(res, 400, { ok: false, reason: 'the folder path must be absolute' });
+    let real;
+    try { real = await fsp.realpath(path.resolve(want)); const st = await fsp.stat(real); if (!st.isDirectory()) throw new Error('not a folder'); }
+    catch (e) { return respondJson(res, 400, { ok: false, reason: 'that folder does not exist: ' + want }); }
+    if (path.parse(real).root === real) return respondJson(res, 400, { ok: false, reason: 'pick a folder, not a whole drive' });
+    const ws = path.resolve(WORKSPACES);
+    const inside = (a, b) => { const x = path.relative(b, a); return !x || (!x.startsWith('..') && !path.isAbsolute(x)); };
+    if (inside(real, ws) || inside(ws, real)) return respondJson(res, 400, { ok: false, reason: 'pick a folder outside StarNet\'s own data folder' });
+    folder = real;
+  }
+  try { setFolderLock(folder); }
+  catch (e) { return respondJson(res, 500, { ok: false, reason: 'could not save the folder setting — unchanged', folder: folderLockNow() }); }
+  respondJson(res, 200, { ok: true, folder: folderLockNow() });
 }
 // POST /api/permissions/grant { key } — proactively PRE-BLESS a curated, LOCAL-only capability (cabinet:write)
 // so an autonomous run can use it with no mid-run prompt. Refuses any non-curated/exec/network class; fail-closed

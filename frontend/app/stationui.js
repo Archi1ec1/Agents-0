@@ -6003,6 +6003,9 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // ordinary sentence, computed from the live roster + the server's bypass truth. Beginners opened
       // this pane and met four numbered blocks of vocabulary with no summary; this is the summary. It
       // asserts nothing the harness can't prove — every clause counts real agent records.
+      // ── ONE FOLDER — the boundary first: when set, every agent works inside this one folder and nowhere else.
+      '<h4 class="ms-h">ONE FOLDER <span class="dim">— keep every agent inside a single folder</span></h4>' +
+      '<div id="perm-folder" class="perm-master"><p class="perm-m-desc">checking the folder setting…</p></div>' +
       '<div id="perm-glance" class="perm-glance"><p class="pg-line">reading your crew…</p></div>' +
       // ── THE FRONT DOOR — three postures. One click sets reach, asks-first and unattended together for
       // the whole station, so a newcomer answers ONE question instead of composing four dials. Painted by
@@ -7506,6 +7509,45 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
          local guess. Turning it ON is the broadest action in the product → house two-press confirm; turning it
          OFF is taking power back → first click. When the boot env forces it, the panel says WHY the switch is
          pinned instead of rendering a toggle that appears to do nothing (truthful telemetry). */
+      /* ── ONE FOLDER — painted from SERVER truth (GET /api/folder-lock). Choosing opens the native folder picker,
+         then saves through POST /api/folder-lock; the sidecar validates the folder and is the only authority. */
+      const folderWrap = host.querySelector('#perm-folder');
+      let folderErr = '';
+      const paintFolder = (folder) => {
+        if (!folderWrap) return;
+        folderWrap.classList.toggle('on', !!folder);
+        const head = (chip, cls) => '<div class="perm-m-head"><span class="perm-m-title">AGENT 0 FOLDER</span>' +
+          '<span class="perm-m-chip' + (cls ? ' ' + cls : '') + '">' + chip + '</span></div>';
+        const errLine = folderErr ? '<p class="perm-m-err">⚠ ' + esc(folderErr) + '</p>' : '';
+        const note = '<p class="perm-m-floor">Inside the folder, agents read and write files without asking. Outside it they cannot touch files at all, ' +
+          'screen and mouse control are off, and every terminal command still asks you first, because a command can name any path on the computer.</p>';
+        folderWrap.innerHTML = folder
+          ? head('LOCKED', 'on') + '<p class="perm-m-desc">Agents only work in <code>' + esc(folder) + '</code>.</p>' + errLine +
+            '<div class="perm-m-act"><button class="bb sm" id="perm-folder-pick">CHANGE FOLDER</button> <button class="bb sm" id="perm-folder-clear">✕ REMOVE LOCK</button></div>' + note
+          : head('OFF', '') + '<p class="perm-m-desc">Pick one folder and agents will work only inside it.</p>' + errLine +
+            '<div class="perm-m-act"><button class="bb sm" id="perm-folder-pick">CHOOSE FOLDER</button></div>' + note;
+        const save = (value, btn) => {
+          if (btn) btn.disabled = true;
+          return Harness.api.post('/api/folder-lock', { folder: value }).then(({ ok, j }) => {
+            folderErr = ok ? '' : String((j && j.reason) || 'could not save the folder');
+            paintFolder(ok ? (j && j.folder) || '' : folder);
+            if (ok) { sfx('click'); notify(value ? 'Agents now work only inside ' + ((j && j.folder) || value) : 'Folder lock removed', 'good'); }
+            else sfx('bad');
+          }).catch(e => { folderErr = String((e && e.message) || 'the station could not be reached'); paintFolder(folder); });
+        };
+        const pickBtn = folderWrap.querySelector('#perm-folder-pick'), clearBtn = folderWrap.querySelector('#perm-folder-clear');
+        if (pickBtn) pickBtn.addEventListener('click', () => {
+          sfx('click'); pickBtn.disabled = true;
+          Harness.api.post('/api/projects/pickfolder', {}, { timeoutMs: 15 * 60000 }).then(({ ok, j }) => {
+            if (ok && j && j.path) return save(j.path, pickBtn);
+            pickBtn.disabled = false;
+            if (!(j && j.cancelled)) { folderErr = String((j && j.reason) || 'the folder picker is not available here'); paintFolder(folder); }
+          }).catch(e => { folderErr = String((e && e.message) || 'the folder picker failed'); paintFolder(folder); });
+        });
+        if (clearBtn) clearBtn.addEventListener('click', () => { sfx('click'); save(null, clearBtn); });
+      };
+      if (folderWrap) Harness.api.get('/api/folder-lock').then(j => paintFolder((j && j.folder) || ''))
+        .catch(() => { folderWrap.innerHTML = '<p class="perm-m-desc">The folder setting is unavailable until the local station answers.</p>'; });
       const bypassWrap = host.querySelector('#perm-bypass');
       /* A FAILED flip has to report AT the switch. The store keeps one shared `error` field, and the
          panel's only error readout (#perm-status) lives under the block-2 header — so a refused bypass

@@ -169,6 +169,37 @@
       try { return connectorGrant(call, tool) === true; } catch (_) { return false; }
     }
 
+    /* ONE-FOLDER MODE — the Commander locked every agent to a single folder. Injected like workshop: a live
+       host predicate, so choosing or clearing the folder takes effect on the very next call.
+         • file + memory WRITES are allowed without a prompt on every surface: the path guard (pathtrust
+           lockRoot) already proved the target is inside the folder, so asking again buys nothing.
+         • screen / mouse / keyboard control is denied outright: it can reach anything on the computer.
+         • commands (shell, terminal, verify) cannot be confined to a folder by StarNet itself — a command
+           can name any path — so they skip every standing approval and Full Power and ask a live human each
+           time; an unattended run is denied. */
+    const folderLockFn = typeof opts.folderLock === 'function' ? opts.folderLock : null;
+    const folderLockNow = () => { if (!folderLockFn) return false; try { return folderLockFn() === true; } catch (_) { return false; } };
+    const SCREEN_CAPS = { 'visible-desktop': true, 'physical-input': true };
+    const COMMAND_CAPS = { workbench: true };
+    const ownFlag = (map, cap) => Object.prototype.hasOwnProperty.call(map, cap) && !!map[cap];
+    function folderLockDecision(call, tool) {
+      const scope = scopeOf(tool);
+      const cap = String((tool && tool.capability) || '');
+      if (ownFlag(SCREEN_CAPS, cap))
+        return { allow: false, scope: scope, hardline: true, reason: 'screen and mouse control are off while agents are locked to one folder' + ANTI_RETRY };
+      if (scope === 'write' && jailWritableCap(cap)) return { allow: true, scope: scope, reason: 'inside the Agent 0 folder' };
+      if (scope === 'execute' && ownFlag(COMMAND_CAPS, cap)) {
+        if (surface === 'autonomous' || !prompt)
+          return { allow: false, scope: scope, reason: 'commands need a live approval while agents are locked to one folder — ' + SILENCE };
+        return Promise.resolve(prompt(call, tool)).then(function (d) {
+          // only a one-time yes: a remembered grant would let later commands skip the question.
+          if (d === 'deny' || !d) return { allow: false, scope: scope, reason: 'denied' };
+          return { allow: true, scope: scope, reason: 'approved once (one-folder mode)' };
+        });
+      }
+      return null;
+    }
+
     function sessionSet(create) {
       let s = grantsSession.get(sessionKey);
       if (!s && create) { s = new Set(); grantsSession.set(sessionKey, s); }
@@ -182,6 +213,13 @@
 
     function consent(call, tool) {
       const scope = scopeOf(tool);
+      // ONE-FOLDER MODE outranks Full Power: the Commander's chosen boundary is the stronger instruction.
+      if (folderLockNow()) {
+        const hr0 = hardline ? hardline(call, tool) : null;
+        if (hr0) return { allow: false, scope: scope, hardline: true, reason: String(hr0) + ANTI_RETRY };
+        const fl = folderLockDecision(call, tool);
+        if (fl) return fl;
+      }
       // FULL POWER: the Commander's explicit host-wide authority outranks StarNet policy floors.
       // Input/schema validity, OS permissions and downstream service prerequisites still report normally.
       if (unrestrictedNow()) return { allow: true, scope: scope, reason: 'full-power' };
