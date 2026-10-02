@@ -460,6 +460,7 @@ test/pathtrust.test.js
 test/folder-lock.test.js
 test/livewatch.test.js
 test/office3d.test.js
+test/commercepanel.test.js
 test/browser-watch.test.js
 test/workspace-reserved.test.js
 test/nightfocus.test.js
