@@ -67,6 +67,7 @@
     skill:        'something an agent CAN do — some skills only switch on once their gear is on station. Browse them under ⇄ ABILITIES ▸ SKILL LIBRARY.',
     toolset:      'a family of tools you can switch on or off for agents (web, files, terminal…) — the switches live in the TOOLSETS section of ⇄ ABILITIES.',
     capability:   'the same tool families as TOOLSETS, read-only — what an agent is equipped with right now; each agent’s readout is the SKILLS tab of its dossier.',
+    connection:   'everything your agents can reach, in one list — AI models, connectors, API keys, chat channels, skills and website logins. Each row opens the screen that sets it up.',
     connector:    'an outside service you plug IN so agents can use it as a tool (calendar, Slack actions, databases).',
     channel:      'your way IN from a messaging app — connect Telegram/Slack/Discord and talk to your agents from your pocket.',
     autonomy:     'how far an agent may act on its own between your messages — you set the ceiling.',
