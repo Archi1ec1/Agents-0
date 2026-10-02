@@ -93,7 +93,7 @@
     let x = left && left.width ? left.right + 10 : 12;
     let end = right && right.width ? right.left - 10 : innerWidth - 12;
     if (end - x < 520) { x = 12; end = innerWidth - 12; }
-    return { x:x/z, width:(end-x)/z, top:((top ? top.bottom : 0)+10)/z, bottom:((bottom ? bottom.top : innerHeight)-10)/z };
+    return { x:x/z, width:(end-x)/z, top:((top ? top.bottom : 0)+10)/z, bottom:((bottom && bottom.top > innerHeight / 2 ? bottom.top : innerHeight)-10)/z };   // the dock may sit in the top bar (lab-frame.css): then sheets use the window bottom
   }
   function seat(w, s, animate = false, measuredBand) {
     if (!w.isConnected || w._closing || s.exiting || w.classList.contains('term-min-hidden') || !s.docked) return;

@@ -1,0 +1,123 @@
+/* THE LAB — night look (loaded after lab-frame.css). Matches the production rooms: near-black glass panels,
+   cyan brand, deep-teal buttons, warm amber for "needs you", and the rooms' green / amber / red status lights.
+   It re-points the shared colour tokens, so every window and panel that themes through them turns dark too. */
+
+html body, html body[class*="theme-"] {
+  /* shared app tokens (holding.css) */
+  --ph: #22C3E6; --ph-bright: #E8EEF2; --ph-dim: #7D8A94; --ph-faint: rgba(255,255,255,0.06);
+  --ink: #06222A; --ph-glow: rgba(34,195,230,0.18); --ph-glow2: rgba(34,195,230,0.06);
+  --bg: #07090C; --panel: rgba(20,24,30,0.92); --panel2: #161B22;
+  --text: #C9D3DA; --warn: #F5A524; --gold: #F5B544; --bad: #EF4444; --ok: #22C55E;
+  --ph-rgb: 34, 195, 230; --ph-bright-rgb: 232, 238, 242; --gold-rgb: 245, 181, 68;
+  --bezel: 0 0 0 1px rgba(255,255,255,0.06), 0 10px 30px rgba(0,0,0,0.45);
+  --well: inset 0 1px 3px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.06);
+  --raise: 0 2px 8px rgba(0,0,0,0.35);
+  --ui-well: inset 0 1px 3px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.06);
+  --ui-edge: rgba(255,255,255,0.08); --ui-highlight: rgba(255,255,255,0.06);
+  --ui-face: none;
+  /* lab-ui.css tokens */
+  --lab-ink: #E8EEF2; --lab-sub: #9AA8B2; --lab-faint: #66737D; --lab-teal: #22C3E6; --lab-teal-2: #5FD4EE;
+  --lab-line: rgba(255,255,255,0.07); --lab-card: rgba(255,255,255,0.04); --lab-card-hi: rgba(255,255,255,0.07);
+  --lab-shadow: 0 10px 30px rgba(0,0,0,0.45);
+  --lab-ok: #22C55E; --lab-warn: #F5A524; --lab-bad: #EF4444;
+  /* lab-frame.css tokens */
+  --f-ink: #E8EEF2; --f-sub: #9AA8B2; --f-mute: #7D8A94; --f-faint: #66737D;
+  --f-teal: #0E4A56; --f-teal-hi: #13606F; --f-cyan: #22C3E6;
+  --f-glass: rgba(18,22,28,0.86); --f-card: rgba(255,255,255,0.07);
+  --f-tint: rgba(255,255,255,0.05); --f-tint-2: rgba(255,255,255,0.09); --f-line: rgba(255,255,255,0.07);
+  --f-shadow: 0 10px 30px rgba(0,0,0,0.45);
+  background: radial-gradient(1200px 600px at 50% 40%, #10151B 0%, #07090C 70%) fixed, #07090C !important;
+  color: var(--text);
+  color-scheme: dark;
+}
+
+/* panels: dark glass with a hairline edge */
+html body #screen-game #topbar, html body #screen-game #left, html body #screen-game #chat-panel {
+  background: var(--f-glass) !important; border: 1px solid var(--f-line) !important;
+}
+html body #screen-game #stage-wrap { background: #0A0C10 !important; border: 1px solid var(--f-line) !important; }
+html body #topbar *, html body #left *, html body #chat-panel * { border-color: var(--f-line); }
+
+/* logo: white "THE", cyan "LAB" feel — the wordmark is one mask, so tint it cyan-white */
+html body #logo .logo-img { background-color: #E8EEF2 !important; }
+
+/* top-bar menus */
+html body #screen-game #bottombar { background: rgba(255,255,255,0.04) !important; border: 1px solid var(--f-line) !important; }
+html body #bottombar .bb-grp:hover { background: rgba(255,255,255,0.06) !important; color: var(--f-ink) !important; }
+html body #bottombar .bb-grp[aria-expanded="true"], html body .bb-group.open .bb-grp { background: #0E4A56 !important; color: #FFFFFF !important; box-shadow: none !important; }
+html body #screen-game #bottombar .bb-menu { background: #141920 !important; border: 1px solid rgba(255,255,255,0.08) !important; box-shadow: 0 20px 50px rgba(0,0,0,0.6) !important; }
+html body .bb-menu .bb:hover, html body .bb-menu .bb:focus-visible { background: rgba(255,255,255,0.05) !important; }
+html body #screen-game #bottombar .bb-menu .bb .bb-i { background: rgba(34,195,230,0.10) !important; color: #5FD4EE !important; }
+
+/* top-bar chips */
+html body #lw-chip { background: rgba(255,255,255,0.05) !important; color: var(--f-ink) !important; }
+html body .tb-connection { background: rgba(34,197,94,0.12) !important; color: #4ADE80 !important; }
+html body #status-pill { color: #4ADE80 !important; }
+html body #status-pill::before { background: #22C55E !important; box-shadow: 0 0 8px #22C55E !important; }
+html body .widget-rail .wg-add { background: rgba(255,255,255,0.05) !important; color: #5FD4EE !important; border-color: var(--f-line) !important; }
+
+/* Team panel */
+html body #crew > li:hover { background: rgba(255,255,255,0.04) !important; }
+html body #crew > li.selected { background: rgba(34,195,230,0.08) !important; box-shadow: inset 0 0 0 1px rgba(34,195,230,0.30) !important; }
+html body #crew > li:nth-child(5n+1) { --tile: #0E4A56; }
+html body #crew > li:nth-child(5n+2) { --tile: #7A4A12; }
+html body #crew > li:nth-child(5n+3) { --tile: #6B1F2A; }
+html body #crew > li:nth-child(5n+4) { --tile: #14524A; }
+html body #crew > li:nth-child(5n+5) { --tile: #3E2F6B; }
+html body #crew .crew-portrait::after { background-color: #E8EEF2 !important; }
+html body #crew-sum > * { background: rgba(255,255,255,0.05) !important; color: var(--f-sub) !important; }
+html body #crew-sum > .pos { background: rgba(34,197,94,0.12) !important; color: #4ADE80 !important; }
+html body #screen-game #left #workstreams .ws-dot:not(.seen) { background: #22C55E !important; box-shadow: 0 0 6px #22C55E; }
+html body #screen-game #left #workstreams .ws-dot { background: #3A444D !important; }
+html body #workstreams > li:hover, html body #workstreams > li[aria-selected="true"] { background: rgba(255,255,255,0.05) !important; }
+html body .ws-head .ws-tab.on, html body .ws-kind-filter button[aria-pressed="true"] { background: rgba(255,255,255,0.09) !important; color: #FFFFFF !important; box-shadow: none !important; }
+html body #ws-search { background: rgba(255,255,255,0.04) !important; color: var(--f-ink) !important; }
+
+/* chat */
+html body #chat-inputrow { background: rgba(255,255,255,0.04) !important; border: 1px solid rgba(255,255,255,0.10) !important; }
+html body #chat-send { background: #22C3E6 !important; color: #06222A !important; }
+html body .comms-idbar button { background: transparent !important; color: var(--f-ink) !important; border-color: rgba(255,255,255,0.12) !important; }
+html body .comms-agent-select { color: var(--f-ink) !important; }
+html body .comms-agent-select option { background: #141920; color: #E8EEF2; }
+html body #chat-log { color: var(--text); }
+html body #chat-log [class*="starter"], html body #chat-log .cmsg-empty button, html body #chat-log [class*="suggest"] > * {
+  background: rgba(255,255,255,0.04) !important; border: 1px solid rgba(255,255,255,0.08) !important; color: var(--f-ink) !important;
+}
+html body #chat-log .cmsg.user .cmsg-body, html body #chat-log .cmsg.you .cmsg-body { background: #0E4A56 !important; color: #FFFFFF !important; }
+html body #chat-log .cmsg.agent .cmsg-body { background: rgba(255,255,255,0.05) !important; color: #D5DDE3 !important; }
+
+/* buttons app-wide: dark ghost by default, teal for primary */
+html body button { color: inherit; }
+html body .ws-head button:not(.ws-tab), html body #ws-wrap .ws-new { background: #0E4A56 !important; color: #FFFFFF !important; }
+
+/* production rooms toolbar */
+html body .o3d-ui button { background: rgba(20,24,30,0.88) !important; color: #9AA8B2 !important; border: 1px solid rgba(255,255,255,0.08) !important; box-shadow: none !important; }
+html body .o3d-ui button:hover { background: rgba(30,36,44,0.95) !important; color: #FFFFFF !important; }
+html body .o3d-ui button[aria-pressed="true"], html body .o3d-ui .o3d-switch button[aria-pressed="true"] { background: #0E4A56 !important; color: #FFFFFF !important; }
+html body .o3d-ui .o3d-shop { background: #F5A524 !important; color: #1A1206 !important; border: 0 !important; font-weight: 800 !important; }
+html body .o3d-ui .o3d-switch { background: rgba(20,24,30,0.88) !important; border: 1px solid rgba(255,255,255,0.08); box-shadow: none !important; }
+html body .o3d-ui .o3d-switch button { border: 0 !important; background: transparent !important; }
+html body .o3d-ui .o3d-heading strong { color: #FFFFFF !important; }
+html body .o3d-ui .o3d-heading span { color: #9AA8B2 !important; }
+html body .o3d-ui .o3d-anchor { background: rgba(14,18,24,0.88) !important; color: #E8EEF2 !important; border: 1px solid rgba(255,255,255,0.10) !important; }
+html body .o3d-ui [data-status=review] { border-color: rgba(245,165,36,0.6) !important; }
+html body .o3d-ui [data-status=blocked] { border-color: rgba(239,68,68,0.6) !important; }
+html body .o3d-ui .o3d-legend { background: rgba(20,24,30,0.88) !important; color: #9AA8B2 !important; border: 1px solid rgba(255,255,255,0.08); }
+html body .o3d-ui .o3d-inspector { background: #141920 !important; color: #D5DDE3 !important; border: 1px solid rgba(255,255,255,0.08) !important; }
+html body .o3d-ui .o3d-inspector [data-open-workflow] { background: #0E4A56 !important; color: #FFFFFF !important; }
+
+/* windows (Settings, Agents, Work…) */
+html body .term-win, html body [class*="term-win"] { background: #11151B !important; color: var(--text) !important; border: 1px solid rgba(255,255,255,0.08) !important; box-shadow: 0 24px 60px rgba(0,0,0,0.6) !important; }
+html body input, html body textarea, html body select { color-scheme: dark; }
+
+/* scrollbars */
+html body ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12) !important; border-radius: 8px; }
+html body ::-webkit-scrollbar-track { background: transparent !important; }
+
+/* specificity bumps over holding.css's glass rules */
+html body:has(#stage-wrap) #screen-game #chat-panel #chat-send { background: #22C3E6 !important; color: #06222A !important; border: 0 !important; }
+html body:has(#stage-wrap) #screen-game #left .ws-head button:not(.ws-tab) { background: #0E4A56 !important; color: #FFFFFF !important; border: 0 !important; }
+html body:has(#stage-wrap) #screen-game #chat-panel [class*="card"] [class*="card"],
+html body:has(#stage-wrap) #screen-game #chat-panel [class*="card"] button { background: transparent !important; border: 0 !important; box-shadow: none !important; }
+html body:has(#stage-wrap) #screen-game #chat-panel textarea { background: transparent !important; border: 0 !important; }
+html body:has(#stage-wrap) #screen-game #chat-log button * { background: transparent !important; border: 0 !important; box-shadow: none !important; }

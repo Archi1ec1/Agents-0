@@ -4,7 +4,7 @@
    Runs once at load and again (batched per frame) whenever the frame re-renders. */
 (function () {
   'use strict';
-  const SCOPE = '#topbar, #left, #chat-panel, #bottombar, .o3d-ui, .term-win .term-head, .term-tabs';
+  const SCOPE = '#topbar, #left, #chat-panel, #bottombar, .o3d-ui, #terms .term';
   const SKIP = '#chat-log, #chat-input, textarea, input, select, option, pre, code, .cmsg, [contenteditable]';
   const KEEP = new Set(['3D', 'HQ', 'AI', 'API', 'URL', 'MCP', 'CTX', 'XP', 'OK', 'ID', 'UI', 'CLI', 'LLM', 'IDLE·']);
   const SMALL = new Set(['a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'the', 'with', 'by', 'at']);
