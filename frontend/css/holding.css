@@ -7,7 +7,7 @@ html body, html body[class*="theme-"] {
   /* DAYLIGHT: Zak's bright mint / deep-teal palette */
   --ph: #0F6B78; --ph-bright: #0B2E35; --ph-dim: #7FA3A6; --ph-faint: #E2F1EC;
   --ink: #FFFFFF; --ph-glow: rgba(15,107,120,0.18); --ph-glow2: rgba(15,107,120,0.06);
-  --bg: #EAF5F1; --panel: rgba(255,255,255,0.9); --panel2: #F4FAF8;
+  --bg: #D4E9E2; --panel: rgba(238,246,243,0.92); --panel2: #E4F0EC;
   --text: #24474D; --warn: #C27712; --gold: #C99A2E; --bad: #D9483B; --ok: #2E9E6A;
   --ph-rgb: 15, 107, 120; --ph-bright-rgb: 11, 46, 53; --gold-rgb: 201, 154, 46;
   /* depth recipes re-cut for daylight: soft shadows instead of the CRT's black wells */
@@ -20,7 +20,7 @@ html body, html body[class*="theme-"] {
   --ui-face: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0) 60%);
   --r-sm: 6px; --r: 10px; --r-lg: 14px;
   --ui-font: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background: linear-gradient(180deg, #DDF1EB 0%, #EEF7F3 100%) fixed, #EAF5F1;
+  background: linear-gradient(180deg, #BFDDD4 0%, #D2E7E0 100%) fixed, #CCE4DC;
   font-family: var(--ui-font);
   text-shadow: none;
   -webkit-font-smoothing: antialiased;
@@ -41,7 +41,7 @@ html body button, html body .btn, html body [class*="-btn"] {
 }
 html body button:hover, html body .btn:hover { border-color: var(--ph); }
 html body input, html body textarea, html body select {
-  border-radius: var(--r-sm); background: #FFFFFF; border-color: rgba(15,107,120,0.22); color: var(--ph-bright);
+  border-radius: var(--r-sm); background: #F3F9F7; border-color: rgba(15,107,120,0.22); color: var(--ph-bright);
 }
 html body ::selection { background: rgba(15,107,120,0.25); color: #0B2E35; }
 html body #stage-wrap { box-shadow: 0 0 0 1px rgba(15,107,120,0.18), 0 10px 30px rgba(15,60,70,0.12); border-radius: var(--r-lg); }
@@ -55,7 +55,7 @@ html body .ws-head .ws-tab, html body .ws-head-acts button { font-size: 12px; pa
 
 /* ---------- GLASS: the tower fills the whole window and every panel floats over it as frosted glass ----------
    Active only while the 3D view is on; CLASSIC keeps the solid panels. */
-body:has(#stage-wrap.o3d-on) { --glass-bg: rgba(255, 255, 255, 0.66); --glass-edge: rgba(15, 107, 120, 0.14); }
+body:has(#stage-wrap.o3d-on) { --glass-bg: rgba(232, 243, 239, 0.74); --glass-edge: rgba(15, 107, 120, 0.14); }
 body:has(#stage-wrap.o3d-on) #stage3d { position: fixed; inset: 0; width: 100vw !important; height: 100vh !important; z-index: 0; }
 body:has(#stage-wrap.o3d-on) #screen-game,
 body:has(#stage-wrap.o3d-on) #stage-wrap { background: transparent !important; box-shadow: none !important; border-color: transparent !important; overflow: visible; }
@@ -75,10 +75,10 @@ body:has(#stage-wrap.o3d-on) [role="dialog"], body:has(#stage-wrap.o3d-on) [role
 body:has(#stage-wrap.o3d-on) #left *, body:has(#stage-wrap.o3d-on) #chat-panel *, body:has(#stage-wrap.o3d-on) #topbar *, body:has(#stage-wrap.o3d-on) #bottombar * { background-color: transparent; }
 body:has(#stage-wrap.o3d-on) #left [class*="card"], body:has(#stage-wrap.o3d-on) #chat-panel [class*="card"],
 body:has(#stage-wrap.o3d-on) #left .on, body:has(#stage-wrap.o3d-on) #chat-panel button, body:has(#stage-wrap.o3d-on) #chat-panel textarea {
-  background: rgba(255, 255, 255, 0.7) !important; border-color: rgba(15, 107, 120, 0.14) !important;
+  background: rgba(246, 251, 249, 0.62) !important; border-color: rgba(15, 107, 120, 0.14) !important;
 }
 
 /* daylight: anything still painted on a near-black fill reads as a white card instead */
 html body #crew-sum, html body .tut-card, html body [class*="toast"], html body [class*="hint-card"], html body [class*="coach"] {
-  background: rgba(255,255,255,0.9) !important; color: var(--text) !important; border-color: rgba(15,107,120,0.18) !important;
+  background: rgba(238,246,243,0.95) !important; color: var(--text) !important; border-color: rgba(15,107,120,0.18) !important;
 }

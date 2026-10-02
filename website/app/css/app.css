@@ -5861,18 +5861,18 @@ body:has(#screen-game.active)::before {
 .o3d-ui { position: absolute; inset: 0; pointer-events: none; z-index: 3; font-family: inherit; color: #0B2E35; }
 .o3d-ui > * { pointer-events: auto; }
 .o3d-ui .o3d-labels, .o3d-ui .o3d-tip { pointer-events: none; }
-.o3d-switch { position: absolute; top: 12px; right: 12px; display: flex; padding: 3px; gap: 2px; background: rgba(255,255,255,.82); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 10px; }
+.o3d-switch { position: absolute; top: 12px; right: 12px; display: flex; padding: 3px; gap: 2px; background: rgba(232,243,239,.86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 10px; }
 .o3d-switch button, .o3d-floors button, .o3d-back { font: inherit; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: #0B2E35; background: transparent; border: 0; border-radius: 7px; padding: 8px 12px; min-height: 36px; cursor: pointer; }
 .o3d-switch button:hover, .o3d-floors button:hover, .o3d-back:hover { background: rgba(15,107,120,.08); }
 .o3d-switch button[aria-pressed="true"], .o3d-floors button[aria-pressed="true"] { background: #0F5D6B; color: #FFFFFF; }
 .o3d-switch button:focus-visible, .o3d-floors button:focus-visible, .o3d-back:focus-visible { outline: 2px solid #0F6B78; outline-offset: 2px; }
 #stage-wrap:not(.o3d-on) .o3d-ui > :not(.o3d-switch) { display: none !important; }
-.o3d-floors { position: absolute; left: 34px; bottom: 12px; display: flex; flex-direction: column-reverse; gap: 2px; padding: 5px; background: rgba(255,255,255,.82); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 12px; max-height: calc(100% - 80px); overflow-y: auto; }
+.o3d-floors { position: absolute; left: 34px; bottom: 12px; display: flex; flex-direction: column-reverse; gap: 2px; padding: 5px; background: rgba(232,243,239,.86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 12px; max-height: calc(100% - 80px); overflow-y: auto; }
 .o3d-floors button { display: flex; align-items: center; gap: 10px; text-align: left; font-weight: 600; letter-spacing: 0; }
 .o3d-floors .lvl { width: 26px; height: 22px; border-radius: 5px; display: grid; place-items: center; background: #0F5D6B; color: #FFFFFF; font-size: 11px; font-weight: 700; flex-shrink: 0; }
 .o3d-floors .cnt { margin-left: auto; padding-left: 12px; font-variant-numeric: tabular-nums; color: #5E7D82; font-size: 11px; }
-.o3d-back { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(255,255,255,.82); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 999px; padding: 8px 16px; }
-.o3d-legend { position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; font-size: 11px; color: #5E7D82; background: rgba(255,255,255,.82); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 10px; }
+.o3d-back { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(232,243,239,.86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 999px; padding: 8px 16px; }
+.o3d-legend { position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; font-size: 11px; color: #5E7D82; background: rgba(232,243,239,.86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(15,60,70,.12); border: 1px solid rgba(15,107,120,.15); border-radius: 10px; }
 .o3d-legend span { display: flex; align-items: center; gap: 8px; }
 .o3d-legend i { width: 16px; height: 10px; border-radius: 2px; border: 2px solid #9FB8BA; background: #E6EEEC; display: inline-block; }
 .o3d-legend i.on { background: #7FE3B3; box-shadow: 0 0 6px #4ADE95; }

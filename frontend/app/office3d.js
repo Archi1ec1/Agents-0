@@ -120,15 +120,15 @@
     /* ---- scene, camera, lights ---- */
     const scene = new THREE.Scene();
     // DAYLIGHT: a bright, airy mint morning (Zak's palette); the hazy fog is what makes the city feel open
-    scene.background = new THREE.Color(0xCFEAE2);
-    scene.fog = new THREE.Fog(0xCFEAE2, 70, 300);
+    scene.background = new THREE.Color(0xA8D3C8);
+    scene.fog = new THREE.Fog(0xA8D3C8, 110, 340);
     const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 900);
     const controls = new THREE.OrbitControls(camera, cv);
     controls.enableDamping = true;
     controls.maxPolarAngle = Math.PI * 0.47;
     controls.minDistance = 6; controls.maxDistance = 160;
-    scene.add(new THREE.HemisphereLight(0xEAF7F2, 0x6FA86A, 0.95));
-    const moon = new THREE.DirectionalLight(0xFFF6E6, 0.9);   // the sun (kept the old name)
+    scene.add(new THREE.HemisphereLight(0xD6EEE6, 0x4F8A4A, 0.62));
+    const moon = new THREE.DirectionalLight(0xFFF1DC, 0.62);   // the sun (kept the old name)
     moon.position.set(18, 40, 24); moon.castShadow = true;
     moon.shadow.mapSize.set(1024, 1024);
     moon.shadow.bias = -0.0006;
@@ -138,7 +138,7 @@
     const std = (c, r, m) => new THREE.MeshStandardMaterial({ color: c, roughness: r == null ? 0.8 : r, metalness: m || 0 });
     const box = (w, h, d, mat) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); o.castShadow = true; o.receiveShadow = true; return o; };
     const M = {
-      slab: std(0xE6C998, 0.85), carpet: std(0xD9BA86, 1), core: std(0xD8BE8E, 0.9),
+      slab: std(0xCDB389, 0.9), carpet: std(0xC2A679, 1), core: std(0xC4AC82, 0.9),
       desk: std(0x3A4250, 0.6), leg: std(0x5A6372, 0.4, 0.4), dark: std(0x0E1117, 0.4),
       chair: std(0x2A303C, 0.8), kb: std(0x4A5363, 0.6), pot: std(0x2E3542, 0.9), leaf: std(0x3F8F5E, 0.9),
       frame: std(0x3A4456, 0.5, 0.5), gold: new THREE.MeshStandardMaterial({ color: 0xC9A86A, roughness: 0.3, metalness: 0.7 }),
@@ -171,7 +171,7 @@
     (function buildWorld() {
       const sky = new THREE.Mesh(new THREE.SphereGeometry(380, 32, 16), new THREE.ShaderMaterial({
         side: THREE.BackSide, depthWrite: false, fog: false,
-        uniforms: { top: { value: new THREE.Color(0x9ED6CB) }, mid: { value: new THREE.Color(0xC4E7DE) }, low: { value: new THREE.Color(0xE3F3EE) } },
+        uniforms: { top: { value: new THREE.Color(0x7FBFB2) }, mid: { value: new THREE.Color(0xA2D1C6) }, low: { value: new THREE.Color(0xB9DDD3) } },
         vertexShader: 'varying vec3 vP;void main(){vP=normalize(position);gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
         fragmentShader: 'uniform vec3 top;uniform vec3 mid;uniform vec3 low;varying vec3 vP;void main(){float h=vP.y;vec3 c=h>0.18?mix(mid,top,smoothstep(0.18,0.8,h)):mix(low,mid,smoothstep(-0.02,0.18,h));gl_FragColor=vec4(c,1.0);}'
       }));
@@ -181,10 +181,10 @@
       void sg;   // no stars by day
       const moonBall = new THREE.Mesh(new THREE.SphereGeometry(9, 24, 16), new THREE.MeshBasicMaterial({ color: 0xFFFBEA, fog: false }));   // a soft sun
       moonBall.position.set(-150, 140, -260); scene.add(moonBall);
-      const grass = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), std(0x5FAE4E, 1)); grass.rotation.x = -Math.PI / 2; grass.receiveShadow = true; scene.add(grass);
-      const plaza = new THREE.Mesh(new THREE.BoxGeometry(60, 0.1, 34), std(0xD9DED8, 0.95)); plaza.position.set(0, 0.05, 2); plaza.receiveShadow = true; scene.add(plaza);
+      const grass = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), std(0x4C9444, 1)); grass.rotation.x = -Math.PI / 2; grass.receiveShadow = true; scene.add(grass);
+      const plaza = new THREE.Mesh(new THREE.BoxGeometry(60, 0.1, 34), std(0xAFB8B3, 0.95)); plaza.position.set(0, 0.05, 2); plaza.receiveShadow = true; scene.add(plaza);
       const riverZ = -46, riverW = 18;
-      const riverMat = new THREE.MeshStandardMaterial({ color: 0x8FD3D0, roughness: 0.2, metalness: 0.1, emissive: 0x2E8C88, emissiveIntensity: 0.15 });
+      const riverMat = new THREE.MeshStandardMaterial({ color: 0x6FB9B6, roughness: 0.25, metalness: 0.1, emissive: 0x1F6E6A, emissiveIntensity: 0.08 });
       const river = new THREE.Mesh(new THREE.PlaneGeometry(700, riverW), riverMat); river.rotation.x = -Math.PI / 2; river.position.set(0, 0.04, riverZ); scene.add(river);
       const bridge = box(6, 0.6, riverW + 4, std(0xB9C2BD, 0.7)); bridge.position.set(0, 1.2, riverZ); scene.add(bridge);
       for (let k = 0; k < 6; k++) [-2.8, 2.8].forEach(x => { const l = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), M.lamp); l.position.set(x, 2.4, riverZ - riverW / 2 - 1 + k * (riverW + 2) / 5); scene.add(l); });
@@ -198,7 +198,7 @@
         for (let y = 4; y < 128; y += 8) for (let x = 4; x < 64; x += 10) { const v = rr(); g.fillStyle = v > 0.8 ? '#F3D98A' : (v > 0.4 ? '#D8EEF0' : '#BFE3E3'); g.fillRect(x, y, 6, 4); }
         const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.encoding = THREE.sRGBEncoding; return t;
       }
-      const texes = [winTex(7), winTex(91), winTex(433), winTex(1201)], roofMat = std(0xEEF3EF, 0.9);
+      const texes = [winTex(7), winTex(91), winTex(433), winTex(1201)], roofMat = std(0xC9D6D0, 0.9);
       for (let i = 0; i < 150; i++) {
         const ang = rnd() * Math.PI * 2, dist = 52 + rnd() * 115;
         const x = Math.cos(ang) * dist, z = Math.sin(ang) * dist;
@@ -206,11 +206,11 @@
         if (z > -8 && x > -34) continue;
         const h = z < riverZ ? 10 + rnd() * (dist > 110 ? 38 : 24) : 5 + rnd() * 14, w = 4 + rnd() * 7, d = 4 + rnd() * 7;
         const t = texes[i % texes.length].clone(); t.needsUpdate = true; t.repeat.set(Math.max(1, Math.round(w / 3)), Math.max(1, Math.round(h / 6)));
-        const side = new THREE.MeshStandardMaterial({ color: 0xffffff, map: t, emissive: 0xffffff, emissiveMap: t, emissiveIntensity: 0.12, roughness: 0.8 });
+        const side = new THREE.MeshStandardMaterial({ color: 0xffffff, map: t, emissive: 0xffffff, emissiveMap: t, emissiveIntensity: 0.04, roughness: 0.8 });
         const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), [side, side, roofMat, roofMat, side, side]); b.position.set(x, h / 2, z); scene.add(b);
         if (h > 40) { const bl = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), new THREE.MeshBasicMaterial({ color: 0xFF4D4D })); bl.position.set(x, h + 0.6, z); scene.add(bl); world.blinkers.push(bl); }
       }
-      const mtn = std(0x6FAE7C, 1), snow = std(0x8CC79A, 1);   // soft green hills, lighter tops
+      const mtn = std(0x5B9A6B, 1), snow = std(0x74AE80, 1);   // soft green hills, lighter tops
       for (let i = 0; i < 22; i++) {
         const ang = -Math.PI * 0.95 + (i / 21) * Math.PI * 1.1, dist = 200 + rnd() * 50, h = 70 + rnd() * 80, r = 40 + rnd() * 35;
         const m = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 1), i % 3 ? mtn : snow); m.scale.set(1.3, (h * 0.75) / r, 1); m.position.set(Math.cos(ang) * dist, -4, Math.sin(ang) * dist); scene.add(m);   // rolling hills
