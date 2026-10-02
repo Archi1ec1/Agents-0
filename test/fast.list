@@ -804,6 +804,7 @@ test/execution-profiles-ui.test.js
 test/failopen.test.js
 test/failopen-ratchet.test.js
 test/frontend-fetch-truth-ratchet.test.js
+test/connections.test.js
 test/loop-verdict.test.js
 test/free-path-ollama.test.js
 test/keycta-recovery.test.js
