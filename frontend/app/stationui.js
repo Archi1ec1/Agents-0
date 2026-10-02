@@ -123,7 +123,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   function autoTextScale() {
     const scr = window.screen || {};
     const long = Math.max(Number(scr.width) || 0, Number(scr.height) || 0) || window.innerWidth || 1920;
-    return long <= 1470 ? 115 : long <= 1740 ? 110 : 100;
+    return 100;   // THE LAB: the new interface is sized for 100% on every screen (it was 115% / 110% on laptops, too big)
   }
   function resolveTextScale(v) { const n = Number(v) || 0; return n === 0 ? autoTextScale() : clampN(n, 90, 150, 100); }
   // CRT LEVEL (value → chip label → the tooltip). Two positions, strongest first.
