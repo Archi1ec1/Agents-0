@@ -48,6 +48,33 @@ body:has(#stage-wrap.o3d-on) #stage-wrap { overflow:hidden; isolation:isolate; }
 .o3d-inspector [data-open-workflow] { width:100%; margin-top:8px; background:#205E63; color:white; }
 #stage-wrap:not(.o3d-on) .o3d-content,#stage-wrap:not(.o3d-on) .o3d-toolbar > :not(.o3d-switch) { display:none; }
 .o3d-ui [hidden] { display:none !important; }
+/* Scene-specific dark controls. More specific than lab-frame's shared button skin:
+   the outer Team/chat frame remains owned by that stylesheet. */
+html body #stage-wrap .o3d-ui { color:#e1eaf2; }
+html body #stage-wrap .o3d-ui button { color:#c2d2de !important; background:rgba(17,28,40,.94) !important; border:1px solid #34485b !important; border-radius:7px !important; box-shadow:0 3px 12px #0005 !important; min-height:30px; font-size:11px !important; padding:5px 9px !important; }
+html body #stage-wrap .o3d-ui button:hover { color:#fff !important; background:#233c4d !important; border-color:#78a6b1 !important; }
+html body #stage-wrap .o3d-ui button[aria-pressed=true] { color:#c1ffed !important; background:#163e43 !important; border-color:#4e9c9c !important; }
+html body #stage-wrap .o3d-ui button:focus-visible { outline:2px solid #80e2d6; outline-offset:3px; }
+html body #stage-wrap .o3d-switch { background:#0d1622 !important; box-shadow:none !important; padding:0 !important; }
+html body #stage-wrap .o3d-heading strong { color:#e9eff5 !important; font-size:18px !important; }
+html body #stage-wrap .o3d-heading span { color:#9baebe !important; font-size:12px !important; }
+html body #stage-wrap .o3d-rooms button { box-shadow:inset 0 -2px 0 var(--room-tint) !important; padding:5px 12px !important; }
+html body #stage-wrap .o3d-ui .o3d-anchor { padding:5px 9px !important; min-height:26px; font-size:11px !important; border-radius:5px !important; }
+html body #stage-wrap .o3d-ui .o3d-anchor.room { color:#e8f0f9 !important; background:#0b1422f5 !important; padding:9px 15px !important; font-size:13px !important; border-color:#526b7f !important; }
+html body #stage-wrap .o3d-ui [data-status=working] { border-bottom:2px solid #39d5c4 !important; }
+html body #stage-wrap .o3d-ui [data-status=review] { border-bottom:2px solid #ffbe62 !important; color:#ffcd88 !important; }
+html body #stage-wrap .o3d-ui [data-status=blocked] { border-bottom:2px solid #ff6574 !important; color:#ff9fa8 !important; }
+html body #stage-wrap .o3d-ui [data-status=unknown] { border-bottom:2px solid #718294 !important; }
+html body #stage-wrap .o3d-ui [data-running=true]::before { color:#39d5c4; }
+html body #stage-wrap .o3d-legend { color:#aebecb !important; background:#101c29ed !important; border:1px solid #2a3a4b; font-size:10px !important; padding:5px 10px !important; }
+html body #stage-wrap .o3d-inspector { color:#d8e3ee; background:#101d2afa; border:1px solid #425466 !important; box-shadow:0 15px 40px #0008 !important; }
+html body #stage-wrap .o3d-inspector p { color:#b9c9d7; }
+html body #stage-wrap .o3d-inspector [data-open-workflow] { background:#17454a !important; }
+html body #stage-wrap .o3d-bottom { bottom:10px; }
+html body #stage-wrap .o3d-stations button { font-size:11px; }
+html body #screen-game.active:has(#stage-wrap.o3d-on.o3d-expanded) { grid-template-columns:minmax(0,1fr) !important; grid-template-rows:60px minmax(500px,1fr) !important; grid-template-areas:"top" "center" !important; }
+html body #screen-game:has(#stage-wrap.o3d-on.o3d-expanded) > #left,
+html body #screen-game:has(#stage-wrap.o3d-on.o3d-expanded) > #chat-panel { display:none !important; }
 .shorts-shell { color:var(--text,#24474D); padding:12px; font-size:14px; }
 .shorts-shell nav { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:14px; }
 .shorts-shell button { padding:8px 12px; cursor:pointer; color:var(--text,#24474D); background:var(--panel2,#e4f0ec); border:1px solid #adc7c0; }
@@ -65,22 +92,22 @@ body:has(#stage-wrap.o3d-on) #stage-wrap { overflow:hidden; isolation:isolate; }
 .shorts-card video { width:100%; max-height:350px; background:#203d43; }
 .shorts-notice,.shorts-warning { color:#985119; overflow-wrap:anywhere; }
 .shorts-state { font-weight:600; }
-@media(max-width:750px) {
+@media(max-width:600px) {
   .o3d-ui .o3d-anchor.person,.o3d-ui .o3d-anchor.station { display:none; }
   .o3d-heading span { max-height:44px; overflow:auto; pointer-events:auto; }
 }
-@media(max-width:860px) {
-  html body #screen-game.active:has(#stage-wrap.o3d-on) { grid-template-rows:60px minmax(500px,1fr) 260px minmax(44px,auto); }
+@media(max-width:1200px) {
+  html body #screen-game.active:has(#stage-wrap.o3d-on) { grid-template-columns:240px minmax(0,1fr) !important; grid-template-areas:"top top" "left center" "chat chat" !important; grid-template-rows:60px minmax(500px,1fr) 260px !important; }
 }
 @media(max-width:600px) {
   html body #screen-game.active:has(#stage-wrap.o3d-on) {
-    grid-template-columns:minmax(0,1fr);
-    grid-template-areas:"top" "center" "left" "chat" "bot";
-    grid-template-rows:60px minmax(500px,1fr) 180px 260px minmax(44px,auto);
+    grid-template-columns:minmax(0,1fr) !important;
+    grid-template-areas:"top" "center" "left" "chat" !important;
+    grid-template-rows:60px minmax(500px,1fr) 180px 260px !important;
   }
   html body.crew-rail-off #screen-game.active:has(#stage-wrap.o3d-on) {
-    grid-template-areas:"top" "center" "chat" "bot";
-    grid-template-rows:60px minmax(500px,1fr) 260px minmax(44px,auto);
+    grid-template-areas:"top" "center" "chat" !important;
+    grid-template-rows:60px minmax(500px,1fr) 260px !important;
   }
 }
 @media(max-width:420px) {
@@ -90,11 +117,17 @@ body:has(#stage-wrap.o3d-on) #stage-wrap { overflow:hidden; isolation:isolate; }
   .o3d-inspector { top:140px; }
   .o3d-legend { font-size:9px; }
 }
-@container(max-width:750px) {
+@container(max-width:600px) {
   .o3d-ui .o3d-anchor.person,.o3d-ui .o3d-anchor.station { display:none; }
 }
 @container(max-width:380px) {
   .o3d-toolbar [data-shortcuts] { display:none; }
+  .o3d-toolbar { display:grid; grid-template-columns:1fr auto; }
+  .o3d-toolbar [data-expand] { grid-column:2; grid-row:1; }
+  .o3d-toolbar [data-overview] { grid-column:1 / -1; }
+  .o3d-content { top:86px; }
+  .o3d-labels { inset:-86px 0 0; }
+  html body #stage-wrap .o3d-toolbar button { padding:4px 6px !important; font-size:10px !important; }
   .o3d-ui button { font-size:10px; padding:6px; }
   .o3d-heading span { max-height:44px; overflow:auto; pointer-events:auto; }
 }

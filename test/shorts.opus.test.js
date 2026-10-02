@@ -58,5 +58,15 @@ function mock(value, status = 200) {
   await test('cancellation supports a no-content response', async () => {
     const h = mock(null, 204); await h.client.cancel(credentials, 'schedule-1'); assert.equal(h.calls[0].options.method, 'DELETE');
   });
+  await test('failed response cleanup is counted without logging upstream secrets', async () => {
+    const failopen=require('../sidecar/failopen.js'),messages=[],warn=console.warn;
+    failopen.resetForTests();console.warn=(...args)=>messages.push(args.join(' '));
+    try{
+      const client=makeOpusClient({fetchImpl:async()=>({ok:false,status:401,body:{cancel:async()=>{throw new Error(credentials.apiKey);}}})});
+      await assert.rejects(()=>client.accounts(credentials),e=>e.code==='provider_access_required');
+      assert.equal(failopen.counts()['shorts.opus.cancel-body'],1);
+      assert.ok(messages.length&&!messages.join(' ').includes(credentials.apiKey));
+    }finally{console.warn=warn;failopen.resetForTests();}
+  });
   console.log('shorts.opus.test: ' + count + ' scenarios passed');
 })().catch(e => { console.error(e); process.exitCode = 1; });

@@ -1,5 +1,6 @@
 'use strict';
 const { check, fail, id, text, integer, mediaUrl, digest } = require('./model.js');
+const { swallow } = require('../failopen.js');
 const BASE = 'https://api.opus.pro/api';
 function makeOpusClient({ fetchImpl, timeoutSignal = ms => AbortSignal.timeout(ms) }) {
   async function request(credentials, method, endpoint, body) {
@@ -11,7 +12,7 @@ function makeOpusClient({ fetchImpl, timeoutSignal = ms => AbortSignal.timeout(m
     } catch (_) { throw Object.assign(fail('provider_unreachable', 502), { ambiguous: method !== 'GET' }); }
     if (!response.ok) {
       // Never echo provider bodies: upstream errors can include URLs and credentials.
-      if (response.body && response.body.cancel) await response.body.cancel().catch(() => {});
+      if (response.body && response.body.cancel) await response.body.cancel().catch(() => swallow('shorts.opus.cancel-body')(new Error('Provider response cleanup failed')));
       const code = response.status === 401 || response.status === 403 ? 'provider_access_required' : response.status === 429 ? 'provider_rate_limited' : 'provider_rejected';
       throw Object.assign(fail(code, 502), { ambiguous: method !== 'GET' && ![400, 401, 403, 404, 422].includes(response.status), providerStatus: response.status });
     }
